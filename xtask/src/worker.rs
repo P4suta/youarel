@@ -1,4 +1,4 @@
-//! The relay's Worker test: worker-build builds the Worker, `wrangler dev --local` serves it in a pinned container, and the relay's end-to-end test runs against it there.
+//! The relay's Worker test: worker-build builds the Worker, `wrangler dev --local` serves it in a pinned container, and the relay's and the recovery's end-to-end tests run against it there.
 //!
 //! The container reaches the network to fetch crates and the bundler that worker-build uses, and nothing in it deploys the Worker.
 
@@ -35,14 +35,15 @@ for attempt in $(seq 120); do
   sleep 1
 done
 if [ "$ready" != yes ]; then cat /tmp/wrangler.log; exit 1; fi
-YOUAREL_RELAY_URL=http://127.0.0.1:8787 cargo nextest run --locked --package youarel-cli --test relay_e2e
+YOUAREL_RELAY_URL=http://127.0.0.1:8787 cargo nextest run --locked --package youarel-cli --test relay_e2e --test recovery_e2e
 requests=$(grep -c 'POST /v1/requests' /tmp/wrangler.log || true)
 mail=$(grep -c 'POST /v1/mail' /tmp/wrangler.log || true)
-echo "the Worker served $requests requests and $mail pieces of mail"
-if [ "$requests" -eq 0 ] || [ "$mail" -eq 0 ]; then cat /tmp/wrangler.log; exit 1; fi
+located=$(grep -c 'POST /v1/locate' /tmp/wrangler.log || true)
+echo "the Worker served $requests requests, $mail pieces of mail, and $located questions of location"
+if [ "$requests" -eq 0 ] || [ "$mail" -eq 0 ] || [ "$located" -eq 0 ]; then cat /tmp/wrangler.log; exit 1; fi
 "#;
 
-/// Builds the Worker, serves it locally, and runs the relay's end-to-end test against it.
+/// Builds the Worker, serves it locally, and runs the relay's and the recovery's end-to-end tests against it.
 ///
 /// # Errors
 ///

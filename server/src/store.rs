@@ -7,6 +7,7 @@ use youarel_protocol::message::Digest;
 use youarel_protocol::relay::{Side, Slot};
 use youarel_relay::StoreError;
 use youarel_relay::account::AccountStore;
+use youarel_relay::directory::DirectoryStore;
 use youarel_relay::mailbox::MailStore;
 
 /// The key under which an account's database keeps its genesis.
@@ -210,6 +211,56 @@ impl AccountStore for SqlAccount {
     fn erase(&mut self) -> Result<(), StoreError> {
         for table in ["meta", "log", "slots", "seen"] {
             run(&self.sql, &format!("DELETE FROM {table}"), Vec::new())?;
+        }
+        Ok(())
+    }
+}
+
+/// The directory's database.
+#[derive(Debug)]
+pub struct SqlDirectory {
+    sql: SqlStorage,
+}
+
+impl SqlDirectory {
+    /// The directory's database, with its table made when it is new.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`StoreError`] when the table cannot be made.
+    pub fn open(sql: SqlStorage) -> Result<Self, StoreError> {
+        run(
+            &sql,
+            "CREATE TABLE IF NOT EXISTS directory (member BLOB PRIMARY KEY, account BLOB NOT NULL)",
+            Vec::new(),
+        )?;
+        Ok(Self { sql })
+    }
+}
+
+impl DirectoryStore for SqlDirectory {
+    fn account_of(&self, member: &Digest) -> Result<Option<Digest>, StoreError> {
+        let found = rows(
+            &self.sql,
+            "SELECT account FROM directory WHERE member = ?",
+            vec![member.to_vec().into()],
+        )?;
+        found
+            .first()
+            .map(|row| {
+                let [account] = columns(row)?;
+                array(account)
+            })
+            .transpose()
+    }
+
+    fn register(&mut self, account: &Digest, members: &[Digest]) -> Result<(), StoreError> {
+        for member in members {
+            run(
+                &self.sql,
+                "INSERT OR REPLACE INTO directory (member, account) VALUES (?, ?)",
+                vec![member.to_vec().into(), account.to_vec().into()],
+            )?;
         }
         Ok(())
     }

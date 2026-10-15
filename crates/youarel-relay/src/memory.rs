@@ -1,6 +1,7 @@
 //! A relay that keeps everything in memory, for the tests and a local relay.
 
 use crate::account::{self, AccountStore, Handled};
+use crate::directory::{self, DirectoryStore};
 use crate::mailbox::{self, MailStore};
 use crate::{Reply, Status, StoreError};
 use std::collections::{BTreeMap, VecDeque};
@@ -150,9 +151,38 @@ impl MailStore for MemoryMail {
 pub struct MemoryRelay {
     accounts: BTreeMap<Digest, (MemoryAccount, u64)>,
     mail: MemoryMail,
+    directory: MemoryDirectory,
+}
+
+/// The directory's storage: the account that lists each member.
+#[derive(Clone, Debug, Default)]
+pub struct MemoryDirectory {
+    accounts: BTreeMap<Digest, Digest>,
+}
+
+impl DirectoryStore for MemoryDirectory {
+    fn account_of(&self, member: &Digest) -> Result<Option<Digest>, StoreError> {
+        Ok(self.accounts.get(member).copied())
+    }
+
+    fn register(&mut self, account: &Digest, members: &[Digest]) -> Result<(), StoreError> {
+        for member in members {
+            self.accounts.insert(*member, *account);
+        }
+        Ok(())
+    }
 }
 
 impl MemoryRelay {
+    /// Answers which account lists a member.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`StoreError`] when the storage fails.
+    pub fn locate(&self, bytes: &[u8]) -> Result<Reply, StoreError> {
+        directory::locate(&self.directory, bytes)
+    }
+
     /// Handles a member's request, after deleting every account past its retention.
     ///
     /// # Errors
@@ -169,9 +199,13 @@ impl MemoryRelay {
         let (store, expires) = self.accounts.entry(id).or_default();
         let Handled {
             reply,
+            published,
             expires: after,
-            ..
         } = account::handle(store, now, bytes)?;
+        if let Some(registration) = published {
+            self.directory
+                .register(&registration.account, &registration.members)?;
+        }
         match after {
             Some(after) => *expires = after,
             None if store.genesis()?.is_none() => {

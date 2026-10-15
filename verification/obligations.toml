@@ -197,3 +197,10 @@ model = "specs/proverif/rotation.pv"
 library = "specs/proverif/primitives.pvl"
 queries = 4
 probe = "specs/proverif/probes/rotation.pv"
+
+[[obligation]]
+verifier = "proverif"
+model = "specs/proverif/recovery.pv"
+library = "specs/proverif/primitives.pvl"
+queries = 3
+probe = "specs/proverif/probes/recovery.pv"

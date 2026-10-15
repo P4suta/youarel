@@ -12,14 +12,15 @@ use youarel_core::membership_rules::Resolution;
 use youarel_core::relay_rules::NONCE;
 use youarel_crypto::kem::{self, KeyPair};
 use youarel_crypto::pairing::{self, Code};
+use youarel_crypto::recovery::RecoveryKey;
 use youarel_crypto::seal::{self, COMMITMENT};
 use youarel_crypto::sign::{ED25519_KEY, ML_DSA_SIGNING_KEY, SigningKeys};
 use youarel_crypto::slot::{self, Binding};
 use youarel_crypto::{DIGEST, KEY, Label};
 use youarel_protocol::log::{self, Checked};
 use youarel_protocol::message::{
-    Action, Admission, Bundle, DevicePublic, Digest, Entry, Join, Joined, Operation, Rotation,
-    Unsigned, UnsignedBundle, Welcome, account_of, operation_digest,
+    Action, Admission, Bundle, DevicePublic, Digest, Entry, Join, Joined, Operation, Recovery,
+    Rotation, Unsigned, UnsignedBundle, Welcome, account_of, operation_digest,
 };
 use youarel_protocol::relay::{Request, UnsignedRequest, Verb};
 use youarel_protocol::wire::{Reader, Writer};
@@ -49,6 +50,9 @@ fn read_code(reader: &mut Reader<'_>, what: &str) -> Result<Code, SyncError> {
     Code::parse(text).ok_or_else(refused)
 }
 
+/// Epoch keys with their epochs.
+type EpochKeys = Vec<(u32, Zeroizing<[u8; KEY]>)>;
+
 /// The keys of this device.
 struct Identity {
     signing: SigningKeys,
@@ -58,17 +62,31 @@ struct Identity {
 
 impl Identity {
     fn generate() -> Result<Self, SyncError> {
-        let signing = SigningKeys::generate()?;
-        let kem = KeyPair::generate()?;
+        Ok(Self::from_keys(
+            SigningKeys::generate()?,
+            KeyPair::generate()?,
+        ))
+    }
+
+    fn from_keys(signing: SigningKeys, kem: KeyPair) -> Self {
         let public = DevicePublic {
             signing: signing.public().clone(),
             kem: Box::new(*kem.public()),
         };
-        Ok(Self {
+        Self {
             signing,
             kem,
             public,
-        })
+        }
+    }
+
+    /// The member a recovery key grows into, the same each time.
+    fn from_recovery(key: &RecoveryKey) -> Result<Self, SyncError> {
+        let seeds = key.seeds()?;
+        Ok(Self::from_keys(
+            SigningKeys::from_seeds(&seeds.ed25519, &seeds.ml_dsa),
+            KeyPair::from_seed(seeds.kem.as_slice())?,
+        ))
     }
 
     fn encode(&self) -> Zeroizing<Vec<u8>> {
@@ -315,32 +333,40 @@ impl Account {
         action: Action,
     ) -> Result<Digest, SyncError> {
         let account = if matches!(action, Action::Genesis(_)) {
-            [0; 32]
+            log::NO_ACCOUNT
         } else {
             self.account_id()?
         };
+        let bytes = Self::operation_by(&self.identity, account, checked, (now, action))?;
+        self.keep_operation(bytes)
+    }
+
+    /// An operation in `account` that `author` signs at `now`, after every head of the log.
+    fn operation_by(
+        author: &Identity,
+        account: Digest,
+        checked: &Checked,
+        (now, action): (u64, Action),
+    ) -> Result<Vec<u8>, SyncError> {
         let parents = checked.heads();
-        let author = self.device();
+        let id = author.public.id();
         let unsigned = Unsigned {
             account: &account,
             parents: &parents,
-            author: &author,
+            author: &id,
             wall: now,
             action: &action,
         };
-        let signature = self
-            .identity
-            .signing
-            .sign(Label::Operation, &unsigned.bytes()?)?;
+        let signature = author.signing.sign(Label::Operation, &unsigned.bytes()?)?;
         let operation = Operation {
             account,
             parents,
-            author,
+            author: id,
             wall: now,
             action,
             signature,
         };
-        self.keep_operation(operation.encode()?)
+        Ok(operation.encode()?)
     }
 
     /// Founds a new account with this device as its only member.
@@ -456,9 +482,19 @@ impl Account {
 
     /// Learns the key of every rotation by a member that holds a slot for this device.
     fn learn_keys(&mut self, checked: &Checked) -> Result<(), SyncError> {
-        let account = self.account_id()?;
-        let device = self.device();
-        let mut learned = false;
+        let keys = self.unwrapped(&self.account_id()?, checked, &self.identity)?;
+        self.keep_keys(keys)
+    }
+
+    /// The key of every rotation this device lacks that holds a slot for `identity`, with its epoch.
+    fn unwrapped(
+        &self,
+        account: &Digest,
+        checked: &Checked,
+        identity: &Identity,
+    ) -> Result<EpochKeys, SyncError> {
+        let device = identity.public.id();
+        let mut keys = Vec::new();
         for digest in &checked.resolution.rotations {
             let Some(Action::Rotate(rotation)) = checked
                 .operations
@@ -474,12 +510,19 @@ impl Account {
                 continue;
             };
             let binding = Binding {
-                account: &account,
+                account,
                 epoch: rotation.epoch,
                 device: &device,
             };
-            let key = slot::unwrap(slot, &self.identity.kem, &binding)?;
-            learned |= self.keep_key(rotation.epoch, key)?;
+            keys.push((rotation.epoch, slot::unwrap(slot, &identity.kem, &binding)?));
+        }
+        Ok(keys)
+    }
+
+    fn keep_keys(&mut self, keys: EpochKeys) -> Result<(), SyncError> {
+        let mut learned = false;
+        for (epoch, key) in keys {
+            learned |= self.keep_key(epoch, key)?;
         }
         if learned {
             self.save_epochs()?;
@@ -516,7 +559,10 @@ impl Account {
             .and_then(|digest| checked.operations.get(&digest))
             .and_then(|operation| match &operation.action {
                 Action::Rotate(rotation) => Some(rotation.commitment),
-                Action::Genesis(_) | Action::Add(_) | Action::Remove(_) => None,
+                Action::Genesis(_)
+                | Action::Add(_)
+                | Action::AddRecovery(_)
+                | Action::Remove(_) => None,
             })
             .ok_or_else(|| SyncError::Refused(String::from("the account has no epoch key yet")))?;
         let (epoch, key) = self.epochs.get(&rotation).ok_or_else(|| {
@@ -571,6 +617,18 @@ impl Account {
             }
         }
         let checked = self.check()?;
+        Self::verify_sender(&checked, &bundle)?;
+        self.learn_keys(&checked)?;
+        let (_, key) = self.epochs.get(&bundle.sealed.commitment).ok_or_else(|| {
+            SyncError::Refused(String::from(
+                "this device holds no key of the bundle's epoch",
+            ))
+        })?;
+        Self::open_state(&account, &bundle, key)
+    }
+
+    /// Checks that a member signed `bundle` under the keys the log publishes for it.
+    fn verify_sender(checked: &Checked, bundle: &Bundle) -> Result<(), SyncError> {
         let sender = checked.keys.get(&bundle.sender).ok_or_else(|| {
             SyncError::Refused(String::from(
                 "the bundle comes from a device this account never listed",
@@ -590,15 +648,18 @@ impl Account {
                 "the bundle's sender is no member of the account",
             )));
         }
-        self.learn_keys(&checked)?;
-        let (_, key) = self.epochs.get(&bundle.sealed.commitment).ok_or_else(|| {
-            SyncError::Refused(String::from(
-                "this device holds no key of the bundle's epoch",
-            ))
-        })?;
+        Ok(())
+    }
+
+    /// The state that `bundle` seals under `key`.
+    fn open_state(
+        account: &Digest,
+        bundle: &Bundle,
+        key: &[u8; KEY],
+    ) -> Result<Imported, SyncError> {
         let state = seal::open(
             key,
-            &Self::state_binding(&account, bundle.epoch, &bundle.sender),
+            &Self::state_binding(account, bundle.epoch, &bundle.sender),
             &bundle.sealed,
         )?;
         Ok(Imported {
@@ -999,6 +1060,161 @@ impl Account {
             .into_iter()
             .filter(|member| hex(member).starts_with(prefix))
             .collect())
+    }
+
+    /// A new recovery key, whose member joins the account and receives a slot of the rotation that follows at once.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SyncError::Refused`] when this device is no member.
+    pub fn enroll_recovery(&mut self, now: u64) -> Result<RecoveryKey, SyncError> {
+        let checked = self.check()?;
+        if !checked.member(&self.device()) {
+            return Err(SyncError::Refused(String::from(
+                "only a member creates a recovery key",
+            )));
+        }
+        let key = RecoveryKey::generate()?;
+        let recovery = Identity::from_recovery(&key)?;
+        let consent = recovery
+            .signing
+            .sign(Label::RecoveryConsent, &self.account_id()?)?;
+        self.write_operation(
+            &checked,
+            now,
+            Action::AddRecovery(Recovery {
+                device: recovery.public,
+                consent,
+            }),
+        )?;
+        self.rotate_if_due(now)?;
+        Ok(key)
+    }
+
+    /// The identifier of the member that `key` grows into, under which a relay finds its account.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`SyncError`] when the key's identity cannot be made.
+    pub fn recovery_member(key: &RecoveryKey) -> Result<Digest, SyncError> {
+        Ok(Identity::from_recovery(key)?.public.id())
+    }
+
+    /// A request to the relay in `account`, signed by the member that `key` grows into, which a device without an account sends to collect the bundles it recovers from.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`SyncError`] when the key's identity cannot be made or signing fails.
+    pub fn recovery_request(
+        key: &RecoveryKey,
+        account: Digest,
+        (now, verb): (u64, Verb),
+    ) -> Result<Vec<u8>, SyncError> {
+        let recovery = Identity::from_recovery(key)?;
+        let device = recovery.public.id();
+        let nonce = youarel_crypto::random::<NONCE>()?;
+        let unsigned = UnsignedRequest {
+            account: &account,
+            device: &device,
+            verb,
+            stamped: now,
+            nonce: &nonce,
+            payload: &[],
+        };
+        let signature = recovery.signing.sign(Label::Request, &unsigned.bytes()?)?;
+        Ok(Request {
+            account,
+            device,
+            verb,
+            stamped: now,
+            nonce,
+            payload: Vec::new(),
+            signature,
+        }
+        .encode()?)
+    }
+
+    /// Recovers the account that `bundle` belongs to: as the member `key` grows into, this device learns the epoch keys, adds itself, and opens the bundle's state.
+    ///
+    /// Nothing reaches the disk until the key's member consented to the bundle's account, a member signed the bundle, and its state opens.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SyncError::Refused`] when this device belongs to an account already or the key belongs to no member of the bundle's account, and another [`SyncError`] when the bundle is malformed or forged.
+    pub fn recover(
+        &mut self,
+        now: u64,
+        key: &RecoveryKey,
+        bundle: &[u8],
+    ) -> Result<Imported, SyncError> {
+        if self.genesis.is_some() {
+            return Err(SyncError::Refused(String::from(
+                "this device belongs to an account already",
+            )));
+        }
+        let decoded = Bundle::decode(bundle)?;
+        let account = decoded.account;
+        let genesis = decoded
+            .operations
+            .iter()
+            .find(|operation| account_of(operation) == account)
+            .map(|operation| operation_digest(operation))
+            .ok_or_else(|| {
+                SyncError::Refused(String::from("the bundle lacks its account's genesis"))
+            })?;
+        let recovery = Identity::from_recovery(key)?;
+        let log: BTreeMap<Digest, Vec<u8>> = decoded
+            .operations
+            .iter()
+            .map(|operation| (operation_digest(operation), operation.clone()))
+            .collect();
+        let checked = log::check(genesis, account, &log);
+        if !checked.recoveries().contains(&recovery.public.id()) {
+            return Err(SyncError::Refused(String::from(
+                "the recovery key belongs to no member of this account",
+            )));
+        }
+        Self::verify_sender(&checked, &decoded)?;
+        let keys = self.unwrapped(&account, &checked, &recovery)?;
+        let commitment = &decoded.sealed.commitment;
+        let epoch_key = keys
+            .iter()
+            .find(|(_, candidate)| {
+                seal::commitment(candidate).is_ok_and(|made| made == *commitment)
+            })
+            .map(|(_, found)| found)
+            .ok_or_else(|| {
+                SyncError::Refused(String::from(
+                    "the recovery key holds no key of the bundle's epoch",
+                ))
+            })?;
+        let imported = Self::open_state(&account, &decoded, epoch_key)?;
+        let added = Self::operation_by(
+            &recovery,
+            account,
+            &checked,
+            (now, Action::Add(self.identity.public.clone())),
+        )?;
+        for operation in decoded.operations {
+            self.keep_operation(operation)?;
+        }
+        fs::replace(
+            &self.directory.join("genesis"),
+            format!("{}\n", hex(&genesis)).as_bytes(),
+        )?;
+        self.genesis = Some(genesis);
+        self.keep_keys(keys)?;
+        self.keep_operation(added)?;
+        Ok(imported)
+    }
+
+    /// The members that recovery keys grow into, which `status` lists among the others.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SyncError::Refused`] when the device belongs to no account.
+    pub fn recovery_members(&self) -> Result<Vec<Digest>, SyncError> {
+        Ok(self.check()?.recoveries())
     }
 }
 

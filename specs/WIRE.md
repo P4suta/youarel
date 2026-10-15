@@ -42,10 +42,12 @@ Each message starts with a four-byte magic and a `u16` version, which is 1.
 | `YRQ1` | Request | account `digest`, device `digest`, verb `u8`, time `u64`, nonce (16 bytes), payload `bytes`, `signature` |
 | `YRL1` | Collected | slots `list<(device digest, time u64, bundle bytes)>` |
 | `YRM1` | Mail | a `u8` tag, then nothing for an opening, a nameplate `u16`, a side `u8`, and a message `bytes` for a drop, or a nameplate and a side for a pick |
+| `YRF1` | Locate | member `digest` |
+| `YRG1` | Registration | account `digest`, members `list<digest>` |
 
 A request's verb is 0 for a publication, 1 for a collection, and 2 for an erasure; a mail's side is 0 for the inviter and 1 for the joiner.
-The relay answers an opening with the version and the nameplate, each a `u16`.
-The relay's paths are `/v1/requests` and `/v1/mail`, which take a `POST` of one message under the media type `application/vnd.youarel.v1`, and answer with a status and a message, or with the reason of a refusal as text.
+The relay answers an opening with the version and the nameplate, each a `u16`, and a question of location with the version and the account `digest`.
+The relay's paths are `/v1/requests`, `/v1/mail`, and `/v1/locate`, which take a `POST` of one message under the media type `application/vnd.youarel.v1`, and answer with a status and a message, or with the reason of a refusal as text.
 
 A bundle and an admission list their operations in ascending order of the operations' digests, and an admission lists its epoch keys in ascending order of the epoch and then the key.
 The genesis operation names the zero digest as its account, since the account's identifier is the genesis operation's digest.
@@ -58,8 +60,11 @@ An action is a `u8` tag and its fields:
 | 1 | `Add` | `device_public` |
 | 2 | `Remove` | device `digest` |
 | 3 | `Rotate` | epoch `u32`, commitment `digest`, slots `list<slot>` |
+| 4 | `AddRecovery` | `device_public`, consent `signature` |
 
 A signature covers the message from its magic up to the signature, under the label of its kind in [CRYPTO.md](CRYPTO.md).
 An operation's digest covers the same bytes and the signature.
+A recovery member's consent is its signature of the account `digest` under `youarel/v1/recovery-consent`.
+A registration travels only between the relay's own parts and never reaches a device.
 
 The plaintext of a bundle is the state in the JSON form of `youarel-store`, and the plaintext of an entry is an admission.

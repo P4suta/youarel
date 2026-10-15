@@ -83,6 +83,16 @@ enum Command {
     Sync { target: String },
     /// Remove a device from the account, by the start of its identifier.
     Remove { device: String },
+    /// Create a recovery key, which brings a new device into the account once every device is gone.
+    Recovery {
+        #[command(subcommand)]
+        command: RecoveryCommand,
+    },
+    /// On a new device: recover the account with the recovery key on standard input, from a bundle file, a shared folder, or a relay.
+    Recover {
+        #[command(flatten)]
+        source: RecoverySource,
+    },
     /// Replace this program with the latest release, when its signed manifest offers a newer one.
     SelfUpdate {
         /// Install the latest release even when it is older than the highest version this device reached.
@@ -97,6 +107,38 @@ enum AccountCommand {
     Create,
     /// Show the account, its members, and its epoch.
     Show,
+}
+
+#[derive(Debug, Subcommand)]
+enum RecoveryCommand {
+    /// Create a recovery key and show it once.
+    Create,
+}
+
+/// Where the account's bundles wait, exactly one of them.
+#[derive(Debug, clap::Args)]
+#[group(required = true, multiple = false)]
+struct RecoverySource {
+    /// A bundle file a member wrote.
+    #[arg(long)]
+    bundle: Option<PathBuf>,
+    /// A shared folder where the members write their bundles.
+    #[arg(long)]
+    folder: Option<PathBuf>,
+    /// A relay at an `https://` address.
+    #[arg(long)]
+    relay: Option<String>,
+}
+
+impl RecoverySource {
+    fn source(&self) -> Result<sync::Source<'_>> {
+        match (&self.bundle, &self.folder, &self.relay) {
+            (Some(bundle), None, None) => Ok(sync::Source::Bundle(bundle)),
+            (None, Some(folder), None) => Ok(sync::Source::Folder(folder)),
+            (None, None, Some(relay)) => Ok(sync::Source::Relay(relay)),
+            _ => anyhow::bail!("give one of `--bundle FILE`, `--folder DIR`, or `--relay URL`"),
+        }
+    }
 }
 
 #[derive(Debug, Subcommand)]
@@ -236,6 +278,12 @@ fn run(cli: Cli) -> Result<()> {
         }
         Some(Command::Sync { target }) => sync::folder(&store, now, std::path::Path::new(&target))?,
         Some(Command::Remove { device }) => sync::remove(&store, now, &device)?,
+        Some(Command::Recovery {
+            command: RecoveryCommand::Create,
+        }) => sync::recovery_create(&store, now)?,
+        Some(Command::Recover { source }) => {
+            sync::recover(&store, now, &read_key()?, source.source()?)?
+        }
         Some(Command::SelfUpdate { allow_downgrade }) => {
             let consent = if allow_downgrade {
                 Consent::Downgrade
@@ -246,6 +294,19 @@ fn run(cli: Cli) -> Result<()> {
         }
     };
     commands::print(&lines)
+}
+
+/// The recovery key on standard input, which keeps it out of the shell's history, asked for when a person types it.
+fn read_key() -> Result<String> {
+    let input = std::io::stdin();
+    if std::io::IsTerminal::is_terminal(&input) {
+        eprint!("recovery key: ");
+    }
+    let mut line = String::new();
+    input
+        .read_line(&mut line)
+        .context("cannot read the recovery key")?;
+    Ok(line)
 }
 
 /// The text of a file the person named.

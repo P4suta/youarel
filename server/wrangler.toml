@@ -15,6 +15,14 @@ class_name = "AccountObject"
 name = "MAILBOXES"
 class_name = "MailboxObject"
 
+[[durable_objects.bindings]]
+name = "DIRECTORY"
+class_name = "DirectoryObject"
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["AccountObject", "MailboxObject"]
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["DirectoryObject"]

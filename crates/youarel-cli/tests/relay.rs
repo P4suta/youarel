@@ -3,7 +3,10 @@
 
 use youarel_core::relay_rules::{MAILBOX_LIFETIME, RETENTION, WINDOW};
 use youarel_crypto::pairing::Code;
-use youarel_protocol::relay::{Collected, Mail, Request, Side, Verb, read_nameplate};
+use youarel_protocol::message::{Action, Bundle, Operation};
+use youarel_protocol::relay::{
+    Collected, Locate, Mail, Registration, Request, Side, Verb, read_nameplate,
+};
 use youarel_relay::Status;
 use youarel_relay::memory::MemoryRelay;
 use youarel_sync::account::Account;
@@ -182,14 +185,41 @@ fn seeds() {
     first.account().found(NOW).unwrap();
     pair(&first, &second);
     let mut account = first.account();
+    let key = account.enroll_recovery(NOW).unwrap();
+    let member = Account::recovery_member(&key).unwrap();
     let bundle = account.export(NOW, b"{}").unwrap();
+    let decoded = Bundle::decode(&bundle).unwrap();
+    let recovery = decoded
+        .operations
+        .iter()
+        .find(|bytes| {
+            matches!(
+                Operation::decode(bytes).map(|operation| operation.action),
+                Ok(Action::AddRecovery(_))
+            )
+        })
+        .unwrap()
+        .clone();
     let publish = account.request(NOW, Verb::Publish, bundle).unwrap();
     let collect = account.request(NOW, Verb::Collect, Vec::new()).unwrap();
     assert_eq!(relay.request(NOW, &publish).unwrap().status, Status::Ok);
     assert_eq!(second.publish(&mut relay, NOW, b"{}").0, Status::Ok);
     let collected = relay.request(NOW, &collect).unwrap().body;
     let opened = relay.mail(NOW, &Mail::Open.encode().unwrap()).unwrap().body;
-    let seeds: [(&str, Vec<u8>); 7] = [
+    let locate = Locate { member }.encode();
+    let located = relay.locate(&locate).unwrap();
+    assert_eq!(located.status, Status::Ok);
+    let registration = Registration {
+        account: decoded.account,
+        members: vec![member],
+    }
+    .encode()
+    .unwrap();
+    let seeds: [(&str, Vec<u8>); 11] = [
+        ("operation-recovery", recovery),
+        ("relay-locate", locate),
+        ("relay-located", located.body),
+        ("relay-registration", registration),
         ("relay-publish", publish),
         ("relay-collect", collect),
         ("relay-collected", collected),

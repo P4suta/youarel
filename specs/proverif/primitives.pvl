@@ -53,3 +53,7 @@ const welcomedLabel: bitstring.
 const joinedLabel: bitstring.
 const operationLabel: bitstring.
 const stateLabel: bitstring.
+const consentLabel: bitstring.
+
+(* An account identifier: the digest of its genesis, which names its founder's two signing keys. *)
+fun accountof(signpk, signpk): bitstring.

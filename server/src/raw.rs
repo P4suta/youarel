@@ -1,4 +1,4 @@
-//! The Workers bindings: the fetch handler and the two Durable Objects, which the runtime drives on one thread.
+//! The Workers bindings: the fetch handler and the three Durable Objects, which the runtime drives on one thread.
 #![expect(
     clippy::future_not_send,
     clippy::too_many_arguments,
@@ -12,19 +12,27 @@ use futures_util::future::{Either, select};
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
 use std::fmt::Write as _;
-use store::{SqlAccount, SqlMail};
+use store::{SqlAccount, SqlDirectory, SqlMail};
 use worker::{
     Context, Date, Delay, DurableObject, Env, Headers, Method, Request, RequestInit, Response,
     Result, State, WebSocket, WebSocketIncomingMessage, WebSocketPair, durable_object, event,
 };
 use youarel_protocol::relay::Mail;
-use youarel_relay::{MAIL, PICK_WAIT, REQUESTS, Reply, Status, StoreError, account, mailbox};
+use youarel_relay::{
+    LOCATE, MAIL, PICK_WAIT, REQUESTS, Reply, Status, StoreError, account, directory, mailbox,
+};
 
 /// The bindings of `wrangler.toml`.
 const ACCOUNTS: &str = "ACCOUNTS";
 const MAILBOXES: &str = "MAILBOXES";
+const DIRECTORY: &str = "DIRECTORY";
 /// The name of the one object that holds every mailbox.
 const MAILBOXES_NAME: &str = "mailboxes";
+/// The name of the one object that holds the directory.
+const DIRECTORY_NAME: &str = "directory";
+/// Where an account's object sends a registration, a path the Worker never forwards from outside.
+const REGISTER: &str = "https://directory.invalid/register";
+const REGISTER_PATH: &str = "/register";
 /// The path under which a member listens for an account's news, followed by the account in hexadecimal.
 const EVENTS: &str = "/v1/events/";
 /// The header in which the Worker tells an account's object which account a listener asked for.
@@ -91,6 +99,12 @@ async fn fetch(mut request: Request, env: Env, _context: Context) -> Result<Resp
             .fetch_with_request(forwarded(&url, &body, Headers::new())?)
             .await;
     }
+    if request.method() == Method::Post && path == LOCATE {
+        let body = request.bytes().await?;
+        return directory_stub(&env)?
+            .fetch_with_request(forwarded(&url, &body, Headers::new())?)
+            .await;
+    }
     if let Some(name) = path.strip_prefix(EVENTS) {
         let headers = request.headers().clone();
         headers.set(ACCOUNT_HEADER, name)?;
@@ -117,10 +131,18 @@ struct Listener {
     admitted: bool,
 }
 
+/// The one object that holds the directory.
+fn directory_stub(env: &Env) -> Result<worker::Stub> {
+    env.durable_object(DIRECTORY)?
+        .id_from_name(DIRECTORY_NAME)?
+        .get_stub()
+}
+
 /// One account at the relay.
 #[durable_object]
 pub struct AccountObject {
     state: State,
+    env: Env,
 }
 
 impl core::fmt::Debug for AccountObject {
@@ -151,8 +173,8 @@ impl AccountObject {
 }
 
 impl DurableObject for AccountObject {
-    fn new(state: State, _env: Env) -> Self {
-        Self { state }
+    fn new(state: State, env: Env) -> Self {
+        Self { state, env }
     }
 
     async fn fetch(&self, mut request: Request) -> Result<Response> {
@@ -174,8 +196,14 @@ impl DurableObject for AccountObject {
                 .map_err(|error| worker::Error::RustError(error.to_string()))?;
             self.state.storage().set_alarm(at).await?;
         }
-        if handled.published {
+        if let Some(registration) = handled.published {
             self.announce();
+            let bytes = registration
+                .encode()
+                .map_err(|error| worker::Error::RustError(error.to_string()))?;
+            directory_stub(&self.env)?
+                .fetch_with_request(forwarded(REGISTER, &bytes, Headers::new())?)
+                .await?;
         }
         answer(handled.reply)
     }
@@ -225,6 +253,40 @@ impl DurableObject for AccountObject {
             ..listener
         })?;
         socket.send_with_str(LISTENING)
+    }
+}
+
+/// The relay's directory of recovery members.
+#[durable_object]
+pub struct DirectoryObject {
+    state: State,
+}
+
+impl core::fmt::Debug for DirectoryObject {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter
+            .debug_struct("DirectoryObject")
+            .finish_non_exhaustive()
+    }
+}
+
+impl DurableObject for DirectoryObject {
+    fn new(state: State, _env: Env) -> Self {
+        Self { state }
+    }
+
+    /// Answers a question that the Worker forwards, or notes a registration that an account's object sends.
+    async fn fetch(&self, mut request: Request) -> Result<Response> {
+        let path = request.path();
+        let body = request.bytes().await?;
+        let mut store =
+            SqlDirectory::open(self.state.storage().sql()).map_err(|error| failed(&error))?;
+        let reply = if path == REGISTER_PATH {
+            directory::register(&mut store, &body)
+        } else {
+            directory::locate(&store, &body)
+        };
+        answer(reply.map_err(|error| failed(&error))?)
     }
 }
 

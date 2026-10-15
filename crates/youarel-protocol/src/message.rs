@@ -44,6 +44,7 @@ const GENESIS: u8 = 0;
 const ADD: u8 = 1;
 const REMOVE: u8 = 2;
 const ROTATE: u8 = 3;
+const ADD_RECOVERY: u8 = 4;
 
 pub(crate) fn magic(reader: &mut Reader<'_>, expected: [u8; MAGIC]) -> Result<(), WireError> {
     if reader.array::<MAGIC>()? != expected {
@@ -143,6 +144,26 @@ pub struct Rotation {
     pub slots: Vec<Slot>,
 }
 
+/// The identity that a recovery key grows into, with its signature that consents to the account it joins.
+///
+/// The consent keeps a member that learned the identity's public keys from listing it in another account, where a recovering device would follow it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Recovery {
+    pub device: DevicePublic,
+    /// The identity's signature of the account, under [`Label::RecoveryConsent`].
+    pub consent: Signature,
+}
+
+impl Recovery {
+    /// Whether the identity consented to joining `account`.
+    #[must_use]
+    pub fn consents_to(&self, account: &Digest) -> bool {
+        self.device
+            .signing
+            .verify(Label::RecoveryConsent, account, &self.consent)
+    }
+}
+
 /// What an operation does.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Action {
@@ -150,6 +171,8 @@ pub enum Action {
     Add(DevicePublic),
     Remove(Digest),
     Rotate(Rotation),
+    /// Adds the identity that a recovery key grows into, which the membership rules treat as any added member.
+    AddRecovery(Recovery),
 }
 
 impl Action {
@@ -158,9 +181,22 @@ impl Action {
     pub fn rule(&self) -> membership_rules::Action {
         match self {
             Self::Genesis(_) => membership_rules::Action::Genesis,
-            Self::Add(device) => membership_rules::Action::Add(device.id()),
+            Self::Add(device) | Self::AddRecovery(Recovery { device, .. }) => {
+                membership_rules::Action::Add(device.id())
+            }
             Self::Remove(device) => membership_rules::Action::Remove(*device),
             Self::Rotate(rotation) => membership_rules::Action::Rotate(rotation.epoch),
+        }
+    }
+
+    /// The device whose public keys the action publishes, if any.
+    #[must_use]
+    pub const fn published(&self) -> Option<&DevicePublic> {
+        match self {
+            Self::Genesis(device)
+            | Self::Add(device)
+            | Self::AddRecovery(Recovery { device, .. }) => Some(device),
+            Self::Remove(_) | Self::Rotate(_) => None,
         }
     }
 
@@ -173,6 +209,11 @@ impl Action {
             Self::Add(device) => {
                 writer.byte(ADD);
                 device.write(writer);
+            }
+            Self::AddRecovery(recovery) => {
+                writer.byte(ADD_RECOVERY);
+                recovery.device.write(writer);
+                write_signature(writer, &recovery.consent);
             }
             Self::Remove(device) => {
                 writer.byte(REMOVE).raw(device);
@@ -198,6 +239,10 @@ impl Action {
         match reader.byte()? {
             GENESIS => Ok(Self::Genesis(DevicePublic::read(reader)?)),
             ADD => Ok(Self::Add(DevicePublic::read(reader)?)),
+            ADD_RECOVERY => Ok(Self::AddRecovery(Recovery {
+                device: DevicePublic::read(reader)?,
+                consent: read_signature(reader)?,
+            })),
             REMOVE => Ok(Self::Remove(reader.array()?)),
             ROTATE => {
                 let epoch = reader.word()?;

@@ -21,8 +21,11 @@ An operation holds the account, the digests of its parents, its author, and one 
 - `Add` names a device and its public keys.
 - `Remove` names a member by its identifier.
 - `Rotate` names a new epoch number and holds one key slot for every member it means to reach.
+- `AddRecovery` names the member that a recovery key grows into, its public keys, and its consent: its signature of the account's identifier.
+  The resolution treats it as an `Add`.
 
 An operation MUST carry the author's signature over its wire form, and a device MUST discard an operation whose signature fails, whose parents it lacks, or whose account differs.
+A device MUST also discard an `AddRecovery` whose consent fails under the keys it names, for the account the operation names.
 The log is the set of operations a device accepted; logs merge by union.
 
 ### Resolution
@@ -82,6 +85,9 @@ The relay drops the slot of every device the log stops listing, keeps an account
 A member hears of a device whose slot the relay has not renewed for 180 days, and ends that membership only when its person says so, since the slot's time is the relay's own claim.
 A device that returns after a long absence revives nothing, because the state keeps every tombstone.
 
+The relay keeps a directory that names the account of every recovery member: whenever a member publishes, it notes the members whose `AddRecovery` the account's log holds and still lists.
+The directory answers a question of location without a signature, since only the recovery key or the account's log reveals a recovery member's identifier, and the consent keeps a member that learned that identifier from listing it in an account of its own.
+
 A pairing through the relay uses a mailbox instead of files.
 The inviting device asks the relay for a mailbox, whose small nameplate becomes the code's number, and the four pairing messages travel through the mailbox, each to one side.
 The mailbox needs no signature, since the pairing messages authenticate themselves through the code, and it closes five minutes after it opens.
@@ -104,3 +110,19 @@ A new device joins through a short code and four messages, which a channel of th
 An attacker who reads the messages cannot test codes offline, an attacker who replaces a message gets one guess per invitation, and an invitation expires when it is used or abandoned.
 The inviter seals the entry only for a joiner that proved the channel key while the code was secret, so an attacker who answers the welcome itself receives nothing to open, even after it learns the code.
 The secrecy of the entry rests on the key encapsulation, which resists a quantum attacker, as well as on the PAKE.
+
+## Recovery
+
+A recovery key brings a new device into its account after every other device is gone.
+The key is a secret that a person prints and keeps, and the keys of one member grow from it, the same each time, as [CRYPTO.md](CRYPTO.md) defines.
+
+1. A member creates the key, signs the consent as the key's member, and writes the `AddRecovery` operation.
+   It then rotates, so the key's member holds a slot of the current epoch, as every member does.
+2. A device that recovers finds a bundle of the account: a file, a shared folder, or the relay, whose directory names the account of the key's member.
+   Through the relay, it collects the bundles as the key's member, which the relay admits as any member.
+3. Before it keeps anything, the device MUST check that the bundle's log holds the key member's consented `AddRecovery` and still lists it, that a member signed the bundle, and that the key member's slots open the bundle's state.
+4. The device then keeps the log and the epoch keys, writes the `Add` of its own keys under the key member's signature, and merges the state.
+   Its first bundle carries that `Add`, so its next seal rotates to an epoch that reaches it.
+
+The key's member stays a member, so the key keeps working until a member removes that member; a person who suspects that someone read the key removes its member and creates another.
+A passkey's PRF output, which an authenticator returns for the same credential each time, can take the place of the recovery key.

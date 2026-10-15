@@ -9,6 +9,11 @@ use youarel_crypto::sign::Signature;
 const REQUEST: [u8; MAGIC] = *b"YRQ1";
 const COLLECTED: [u8; MAGIC] = *b"YRL1";
 const MAIL: [u8; MAGIC] = *b"YRM1";
+const LOCATE: [u8; MAGIC] = *b"YRF1";
+const REGISTRATION: [u8; MAGIC] = *b"YRG1";
+
+/// The most members a registration names: as many as a rotation reaches.
+const MOST_MEMBERS: usize = crate::message::MOST_SLOTS;
 
 /// The longest payload a request or a piece of mail carries: a bundle, or the entry of a pairing.
 pub const LONGEST_PAYLOAD: usize = 32 * 1024 * 1024;
@@ -312,6 +317,106 @@ impl Mail {
     }
 }
 
+/// A device without an account asks which account lists a member, such as the one its recovery key grows into.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Locate {
+    pub member: Digest,
+}
+
+impl Locate {
+    #[must_use]
+    pub fn encode(&self) -> Vec<u8> {
+        let mut writer = begin(LOCATE);
+        writer.raw(&self.member);
+        writer.finish()
+    }
+
+    /// The question `bytes` hold.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`WireError`] for any bytes that encoding never writes.
+    pub fn decode(bytes: &[u8]) -> Result<Self, WireError> {
+        let mut reader = Reader::new(bytes);
+        magic(&mut reader, LOCATE)?;
+        let member = reader.array()?;
+        reader.finish()?;
+        Ok(Self { member })
+    }
+}
+
+/// The recovery members of an account, which the relay's directory notes when a member publishes.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Registration {
+    pub account: Digest,
+    /// The members, in ascending order.
+    pub members: Vec<Digest>,
+}
+
+impl Registration {
+    /// The registration's bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WireError::Order`] for more members than a rotation reaches, or members out of order.
+    pub fn encode(&self) -> Result<Vec<u8>, WireError> {
+        if self.members.len() > MOST_MEMBERS || !ascending(self.members.iter()) {
+            return Err(WireError::Order);
+        }
+        let mut writer = begin(REGISTRATION);
+        writer.raw(&self.account).count(self.members.len())?;
+        for member in &self.members {
+            writer.raw(member);
+        }
+        Ok(writer.finish())
+    }
+
+    /// The registration `bytes` hold.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`WireError`] for any bytes that encoding never writes.
+    pub fn decode(bytes: &[u8]) -> Result<Self, WireError> {
+        let mut reader = Reader::new(bytes);
+        magic(&mut reader, REGISTRATION)?;
+        let account = reader.array()?;
+        let count = reader.count(MOST_MEMBERS)?;
+        let mut members = Vec::with_capacity(count);
+        for _ in 0..count {
+            members.push(reader.array()?);
+        }
+        reader.finish()?;
+        if !ascending(members.iter()) {
+            return Err(WireError::Order);
+        }
+        Ok(Self { account, members })
+    }
+}
+
+/// The relay's answer to a question of location: the version and the account.
+#[must_use]
+pub fn located_bytes(account: &Digest) -> Vec<u8> {
+    let mut writer = Writer::new();
+    writer.short(VERSION).raw(account);
+    writer.finish()
+}
+
+/// The account the relay located.
+///
+/// # Errors
+///
+/// Returns a [`WireError`] for any other bytes.
+pub fn read_located(bytes: &[u8]) -> Result<Digest, WireError> {
+    let mut reader = Reader::new(bytes);
+    let version = reader.short()?;
+    if version != VERSION {
+        return Err(WireError::Version(version));
+    }
+    let account = reader.array()?;
+    reader.finish()?;
+    Ok(account)
+}
+
 /// The relay's nameplate for a new mailbox, as the version and the number.
 #[must_use]
 pub fn nameplate_bytes(nameplate: u16) -> Vec<u8> {
@@ -339,9 +444,46 @@ pub fn read_nameplate(bytes: &[u8]) -> Result<u16, WireError> {
 #[cfg(test)]
 mod tests {
     use super::{
-        Collected, LONGEST_FRAME, LONGEST_PAYLOAD, MOST_SLOTS, Mail, Request, Side, Slot, Verb,
-        nameplate_bytes, read_nameplate,
+        Collected, LONGEST_FRAME, LONGEST_PAYLOAD, Locate, MOST_MEMBERS, MOST_SLOTS, Mail,
+        Registration, Request, Side, Slot, Verb, located_bytes, nameplate_bytes, read_located,
+        read_nameplate,
     };
+
+    #[test]
+    fn a_location_and_a_registration_read_back_as_written() {
+        let locate = Locate { member: [7; 32] };
+        assert_eq!(Locate::decode(&locate.encode()).unwrap(), locate);
+        assert_eq!(read_located(&located_bytes(&[8; 32])), Ok([8; 32]));
+        let registration = Registration {
+            account: [1; 32],
+            members: vec![[2; 32], [3; 32]],
+        };
+        assert_eq!(
+            Registration::decode(&registration.encode().unwrap()).unwrap(),
+            registration
+        );
+        let unordered = Registration {
+            account: [1; 32],
+            members: vec![[3; 32], [2; 32]],
+        };
+        assert_eq!(unordered.encode(), Err(WireError::Order));
+        let crowded = Registration {
+            account: [1; 32],
+            members: (0..=MOST_MEMBERS)
+                .map(|index| {
+                    let mut member = [0; 32];
+                    member[..8].copy_from_slice(&u64::try_from(index).unwrap().to_be_bytes());
+                    member
+                })
+                .collect(),
+        };
+        assert_eq!(crowded.encode(), Err(WireError::Order));
+        let most = Registration {
+            members: crowded.members.get(..MOST_MEMBERS).unwrap().to_vec(),
+            ..crowded
+        };
+        assert_eq!(Registration::decode(&most.encode().unwrap()).unwrap(), most);
+    }
 
     /// A member publishes its bundle in one request, so a request carries a bundle that holds the longest state.
     #[test]

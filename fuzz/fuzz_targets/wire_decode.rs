@@ -4,7 +4,10 @@
 use youarel_protocol::message::{
     Admission, Bundle, DevicePublic, Entry, Join, Joined, Operation, Welcome,
 };
-use youarel_protocol::relay::{Collected, Mail, Request, nameplate_bytes, read_nameplate};
+use youarel_protocol::relay::{
+    Collected, Locate, Mail, Registration, Request, located_bytes, nameplate_bytes, read_located,
+    read_nameplate,
+};
 
 libfuzzer_sys::fuzz_target!(|data: &[u8]| {
     if let Ok(operation) = Operation::decode(data) {
@@ -75,6 +78,19 @@ libfuzzer_sys::fuzz_target!(|data: &[u8]| {
             Ok(data),
             "a piece of mail has one encoding"
         );
+    }
+    if let Ok(locate) = Locate::decode(data) {
+        assert_eq!(locate.encode(), data, "a location has one encoding");
+    }
+    if let Ok(registration) = Registration::decode(data) {
+        assert_eq!(
+            registration.encode().as_deref(),
+            Ok(data),
+            "a registration has one encoding"
+        );
+    }
+    if let Ok(account) = read_located(data) {
+        assert_eq!(located_bytes(&account), data, "an answer has one encoding");
     }
     if let Ok(nameplate) = read_nameplate(data) {
         assert_eq!(

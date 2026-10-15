@@ -73,19 +73,26 @@ impl SigningKeys {
     ///
     /// Returns [`CryptoError::Random`] when the operating system gives no randomness, and [`CryptoError::Primitive`] when a key cannot be made.
     pub fn generate() -> Result<Self, CryptoError> {
-        let ed25519 = Zeroizing::new(random::<ED25519_KEY>()?);
+        Ok(Self::from_seeds(
+            &Zeroizing::new(random::<ED25519_KEY>()?),
+            &Zeroizing::new(random::<ML_DSA_RANDOMNESS>()?),
+        ))
+    }
+
+    /// The signing keys that `ed25519`, the Ed25519 secret, and `ml_dsa`, the randomness of the ML-DSA-65 key generation, grow into.
+    #[must_use]
+    pub fn from_seeds(ed25519: &[u8; ED25519_KEY], ml_dsa: &[u8; ML_DSA_RANDOMNESS]) -> Self {
         let mut ed25519_public = [0_u8; ED25519_KEY];
-        libcrux_ed25519::secret_to_public(&mut ed25519_public, &ed25519);
-        let pair = ml_dsa_65::generate_key_pair(random::<ML_DSA_RANDOMNESS>()?);
-        let ml_dsa = Zeroizing::new(*pair.signing_key.as_ref());
-        Ok(Self {
-            ed25519,
-            ml_dsa,
+        libcrux_ed25519::secret_to_public(&mut ed25519_public, ed25519);
+        let pair = ml_dsa_65::generate_key_pair(*ml_dsa);
+        Self {
+            ed25519: Zeroizing::new(*ed25519),
+            ml_dsa: Zeroizing::new(*pair.signing_key.as_ref()),
             public: VerifyingKeys {
                 ed25519: ed25519_public,
                 ml_dsa: Box::new(*pair.verification_key.as_ref()),
             },
-        })
+        }
     }
 
     /// The signing keys whose secret halves `ed25519` and `ml_dsa` hold.

@@ -33,6 +33,9 @@ A signed message is the label, a zero byte, and the payload.
 | `youarel/v1/welcomed` | The inviter's confirmation of a pairing |
 | `youarel/v1/joined` | The joiner's confirmation of a pairing |
 | `youarel/v1/request` | The signature of a member's request to the relay |
+| `youarel/v1/recovery` | The derivation of a recovery member's keys from its recovery key |
+| `youarel/v1/recovery-check` | The checksum of a printed recovery key |
+| `youarel/v1/recovery-consent` | A recovery member's consent to the account it joins |
 
 ## Constructions
 
@@ -44,6 +47,8 @@ A signed message is the label, a zero byte, and the payload.
   The channel key is `HKDF(salt = SHA-512(transcript), ikm = PAKE key ‖ shared secret, info = "youarel/v1/pairing")`, where the transcript holds both PAKE messages, the joiner's public keys, and the encapsulation.
 - **Confirmations.** Each side proves the channel key with HMAC-SHA-512 over its label and the transcript, compared in constant time: the inviter under `youarel/v1/welcomed` in the welcome, and the joiner under `youarel/v1/joined` in its answer.
 - **Entry.** Once the joiner's confirmation verifies, the inviter seals the admission under the channel key, with the invitation number as the associated data, so only the side that completed the PAKE and the decapsulation opens it.
+- **Recovery key.** A recovery key is 32 random bytes, printed with the first two bytes of their digest under `youarel/v1/recovery-check` as 55 symbols of Crockford base32 in eleven groups of five, whose three bits of padding are zero.
+  Its member's keys grow from it by `HKDF(salt = empty, ikm = recovery key, info = "youarel/v1/recovery" ‖ part)`, where the part is `ed25519` for the Ed25519 key, `ml-dsa-65` for the seed of the ML-DSA-65 key, and `x-wing` for the X-Wing seed, so the same key always grows the same member.
 
 ## Secrets at rest
 

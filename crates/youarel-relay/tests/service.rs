@@ -9,11 +9,14 @@ use youarel_crypto::kem::KeyPair;
 use youarel_crypto::seal::Sealed;
 use youarel_crypto::sign::SigningKeys;
 use youarel_protocol::message::{
-    Action, Bundle, DevicePublic, Digest, Operation, account_of, operation_digest,
+    Action, Bundle, DevicePublic, Digest, Operation, Recovery, account_of, operation_digest,
 };
-use youarel_protocol::relay::{Collected, Mail, Request, Side, Verb, read_nameplate};
+use youarel_protocol::relay::{
+    Collected, Locate, Mail, Registration, Request, Side, Verb, read_located, read_nameplate,
+};
 use youarel_relay::Status;
-use youarel_relay::memory::MemoryRelay;
+use youarel_relay::directory::{self, DirectoryStore as _};
+use youarel_relay::memory::{MemoryDirectory, MemoryRelay};
 
 const NOW: u64 = 1_700_000_000_000;
 
@@ -216,6 +219,62 @@ fn members_publish_and_collect_each_others_newest_bundle() {
         6
     );
     assert_eq!(newest.published, NOW);
+}
+
+#[test]
+fn the_directory_locates_a_recovery_member_once_a_member_publishes() {
+    let mut relay = MemoryRelay::default();
+    let (first, recovery, plain) = (Device::new(), Device::new(), Device::new());
+    let mut account = Account::found(&first);
+    let consent = recovery
+        .keys
+        .sign(Label::RecoveryConsent, &account.id)
+        .unwrap();
+    account.log.push(first.operation(
+        account.id,
+        vec![account.genesis],
+        Action::AddRecovery(Recovery {
+            device: recovery.public.clone(),
+            consent,
+        }),
+    ));
+    account.add(&first, &plain);
+    let locate =
+        |served: &MemoryRelay, member: Digest| served.locate(&Locate { member }.encode()).unwrap();
+    assert_eq!(locate(&relay, recovery.id()).status, Status::NotFound);
+    assert_eq!(
+        account.publish(&mut relay, (&first, 4), (NOW, 1)),
+        Status::Ok
+    );
+    let found = locate(&relay, recovery.id());
+    assert_eq!(found.status, Status::Ok);
+    assert_eq!(read_located(&found.body), Ok(account.id));
+    assert_eq!(
+        locate(&relay, plain.id()).status,
+        Status::NotFound,
+        "the directory lists only the members that consented as recovery members"
+    );
+    assert_eq!(relay.locate(b"YRF1").unwrap().status, Status::BadRequest);
+    let (status, _) = account.collect(&mut relay, &recovery, (NOW, 2));
+    assert_eq!(
+        status,
+        Status::Ok,
+        "a recovery member collects as any member"
+    );
+}
+
+#[test]
+fn the_directory_notes_only_a_well_formed_registration() {
+    let mut store = MemoryDirectory::default();
+    let registration = Registration {
+        account: [1; 32],
+        members: vec![[2; 32]],
+    };
+    let noted = directory::register(&mut store, &registration.encode().unwrap()).unwrap();
+    assert_eq!(noted.status, Status::Ok);
+    assert_eq!(store.account_of(&[2; 32]).unwrap(), Some([1; 32]));
+    let refused = directory::register(&mut store, b"YRG1").unwrap();
+    assert_eq!(refused.status, Status::BadRequest);
 }
 
 #[test]

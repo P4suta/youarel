@@ -6,7 +6,7 @@ use youarel_core::relay_rules::{self, Admission, Seen};
 use youarel_crypto::Label;
 use youarel_protocol::log::{self, Checked};
 use youarel_protocol::message::{Bundle, DevicePublic, Digest, account_of, operation_digest};
-use youarel_protocol::relay::{Collected, Request, Slot, Verb};
+use youarel_protocol::relay::{Collected, Registration, Request, Slot, Verb};
 
 /// What the relay keeps of one account.
 pub trait AccountStore {
@@ -77,8 +77,8 @@ pub trait AccountStore {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Handled {
     pub reply: Reply,
-    /// Whether a member published a bundle, which the adapter announces to the members that listen.
-    pub published: bool,
+    /// The account's recovery members once a member published a bundle, which the adapter announces to the members that listen and notes in the directory.
+    pub published: Option<Registration>,
     /// When the relay deletes the account unless another request comes, or `None` once nothing remains or nothing changed.
     pub expires: Option<u64>,
 }
@@ -87,7 +87,7 @@ impl Handled {
     fn refused(status: Status, reason: &str) -> Self {
         Self {
             reply: Reply::refused(status, reason),
-            published: false,
+            published: None,
             expires: None,
         }
     }
@@ -277,7 +277,10 @@ fn publish(
     })?;
     Ok(Handled {
         reply: Reply::ok(Vec::new()),
-        published: true,
+        published: Some(Registration {
+            account: request.account,
+            members: admitted.checked.recoveries(),
+        }),
         expires: Some(relay_rules::expires(now)),
     })
 }
@@ -317,7 +320,7 @@ pub fn handle(
             };
             Ok(Handled {
                 reply: Reply::ok(body),
-                published: false,
+                published: None,
                 expires: Some(relay_rules::expires(now)),
             })
         }
@@ -325,7 +328,7 @@ pub fn handle(
             store.erase()?;
             Ok(Handled {
                 reply: Reply::ok(Vec::new()),
-                published: false,
+                published: None,
                 expires: None,
             })
         }

@@ -3,8 +3,10 @@
 //! Every primitive comes from libcrux, whose implementations carry machine-checked proofs, apart from the PAKE, which is the SPAKE2 of `RustCrypto`.
 //! Secrets leave memory zeroed, and no function here reads a file, a clock, or the network.
 
+pub mod crockford;
 pub mod kem;
 pub mod pairing;
+pub mod recovery;
 pub mod seal;
 pub mod sign;
 pub mod slot;
@@ -30,6 +32,9 @@ pub enum Label {
     Welcomed,
     Joined,
     Request,
+    Recovery,
+    RecoveryCheck,
+    RecoveryConsent,
 }
 
 impl Label {
@@ -48,6 +53,9 @@ impl Label {
             Self::Welcomed => "youarel/v1/welcomed",
             Self::Joined => "youarel/v1/joined",
             Self::Request => "youarel/v1/request",
+            Self::Recovery => "youarel/v1/recovery",
+            Self::RecoveryCheck => "youarel/v1/recovery-check",
+            Self::RecoveryConsent => "youarel/v1/recovery-consent",
         }
     }
 }
@@ -176,6 +184,9 @@ mod tests {
             Label::Welcomed,
             Label::Joined,
             Label::Request,
+            Label::Recovery,
+            Label::RecoveryCheck,
+            Label::RecoveryConsent,
         ];
         for (index, label) in labels.iter().enumerate() {
             assert!(label.text().starts_with("youarel/v1/"));

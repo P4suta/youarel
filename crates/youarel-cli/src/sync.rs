@@ -1,4 +1,4 @@
-//! The sync commands: the account, the pairing of a device through files, bundles, a shared folder, and the removal of a device.
+//! The sync commands: the account, the pairing of a device through files, bundles, a shared folder, a relay, the removal of a device, and recovery.
 //!
 //! Each command opens the account beside the store and reads or merges the store's state in one locked session.
 
@@ -7,7 +7,10 @@ use anyhow::{Context, Result, anyhow, bail};
 use std::path::Path;
 use youarel_core::relay_rules;
 use youarel_crypto::pairing::Code;
-use youarel_protocol::relay::{self, Collected, Mail, Side, Verb, read_nameplate};
+use youarel_crypto::recovery::RecoveryKey;
+use youarel_protocol::relay::{
+    self, Collected, Locate, Mail, Side, Verb, read_located, read_nameplate,
+};
 use youarel_relay::Status;
 use youarel_store::{Store, codec, fs};
 use youarel_sync::account::Account;
@@ -91,6 +94,7 @@ pub fn show(store: &Store) -> Result<Vec<String>> {
         )]);
     }
     let status = account.status().map_err(sync_error)?;
+    let recoveries = account.recovery_members().map_err(sync_error)?;
     let mut lines = vec![
         format!("account {}", hex(&status.account)),
         format!("epoch {}", status.epoch),
@@ -98,6 +102,8 @@ pub fn show(store: &Store) -> Result<Vec<String>> {
     for member in &status.members {
         let marker = if *member == status.this_device {
             "  (this device)"
+        } else if recoveries.contains(member) {
+            "  (recovery key)"
         } else {
             ""
         };
@@ -375,6 +381,144 @@ pub fn relay(store: &Store, now: u64, relay: &str) -> Result<Vec<String>> {
     }
     lines.push(String::from("published this device's bundle"));
     Ok(lines)
+}
+
+/// Creates a recovery key whose member joins the account, and shows the key once.
+///
+/// # Errors
+///
+/// Returns an error when this device is no member.
+pub fn recovery_create(store: &Store, now: u64) -> Result<Vec<String>> {
+    let key = account(store)?.enroll_recovery(now).map_err(sync_error)?;
+    let member = Account::recovery_member(&key).map_err(sync_error)?;
+    Ok(vec![
+        format!("recovery key {}", key.text().as_str()),
+        format!("its member {}", hex(&member)),
+        String::from(
+            "write the key down and keep it apart from your devices; `youarel recover` brings a new device in with it when every device is gone",
+        ),
+        String::from(
+            "whoever reads the key can join the account, so `youarel remove` its member once the key may have been seen",
+        ),
+        String::from(
+            "the other devices learn of the key with the next bundle or sync, and a relay finds the account by it once this device syncs there",
+        ),
+    ])
+}
+
+/// The recovery key that `text` spells.
+fn recovery_key(text: &str) -> Result<RecoveryKey> {
+    RecoveryKey::parse(text.trim())
+        .context("that is no recovery key; check each group of five for a mistyped symbol")
+}
+
+/// Recovers from the first of `bundles` that the key opens, and merges its state.
+fn recover_from(
+    store: &Store,
+    now: u64,
+    key: &RecoveryKey,
+    bundles: impl IntoIterator<Item = (String, Vec<u8>)>,
+) -> Result<Vec<String>> {
+    let mut lines = Vec::new();
+    for (name, bundle) in bundles {
+        match account(store)?.recover(now, key, &bundle) {
+            Ok(imported) => {
+                merge(store, now, &imported.state)?;
+                lines.push(format!("recovered the account from {name}"));
+                lines.push(String::from(
+                    "remove each lost device with `youarel remove`, and create a new recovery key if this one may have been seen",
+                ));
+                return Ok(lines);
+            }
+            Err(error) => lines.push(format!("skipped {name}: {error}")),
+        }
+    }
+    lines.push(String::from(
+        "no bundle there belongs to this key's account",
+    ));
+    bail!("{}", lines.join("\n"))
+}
+
+/// Recovers the account through a relay: finds the account by the key's member, collects as that member, recovers from a bundle there, and publishes this device's own.
+fn recover_through(store: &Store, now: u64, key: &RecoveryKey, relay: &str) -> Result<Vec<String>> {
+    let limit = longest_answer()?;
+    let member = Account::recovery_member(key).map_err(sync_error)?;
+    let (found, location) = web::post(
+        &endpoint(relay, youarel_relay::LOCATE)?,
+        &Locate { member }.encode(),
+        limit,
+    )?;
+    if found != Status::Ok.code() {
+        bail!(
+            "the relay found no account for this key: {}",
+            reason(&location)
+        );
+    }
+    let id = read_located(&location)?;
+    let requests = endpoint(relay, youarel_relay::REQUESTS)?;
+    let collect = Account::recovery_request(key, id, (now, Verb::Collect)).map_err(sync_error)?;
+    let (collected, slots) = web::post(&requests, &collect, limit)?;
+    if collected != Status::Ok.code() {
+        bail!(
+            "the relay refused to hand out the bundles: {}",
+            reason(&slots)
+        );
+    }
+    let bundles = Collected::decode(&slots)?
+        .slots
+        .into_iter()
+        .map(|slot| (short(&slot.device), slot.bundle));
+    let mut lines = recover_from(store, now, key, bundles)?;
+    let state = state(store, now)?;
+    let bundle = account(store)?.export(now, &state).map_err(sync_error)?;
+    let publish = account(store)?
+        .request(now, Verb::Publish, bundle)
+        .map_err(sync_error)?;
+    let (published, answer) = web::post(&requests, &publish, limit)?;
+    if published != Status::Ok.code() {
+        bail!(
+            "the relay refused this device's bundle: {}",
+            reason(&answer)
+        );
+    }
+    lines.extend(self::relay(store, now, relay)?);
+    Ok(lines)
+}
+
+/// Where a recovering device finds a bundle of its account.
+#[derive(Clone, Copy, Debug)]
+pub enum Source<'a> {
+    Bundle(&'a Path),
+    Folder(&'a Path),
+    Relay(&'a str),
+}
+
+/// Recovers the account with a recovery key from a bundle file, a shared folder, or a relay, and then syncs through the folder or the relay.
+///
+/// # Errors
+///
+/// Returns an error when the text is no recovery key, this device belongs to an account already, or nothing at the source belongs to the key's account.
+pub fn recover(store: &Store, now: u64, text: &str, source: Source<'_>) -> Result<Vec<String>> {
+    let key = recovery_key(text)?;
+    match source {
+        Source::Bundle(path) => {
+            let name = path.display().to_string();
+            recover_from(store, now, &key, [(name, read(path)?)])
+        }
+        Source::Folder(directory) => {
+            let mut bundles = Vec::new();
+            for name in fs::list(directory)? {
+                if name.ends_with(BUNDLE_SUFFIX) {
+                    let bytes = read(&directory.join(&name))?;
+                    bundles.push((name, bytes));
+                }
+            }
+            let mut lines = recover_from(store, now, &key, bundles)?;
+            lines.extend(folder(store, now, directory)?);
+            Ok(lines)
+        }
+        Source::Relay(relay) => recover_through(store, now, &key, relay),
+    }
 }
 
 /// Leaves a message in a pairing's mailbox at the relay.

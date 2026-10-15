@@ -5,14 +5,12 @@
 //! Each side starts its PAKE from a seed, so a side that waits for the other's file recreates the same state from the seed it kept.
 
 use crate::kem::{self, KeyPair};
-use crate::{CryptoError, KEY, Label, derive, equal, mac, sha512};
+use crate::{CryptoError, KEY, Label, crockford, derive, equal, mac, sha512};
 use rand_chacha::ChaCha20Rng;
 use rand_core::SeedableRng as _;
 use spake2::{Ed25519Group, Identity, Password, Spake2};
 use zeroize::Zeroizing;
 
-/// The symbols of a code's secret: Crockford's base32, which leaves out I, L, O, and U.
-const CROCKFORD: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 /// The bytes of a code's secret: forty bits.
 const SECRET: usize = 5;
 /// The symbols that spell a code's secret, five bits each.
@@ -50,15 +48,7 @@ impl core::fmt::Debug for Code {
 
 /// The value of one symbol of a secret, read the way Crockford's base32 allows.
 fn symbol_value(symbol: u8) -> Option<u64> {
-    let canonical = match symbol.to_ascii_uppercase() {
-        b'I' | b'L' => b'1',
-        b'O' => b'0',
-        other => other,
-    };
-    CROCKFORD
-        .iter()
-        .zip(0_u64..)
-        .find_map(|(candidate, value)| (*candidate == canonical).then_some(value))
+    crockford::value(symbol).map(u64::from)
 }
 
 impl Code {
@@ -125,7 +115,7 @@ impl Code {
         let mut symbols = [b'0'; SYMBOLS];
         for slot in symbols.iter_mut().rev() {
             let low = value.to_le_bytes().first().copied().unwrap_or_default() & SYMBOL_MASK;
-            if let Some(character) = CROCKFORD.get(usize::from(low)) {
+            if let Some(character) = crockford::ALPHABET.get(usize::from(low)) {
                 *slot = *character;
             }
             value = value.wrapping_shr(SYMBOL_BITS);

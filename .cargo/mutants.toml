@@ -13,6 +13,10 @@ exclude_re = [
   # Evidence: the tests of `ItemId::v7`, `unhex`, `Digest::parse`, and `Code::parse` fix every bit of their results.
   # Reconsider when one of these joins operands that can share a bit.
   "replace \\| with \\^ in (ItemId::v7|unhex|Digest::parse|Code::parse)",
+  # Exempt as equivalent: Crockford's base32 joins each new byte or symbol to a buffer it just shifted left by as many bits, so the two never share a bit.
+  # Evidence: the tests of `crockford` read back every byte value and fix the symbols of known bytes.
+  # Reconsider when either function joins its buffer without that shift.
+  "crockford\\.rs:.*replace \\| with \\^ in (encode|decode)",
 ]
 exclude_globs = [
   # Exempt as other-platform: the campaign runs on Linux, which never builds this Windows-only code, so its mutants would pass unbuilt.

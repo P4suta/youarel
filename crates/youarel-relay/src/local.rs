@@ -1,7 +1,7 @@
 //! A relay that serves HTTP on this host and keeps everything in memory, for the end-to-end tests and for people who keep their own relay.
 
 use crate::memory::MemoryRelay;
-use crate::{MAIL, MEDIA_TYPE, PICK_WAIT, REQUESTS, Reply, Status};
+use crate::{LOCATE, MAIL, MEDIA_TYPE, PICK_WAIT, REQUESTS, Reply, Status};
 use std::io::Read as _;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread::JoinHandle;
@@ -88,6 +88,9 @@ fn answer(shared: &Shared, clock: &(impl Fn() -> u64 + ?Sized), url: &str, body:
     match url {
         REQUESTS => locked(shared)
             .request(clock(), body)
+            .unwrap_or_else(|error| failed(&error)),
+        LOCATE => locked(shared)
+            .locate(body)
             .unwrap_or_else(|error| failed(&error)),
         MAIL if matches!(Mail::decode(body), Ok(Mail::Pick { .. })) => pick(shared, clock, body),
         MAIL => {

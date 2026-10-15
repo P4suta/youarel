@@ -1,0 +1,44 @@
+(* The probe of ../recovery.pv: the first design of recovery, in which the recovering device asked only that the account's log add the key's member, with no consent from it.
+   The attacker founds an account of its own, adds the key's member under its own signature, and wraps its own epoch key for that member, so the device joins that account and seals its later state for the attacker, and the queries must fail. *)
+
+free epoch: bitstring.
+free epochkey: key [private].
+free later: bitstring [private].
+
+event Consented(bitstring).
+event Recovered(bitstring).
+
+query a: bitstring; event(Recovered(a)) ==> event(Consented(a)).
+query attacker(epochkey).
+query attacker(later).
+
+let founding(founder: signsk, quantum: signsk, member: signpk, memberquantum: signpk, memberkem: kempk) =
+  let account = accountof(signpublic(founder), signpublic(quantum)) in
+  new r: seed;
+  let added = (operationLabel, account, member, memberquantum) in
+  event Consented(account);
+  let rotation = (operationLabel, account, epoch, encapsulate(memberkem, r), seal(keybits(epochkey), slotkey(shared(memberkem, r), (account, epoch, memberkem)), account)) in
+  out(c, (added, sign(added, founder), sign(added, quantum), rotation, sign(rotation, founder), sign(rotation, quantum))).
+
+let recovering(member: signpk, memberquantum: signpk, memberkem: kemsk) =
+  in(c, (founder: signpk, quantum: signpk, added: bitstring, addedsigned: bitstring, addedquantum: bitstring, rotation: bitstring, signed: bitstring, signedquantum: bitstring));
+  let account = accountof(founder, quantum) in
+  if added = (operationLabel, account, member, memberquantum) then
+  if verify(addedsigned, founder, added) = true then
+  if verify(addedquantum, quantum, added) = true then
+  if verify(signed, founder, rotation) = true then
+  if verify(signedquantum, quantum, rotation) = true then
+  let (=operationLabel, =account, =epoch, encapsulation: bitstring, wrapped: bitstring) = rotation in
+  let keybits(k: key) = unseal(wrapped, slotkey(decapsulate(encapsulation, memberkem), (account, epoch, kempublic(memberkem))), account) in
+  event Recovered(account);
+  out(c, seal(later, k, (stateLabel, account, epoch))).
+
+process
+  new founder: signsk;
+  new quantum: signsk;
+  new member: signsk;
+  new memberquantum: signsk;
+  new memberkem: kemsk;
+  out(c, (signpublic(founder), signpublic(quantum), signpublic(member), signpublic(memberquantum), kempublic(memberkem)));
+  out(c, (founder, member));
+  (founding(founder, quantum, signpublic(member), signpublic(memberquantum), kempublic(memberkem)) | ! recovering(signpublic(member), signpublic(memberquantum), memberkem))

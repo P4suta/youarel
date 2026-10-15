@@ -4,6 +4,7 @@
 //! Its storage sits behind traits, so the Worker keeps it in a Durable Object's database, and a test or a local relay keeps it in memory.
 
 pub mod account;
+pub mod directory;
 #[cfg(feature = "local")]
 pub mod local;
 pub mod mailbox;
@@ -11,6 +12,8 @@ pub mod memory;
 
 /// The HTTP path of a member's requests.
 pub const REQUESTS: &str = "/v1/requests";
+/// The HTTP path of the directory's questions.
+pub const LOCATE: &str = "/v1/locate";
 /// The HTTP path of a pairing's mail.
 pub const MAIL: &str = "/v1/mail";
 /// The media type of every body the relay reads and writes.

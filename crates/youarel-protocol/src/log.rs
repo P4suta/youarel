@@ -25,6 +25,25 @@ impl Checked {
         self.resolution.members.contains(device)
     }
 
+    /// The members that a recovery key grows into, each of which consented to this account.
+    #[must_use]
+    pub fn recoveries(&self) -> Vec<Digest> {
+        let added: BTreeSet<Digest> = self
+            .operations
+            .values()
+            .filter_map(|operation| match &operation.action {
+                Action::AddRecovery(recovery) => Some(recovery.device.id()),
+                Action::Genesis(_) | Action::Add(_) | Action::Remove(_) | Action::Rotate(_) => None,
+            })
+            .collect();
+        self.resolution
+            .members
+            .iter()
+            .filter(|member| added.contains(*member))
+            .copied()
+            .collect()
+    }
+
     /// The operations no other operation names as a parent, which a new operation names.
     #[must_use]
     pub fn heads(&self) -> Vec<Digest> {
@@ -44,6 +63,7 @@ impl Checked {
 /// Checks the log of the account whose genesis is `genesis` and whose identifier is `account`.
 ///
 /// An operation counts only when it decodes, names the account, or no account for the genesis, and carries its author's signature under the keys that the log publishes for that author.
+/// A recovery identity counts only with its consent to the account the operation names.
 #[must_use]
 pub fn check<'a>(
     genesis: Digest,
@@ -56,7 +76,7 @@ pub fn check<'a>(
         let Ok(operation) = Operation::decode(bytes) else {
             continue;
         };
-        if let Action::Genesis(device) | Action::Add(device) = &operation.action {
+        if let Some(device) = operation.action.published() {
             keys.insert(device.id(), device.clone());
         }
         decoded.insert(*digest, operation);
@@ -68,7 +88,12 @@ pub fn check<'a>(
         } else {
             account
         };
+        let consents = match &operation.action {
+            Action::AddRecovery(recovery) => recovery.consents_to(&operation.account),
+            Action::Genesis(_) | Action::Add(_) | Action::Remove(_) | Action::Rotate(_) => true,
+        };
         let verifies = operation.account == expected
+            && consents
             && operation.unsigned().bytes().is_ok_and(|unsigned| {
                 keys.get(&operation.author)
                     .is_some_and(|author: &DevicePublic| {
@@ -101,7 +126,9 @@ pub fn check<'a>(
 #[cfg(test)]
 mod tests {
     use super::{NO_ACCOUNT, check};
-    use crate::message::{Action, DevicePublic, Digest, Operation, account_of, operation_digest};
+    use crate::message::{
+        Action, DevicePublic, Digest, Operation, Recovery, account_of, operation_digest,
+    };
     use std::collections::BTreeMap;
     use youarel_crypto::Label;
     use youarel_crypto::kem::KeyPair;
@@ -169,6 +196,43 @@ mod tests {
         assert!(checked.member(&first.id()) && checked.member(&second.id()));
         assert!(!checked.member(&third.id()));
         assert_eq!(checked.heads(), [operation_digest(&added)]);
+    }
+
+    #[test]
+    fn a_recovery_identity_counts_only_in_the_account_it_consented_to() {
+        let (first_keys, first) = device();
+        let (recovery_keys, recovery) = device();
+        let founder = (&first_keys, first.id());
+        let genesis = signed(founder, NO_ACCOUNT, Vec::new(), Action::Genesis(first));
+        let account = account_of(&genesis);
+        let root = operation_digest(&genesis);
+        let after_genesis = |action: Action| {
+            let added = signed(founder, account, vec![root], action);
+            let log: BTreeMap<Digest, Vec<u8>> = [genesis.clone(), added]
+                .into_iter()
+                .map(|bytes| (operation_digest(&bytes), bytes))
+                .collect();
+            check(root, account, &log)
+        };
+        let consenting = |to: Digest| {
+            Action::AddRecovery(Recovery {
+                device: recovery.clone(),
+                consent: recovery_keys.sign(Label::RecoveryConsent, &to).unwrap(),
+            })
+        };
+        let misbound = after_genesis(consenting([9; 32]));
+        assert!(!misbound.member(&recovery.id()));
+        assert_eq!(misbound.recoveries(), Vec::<Digest>::new());
+        let plain = after_genesis(Action::Add(recovery.clone()));
+        assert!(plain.member(&recovery.id()));
+        assert_eq!(
+            plain.recoveries(),
+            Vec::<Digest>::new(),
+            "a plain addition carries no consent"
+        );
+        let consented = after_genesis(consenting(account));
+        assert_eq!(consented.recoveries(), [recovery.id()]);
+        assert_eq!(consented.keys.get(&recovery.id()), Some(&recovery));
     }
 
     #[test]

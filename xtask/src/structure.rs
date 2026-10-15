@@ -28,10 +28,11 @@ pub const DENIED: [&str; 10] = [
 ];
 
 /// The workspace members and the members each may depend on.
-pub const EDGES: [(&str, &[&str]); 11] = [
+pub const EDGES: [(&str, &[&str]); 12] = [
     ("youarel-core", &[]),
     ("youarel-crypto", &[]),
     ("youarel-html", &[]),
+    ("youarel-icon", &["youarel-core"]),
     ("youarel-link", &["youarel-core"]),
     ("youarel-protocol", &["youarel-core", "youarel-crypto"]),
     (
@@ -55,6 +56,7 @@ pub const EDGES: [(&str, &[&str]); 11] = [
             "youarel-core",
             "youarel-crypto",
             "youarel-html",
+            "youarel-icon",
             "youarel-link",
             "youarel-protocol",
             "youarel-relay",

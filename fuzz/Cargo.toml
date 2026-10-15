@@ -13,6 +13,7 @@ cargo-fuzz = true
 libfuzzer-sys = "0.4.13"
 youarel-core = { path = "../crates/youarel-core" }
 youarel-html = { path = "../crates/youarel-html" }
+youarel-icon = { path = "../crates/youarel-icon" }
 youarel-link = { path = "../crates/youarel-link" }
 youarel-release = { path = "../crates/youarel-release" }
 youarel-store = { path = "../crates/youarel-store" }
@@ -92,6 +93,13 @@ bench = false
 [[bin]]
 name = "recovery_key"
 path = "fuzz_targets/recovery_key.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "icon_normalize"
+path = "fuzz_targets/icon_normalize.rs"
 test = false
 doc = false
 bench = false

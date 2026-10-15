@@ -52,6 +52,13 @@ impl ItemId {
     }
 }
 
+/// The most bytes an icon's image holds, which a small square image fits many times over.
+pub const LONGEST_ICON: usize = 32 * 1024;
+
+/// The identifier of an icon: the digest of its image, which the shell computes, so one image keeps one identifier on every device.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Ord, PartialOrd, Hash)]
+pub struct IconId(pub [u8; 32]);
+
 /// A link the launcher opens.
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub struct Shortcut {
@@ -65,6 +72,8 @@ pub struct Shortcut {
     /// Its place among the folder's entries.
     pub position: Register<Key>,
     pub removed: Register<bool>,
+    /// The icon the shortcut shows, or `None` for none.
+    pub icon: Register<Option<IconId>>,
 }
 
 /// A folder of shortcuts and folders.
@@ -89,6 +98,7 @@ impl Shortcut {
             folder: self.folder.merge(&other.folder),
             position: self.position.merge(&other.position),
             removed: self.removed.merge(&other.removed),
+            icon: self.icon.merge(&other.icon),
         }
     }
 
@@ -100,6 +110,7 @@ impl Shortcut {
             self.folder.stamp,
             self.position.stamp,
             self.removed.stamp,
+            self.icon.stamp,
         ]
         .into_iter()
         .max()
@@ -132,11 +143,13 @@ impl Folder {
     }
 }
 
-/// Every shortcut and folder a replica holds, removed ones included.
+/// Every shortcut and folder a replica holds, removed ones included, and the images of their icons.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct State {
     pub shortcuts: BTreeMap<ItemId, Shortcut>,
     pub folders: BTreeMap<ItemId, Folder>,
+    /// The image of each icon a shortcut shows, which merges by the union of the identifiers.
+    pub icons: BTreeMap<IconId, Vec<u8>>,
 }
 
 /// An entry of a folder or of a search result.
@@ -192,6 +205,11 @@ pub enum Edit {
     /// Removes a shortcut, or a folder with everything it holds.
     Remove {
         entry: Entry,
+    },
+    /// Gives a shortcut an icon with its image, or none.
+    SetIcon {
+        id: ItemId,
+        icon: Option<(IconId, Vec<u8>)>,
     },
 }
 
@@ -260,14 +278,19 @@ fn write<T: Ord + Clone>(target: &mut Register<T>, value: T, stamp: Stamp) {
     *target = target.merge(&register(value, stamp));
 }
 
-fn merge_maps<V: Clone>(
-    left: &BTreeMap<ItemId, V>,
-    right: &BTreeMap<ItemId, V>,
+fn merge_maps<K: Ord + Copy, V: Clone>(
+    left: &BTreeMap<K, V>,
+    right: &BTreeMap<K, V>,
     merge: impl Fn(&V, &V) -> V,
-) -> BTreeMap<ItemId, V> {
-    let left: Vec<(ItemId, V)> = left.iter().map(|(id, item)| (*id, item.clone())).collect();
-    let right: Vec<(ItemId, V)> = right.iter().map(|(id, item)| (*id, item.clone())).collect();
+) -> BTreeMap<K, V> {
+    let left: Vec<(K, V)> = left.iter().map(|(id, item)| (*id, item.clone())).collect();
+    let right: Vec<(K, V)> = right.iter().map(|(id, item)| (*id, item.clone())).collect();
     merge_sorted(&left, &right, merge).into_iter().collect()
+}
+
+/// The greater of two images under one identifier, a join over the images' order, which settles even two images that a forger gave one identifier.
+fn greater_image(left: &Vec<u8>, right: &Vec<u8>) -> Vec<u8> {
+    left.max(right).clone()
 }
 
 impl State {
@@ -277,7 +300,28 @@ impl State {
         Self {
             shortcuts: merge_maps(&self.shortcuts, &other.shortcuts, Shortcut::merge),
             folders: merge_maps(&self.folders, &other.folders, Folder::merge),
+            icons: merge_maps(&self.icons, &other.icons, greater_image),
         }
+    }
+
+    /// The image of a live shortcut's icon, when the state holds it.
+    #[must_use]
+    pub fn icon(&self, id: ItemId) -> Option<&[u8]> {
+        let icon = self.shortcut(id)?.icon.value?;
+        self.icons.get(&icon).map(Vec::as_slice)
+    }
+
+    /// Drops every image that no live shortcut shows.
+    ///
+    /// A device prunes the state it keeps, never inside a merge: an image another replica still shows travels with that replica's state, so the union brings it back whenever a shortcut shows it again.
+    pub fn prune_icons(&mut self) {
+        let shown: BTreeSet<IconId> = self
+            .shortcuts
+            .values()
+            .filter(|shortcut| !shortcut.removed.value)
+            .filter_map(|shortcut| shortcut.icon.value)
+            .collect();
+        self.icons.retain(|icon, _| shown.contains(icon));
     }
 
     /// The latest stamp of any write, which the device's clock observes before its next edit.
@@ -432,6 +476,7 @@ impl State {
                         folder: register(folder, stamp),
                         position: register(position, stamp),
                         removed: register(false, stamp),
+                        icon: register(None, stamp),
                     },
                 );
             }
@@ -478,6 +523,25 @@ impl State {
                 self.move_entry(&context, entry, Destination { folder, slot })?;
             }
             Edit::Remove { entry } => self.remove(&tree, entry, stamp)?,
+            Edit::SetIcon { id, icon } => self.set_icon(id, icon, stamp)?,
+        }
+        Ok(())
+    }
+
+    fn set_icon(
+        &mut self,
+        id: ItemId,
+        icon: Option<(IconId, Vec<u8>)>,
+        stamp: Stamp,
+    ) -> Result<(), EditError> {
+        self.require(Entry::Shortcut(id))?;
+        let shown = icon.as_ref().map(|(icon, _)| *icon);
+        if let Some((icon, image)) = icon {
+            let held = self.icons.entry(icon).or_default();
+            *held = greater_image(held, &image);
+        }
+        if let Some(shortcut) = self.shortcuts.get_mut(&id) {
+            write(&mut shortcut.icon, shown, stamp);
         }
         Ok(())
     }
@@ -589,7 +653,7 @@ fn home(tree: &Tree, shortcut: &Shortcut) -> Option<ItemId> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Edit, EditError, Entry, ItemId, Slot, State};
+    use super::{Edit, EditError, Entry, IconId, ItemId, Slot, State};
     use crate::clock_rules::{DeviceId, Stamp};
     use alloc::string::String;
     use alloc::vec::Vec;
@@ -922,5 +986,91 @@ mod tests {
         let top: Vec<Entry> = merged.entries(&tree, None);
         assert_eq!(top, [Entry::Shortcut(id(2))]);
         assert_eq!(merged.folder_of(&tree, id(2)), None);
+    }
+
+    fn set_icon(state: &mut State, byte: u8, icon: Option<(u8, &[u8])>, stamp: Stamp) {
+        state
+            .apply(
+                Edit::SetIcon {
+                    id: id(byte),
+                    icon: icon.map(|(name, image)| (IconId([name; 32]), image.to_vec())),
+                },
+                stamp,
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn an_icon_travels_with_its_image_and_the_latest_choice_wins() {
+        let mut left = State::default();
+        add(&mut left, 1, None, 1);
+        let mut right = left.clone();
+        set_icon(&mut left, 1, Some((7, b"seven")), at(2, DEVICE));
+        assert_eq!(left.icon(id(1)), Some(&b"seven"[..]));
+        assert_eq!(left.latest(), Some(at(2, DEVICE)));
+        set_icon(&mut right, 1, Some((8, b"eight")), at(3, OTHER));
+        let merged = left.merge(&right);
+        assert_eq!(merged, right.merge(&left));
+        assert_eq!(merged.icon(id(1)), Some(&b"eight"[..]));
+        assert_eq!(merged.icons.len(), 2, "the merge keeps both images");
+        let mut kept = merged.clone();
+        kept.prune_icons();
+        assert_eq!(
+            kept.icons.keys().copied().collect::<Vec<_>>(),
+            [IconId([8; 32])]
+        );
+        assert_eq!(kept.icon(id(1)), merged.icon(id(1)));
+        set_icon(&mut kept, 1, None, at(4, DEVICE));
+        assert_eq!(kept.icon(id(1)), None);
+        kept.prune_icons();
+        assert_eq!(kept.icons.len(), 0);
+    }
+
+    #[test]
+    fn two_images_under_one_identifier_settle_on_the_greater_one() {
+        let mut left = State::default();
+        add(&mut left, 1, None, 1);
+        let mut right = left.clone();
+        set_icon(&mut left, 1, Some((7, b"a")), at(2, DEVICE));
+        set_icon(&mut right, 1, Some((7, b"b")), at(2, OTHER));
+        assert_eq!(left.merge(&right).icons, right.merge(&left).icons);
+        assert_eq!(left.merge(&right).icon(id(1)), Some(&b"b"[..]));
+        set_icon(&mut right, 1, Some((7, b"a")), at(3, OTHER));
+        assert_eq!(
+            right.icon(id(1)),
+            Some(&b"b"[..]),
+            "an edit keeps the greater image too"
+        );
+    }
+
+    #[test]
+    fn an_icon_holds_at_most_thirty_two_kibibytes() {
+        assert_eq!(super::LONGEST_ICON, 32 * 1024);
+    }
+
+    #[test]
+    fn a_removed_or_unknown_shortcut_shows_no_icon_and_takes_none() {
+        let mut state = State::default();
+        add(&mut state, 1, None, 1);
+        set_icon(&mut state, 1, Some((7, b"seven")), at(2, DEVICE));
+        state
+            .apply(
+                Edit::Remove {
+                    entry: Entry::Shortcut(id(1)),
+                },
+                at(3, DEVICE),
+            )
+            .unwrap();
+        assert_eq!(state.icon(id(1)), None);
+        state.prune_icons();
+        assert_eq!(state.icons.len(), 0, "a removed shortcut shows nothing");
+        let refused = state.apply(
+            Edit::SetIcon {
+                id: id(9),
+                icon: None,
+            },
+            at(4, DEVICE),
+        );
+        assert_eq!(refused, Err(EditError::Unknown(Entry::Shortcut(id(9)))));
     }
 }

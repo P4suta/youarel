@@ -96,6 +96,7 @@ multiple_crate_versions = "allow"
 youarel-core = { path = "crates/youarel-core" }
 youarel-crypto = { path = "crates/youarel-crypto" }
 youarel-html = { path = "crates/youarel-html" }
+youarel-icon = { path = "crates/youarel-icon" }
 youarel-link = { path = "crates/youarel-link" }
 youarel-protocol = { path = "crates/youarel-protocol" }
 youarel-release = { path = "crates/youarel-release" }
@@ -109,6 +110,14 @@ clap = { version = "4.6", features = ["derive", "wrap_help"] }
 flate2 = "1.1"
 keyring = "4.2"
 getrandom = "0.4"
+image = { version = "0.25.10", default-features = false, features = [
+  "bmp",
+  "gif",
+  "ico",
+  "jpeg",
+  "png",
+  "webp",
+] }
 libcrux-chacha20poly1305 = "0.0.10"
 libcrux-ed25519 = "0.0.10"
 libcrux-hkdf = "0.0.9"

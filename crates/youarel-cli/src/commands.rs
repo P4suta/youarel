@@ -1,10 +1,10 @@
 //! The commands of the `youarel` binary, each one locked session of the store.
 
 use crate::resolve::{self, describe};
-use crate::web;
+use crate::{icons, web};
 use anyhow::{Context, Result, anyhow};
 use std::io::Write as _;
-use youarel_core::state::{Edit, Entry, ItemId, Slot, State, Tree};
+use youarel_core::state::{Edit, Entry, IconId, ItemId, Slot, State, Tree};
 use youarel_core::ui_rules::{Row, Ui};
 use youarel_core::view;
 use youarel_html::bookmarks::{self, Item};
@@ -26,7 +26,7 @@ pub struct Addition {
     pub title: Option<String>,
     pub alias: Option<String>,
     pub folder: Option<String>,
-    /// Whether to fetch the page's title when none is given.
+    /// Whether to fetch the page for its title, when none is given, and for its icon.
     pub fetch: bool,
 }
 
@@ -44,19 +44,42 @@ fn session<R>(
     store.session(now, work).map_err(failed)
 }
 
-/// The title a new shortcut gets: the one given, else the page's own, else the link itself.
-fn title_for(link: &Link, addition: &Addition) -> (String, Option<String>) {
-    if let Some(title) = &addition.title {
-        return (title.clone(), None);
-    }
-    if addition.fetch {
-        match web::fetch_title(link) {
-            Ok(Some(title)) => return (title, None),
-            Ok(None) => {}
-            Err(error) => return (link.as_str().to_owned(), Some(format!("{error:#}"))),
+/// What a new shortcut gets from its page: its title, its icon, and what could not be read.
+struct Fetched {
+    title: String,
+    icon: Option<(IconId, Vec<u8>)>,
+    notes: Vec<String>,
+}
+
+/// The title a new shortcut gets, the one given, else the page's own, else the link itself, and the icon its page offers.
+fn fetched(link: &Link, addition: &Addition) -> Fetched {
+    let mut notes = Vec::new();
+    let page = if addition.fetch {
+        match web::fetch_page(link) {
+            Ok(page) => Some(page),
+            Err(error) => {
+                notes.push(format!("the page could not be read: {error:#}"));
+                None
+            }
         }
-    }
-    (link.as_str().to_owned(), None)
+    } else {
+        None
+    };
+    let title = addition
+        .title
+        .clone()
+        .or_else(|| page.as_ref().and_then(|page| page.title.clone()))
+        .unwrap_or_else(|| link.as_str().to_owned());
+    let icon = page
+        .as_ref()
+        .and_then(|page| match icons::fetch(link, page) {
+            Ok(icon) => Some(icon),
+            Err(error) => {
+                notes.push(format!("no icon: {error:#}"));
+                None
+            }
+        });
+    Fetched { title, icon, notes }
 }
 
 /// Adds a shortcut and reports what it holds; the folders of its path are made when they do not exist.
@@ -66,7 +89,7 @@ fn title_for(link: &Link, addition: &Addition) -> (String, Option<String>) {
 /// Returns an error when the link is not one a shortcut may hold, or the store fails.
 pub fn add(store: &Store, now: u64, link: &str, addition: &Addition) -> Result<String> {
     let link = Link::parse(link).with_context(|| format!("cannot add `{link}`"))?;
-    let (title, warning) = title_for(&link, addition);
+    let Fetched { title, icon, notes } = fetched(&link, addition);
     let message = session(store, now, |session| {
         let folder = match &addition.folder {
             Some(path) => folder_path(session, path)?,
@@ -85,16 +108,21 @@ pub fn add(store: &Store, now: u64, link: &str, addition: &Addition) -> Result<S
                 alias: alias.clone(),
             })?;
         }
+        if let Some(icon) = icon {
+            session.edit(Edit::SetIcon {
+                id,
+                icon: Some(icon),
+            })?;
+        }
         let tree = session.state().tree();
         Ok(format!(
             "added {}",
             describe(session.state(), &tree, Entry::Shortcut(id))
         ))
     })?;
-    Ok(match warning {
-        Some(warning) => format!("{message}\n(the title could not be read: {warning})"),
-        None => message,
-    })
+    Ok(notes
+        .iter()
+        .fold(message, |message, note| format!("{message}\n({note})")))
 }
 
 /// The state as it stands, read under the lock.

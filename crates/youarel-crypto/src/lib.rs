@@ -35,6 +35,7 @@ pub enum Label {
     Recovery,
     RecoveryCheck,
     RecoveryConsent,
+    Icon,
 }
 
 impl Label {
@@ -56,6 +57,7 @@ impl Label {
             Self::Recovery => "youarel/v1/recovery",
             Self::RecoveryCheck => "youarel/v1/recovery-check",
             Self::RecoveryConsent => "youarel/v1/recovery-consent",
+            Self::Icon => "youarel/v1/icon",
         }
     }
 }
@@ -187,6 +189,7 @@ mod tests {
             Label::Recovery,
             Label::RecoveryCheck,
             Label::RecoveryConsent,
+            Label::Icon,
         ];
         for (index, label) in labels.iter().enumerate() {
             assert!(label.text().starts_with("youarel/v1/"));

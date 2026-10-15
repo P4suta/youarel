@@ -227,6 +227,8 @@ impl Store {
         };
         let result = work(&mut session)?;
         if session.changed {
+            // The device keeps only the images its live shortcuts show; another replica's state brings back any it shows again.
+            session.state.prune_icons();
             let text = codec::encode(&session.state).map_err(StoreError::Encode)?;
             fs::replace(&self.directory.join(STATE_FILE), text.as_bytes())?;
         }
@@ -322,7 +324,7 @@ impl Session {
 #[cfg(test)]
 mod tests {
     use super::{DEVICE_FILE, STATE_FILE, Store, StoreError, VISITS_FILE};
-    use youarel_core::state::{Edit, Entry};
+    use youarel_core::state::{Edit, Entry, IconId};
 
     const NOW: u64 = 1_700_000_000_000;
 
@@ -456,5 +458,37 @@ mod tests {
             })
             .unwrap();
         assert_eq!(title.as_deref(), Some("renamed"));
+    }
+
+    #[test]
+    fn a_saved_state_keeps_only_the_icons_its_shortcuts_show() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::new(directory.path().to_path_buf());
+        let id = add(&store, "https://example.com/");
+        let icon = |byte| Some((IconId([byte; 32]), image(byte)));
+        for byte in [1, 2] {
+            store
+                .session(NOW, |session| {
+                    session.edit(Edit::SetIcon {
+                        id,
+                        icon: icon(byte),
+                    })
+                })
+                .unwrap();
+        }
+        let (kept, shown) = store
+            .session(NOW, |session| {
+                Ok((
+                    session.state().icons.keys().copied().collect::<Vec<_>>(),
+                    session.state().icon(id).map(<[u8]>::to_vec),
+                ))
+            })
+            .unwrap();
+        assert_eq!(kept, [IconId([2; 32])]);
+        assert_eq!(shown, Some(image(2)));
+    }
+
+    fn image(byte: u8) -> Vec<u8> {
+        vec![byte; 4]
     }
 }

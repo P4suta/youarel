@@ -10,9 +10,9 @@ exclude_re = [
   "proofs::",
   # Exempt as equivalent: `|` and `^` agree on bits that do not overlap.
   # The version and variant marks of an identifier sit above the random bits they join, a high nibble sits above a low one, and a code symbol's five bits join a value shifted left by five.
-  # Evidence: the tests of `ItemId::v7`, `unhex`, `Digest::parse`, and `Code::parse` fix every bit of their results.
+  # Evidence: the tests of `ItemId::v7`, the sync crate's `unhex`, the store's `unhex` over `from_hex`, `Digest::parse`, and `Code::parse` fix every bit of their results.
   # Reconsider when one of these joins operands that can share a bit.
-  "replace \\| with \\^ in (ItemId::v7|unhex|Digest::parse|Code::parse)",
+  "replace \\| with \\^ in (ItemId::v7|unhex|from_hex|Digest::parse|Code::parse)",
   # Exempt as equivalent: Crockford's base32 joins each new byte or symbol to a buffer it just shifted left by as many bits, so the two never share a bit.
   # Evidence: the tests of `crockford` read back every byte value and fix the symbols of known bytes.
   # Reconsider when either function joins its buffer without that shift.

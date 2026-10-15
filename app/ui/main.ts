@@ -6,6 +6,8 @@ interface RowView {
   readonly name: string;
   readonly detail: string;
   readonly alias: string;
+  /** The shortcut's icon as a `data:` address of its PNG, which the page's policy admits as an image alone. */
+  readonly icon: string | null;
 }
 
 interface View {
@@ -75,6 +77,18 @@ function cell(kind: string, text: string): HTMLSpanElement {
   return span;
 }
 
+/** The icon of a row, or an empty place of the same size that keeps the names aligned. */
+function picture(row: RowView): HTMLElement {
+  if (row.icon === null) {
+    return cell("icon", "");
+  }
+  const image = document.createElement("img");
+  image.className = "icon";
+  image.alt = "";
+  image.src = row.icon;
+  return image;
+}
+
 function draw(view: View): void {
   header.textContent = view.header;
   prompt.textContent = view.prompt;
@@ -84,7 +98,7 @@ function draw(view: View): void {
     const item = document.createElement("li");
     item.className = row.kind;
     item.setAttribute("aria-selected", String(index === view.selected));
-    item.append(cell("name", row.name), cell("detail", row.detail));
+    item.append(picture(row), cell("name", row.name), cell("detail", row.detail));
     if (row.alias !== "") {
       item.append(cell("alias", `[${row.alias}]`));
     }

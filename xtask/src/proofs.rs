@@ -53,10 +53,11 @@ const MIRI_TARGET: &str = "target/miri";
 const MIRI_PROFILE: &str = "miri";
 const MUTANTS_OUTPUT: &str = "target/proofs/mutants";
 /// The crates the mutation campaign runs over, each judged by its own tests alone.
-const MUTANT_PACKAGES: [&str; 9] = [
+const MUTANT_PACKAGES: [&str; 10] = [
     "youarel-core",
     "youarel-link",
     "youarel-html",
+    "youarel-icon",
     "youarel-release",
     "youarel-store",
     "youarel-crypto",

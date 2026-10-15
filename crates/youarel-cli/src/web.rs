@@ -1,12 +1,13 @@
-//! The ways youarel reaches the web: it opens a shortcut in the default browser, reads a page's title once when the shortcut is added, and downloads a release when it updates itself.
+//! The ways youarel reaches the web: it opens a shortcut in the default browser, reads a page's title and icon when the shortcut is added, and downloads a release when it updates itself.
 
 use anyhow::{Context, Result, bail};
 use std::sync::Arc;
 use std::time::Duration;
+use youarel_html::icon::icons_of;
 use youarel_html::title::title_of;
 use youarel_link::Link;
 
-/// How long a title fetch may take in all, redirects included.
+/// How long a fetch of a page or an icon may take in all, redirects included.
 pub const FETCH_TIMEOUT: Duration = Duration::from_secs(5);
 /// How long a release download may take in all, redirects included.
 pub const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(300);
@@ -84,12 +85,19 @@ fn body(response: &mut ureq::http::Response<ureq::Body>, url: &str, limit: u64) 
     }
 }
 
-/// The title the page at `link` declares, or `None` when it is no HTML page or declares none.
+/// What a page declares: its title, and the addresses of its icons as the page writes them.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct Page {
+    pub title: Option<String>,
+    pub icons: Vec<String>,
+}
+
+/// What the page at `link` declares, or nothing when it is no HTML page.
 ///
 /// # Errors
 ///
 /// Returns an error when the page cannot be fetched within the limits.
-pub fn fetch_title(link: &Link) -> Result<Option<String>> {
+pub fn fetch_page(link: &Link) -> Result<Page> {
     let mut response = agent(FETCH_TIMEOUT)
         .get(link.as_str())
         .call()
@@ -101,10 +109,31 @@ pub fn fetch_title(link: &Link) -> Result<Option<String>> {
             .is_some_and(|start| start.eq_ignore_ascii_case(HTML_TYPE))
     });
     if !html {
-        return Ok(None);
+        return Ok(Page::default());
     }
     let bytes = body(&mut response, link.as_str(), BODY_LIMIT)?;
-    Ok(title_of(&String::from_utf8_lossy(&bytes)))
+    let text = String::from_utf8_lossy(&bytes);
+    Ok(Page {
+        title: title_of(&text),
+        icons: icons_of(&text),
+    })
+}
+
+/// The image at an admitted `link`, no more than an icon's source may hold.
+///
+/// # Errors
+///
+/// Returns an error when the image cannot be fetched within the limits.
+pub fn fetch_image(link: &Link) -> Result<Vec<u8>> {
+    let mut response = agent(FETCH_TIMEOUT)
+        .get(link.as_str())
+        .call()
+        .with_context(|| format!("cannot fetch {link}"))?;
+    body(
+        &mut response,
+        link.as_str(),
+        u64::try_from(youarel_icon::LONGEST_SOURCE)?,
+    )
 }
 
 /// The bytes at `url`, no more than `limit`, for a release download.

@@ -3,8 +3,12 @@
 //! Nothing here touches the webview, so the tests drive it as the window would.
 
 use anyhow::Result;
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD as BASE64;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use youarel_cli::shell::{self, Kind, Outcome};
+use youarel_core::state::IconId;
 use youarel_core::ui_rules::{Effect, Event, Key, Ui, step};
 use youarel_store::Store;
 
@@ -52,6 +56,13 @@ pub struct RowView {
     pub name: String,
     pub detail: String,
     pub alias: String,
+    /// The shortcut's icon as a `data:` address of its PNG, or none.
+    pub icon: Option<String>,
+}
+
+/// The `data:` address of an icon's PNG, which the window's policy admits as an image and nothing else.
+fn data_address(image: &[u8]) -> String {
+    format!("data:image/png;base64,{}", BASE64.encode(image))
 }
 
 /// What the window draws.
@@ -91,6 +102,8 @@ pub struct Launcher {
     store: Store,
     ui: Ui,
     notice: Option<String>,
+    /// Each icon the window has shown, drawn again by youarel's own decoder, or `None` for one that does not draw.
+    drawn: BTreeMap<IconId, Option<String>>,
 }
 
 impl Launcher {
@@ -100,7 +113,20 @@ impl Launcher {
             store,
             ui: Ui::default(),
             notice: None,
+            drawn: BTreeMap::new(),
         }
+    }
+
+    /// The `data:` address of an icon, drawn again first, so the webview's decoders only ever read an image youarel encoded, whichever member sent it.
+    fn picture(&mut self, icon: IconId, image: &[u8]) -> Option<String> {
+        self.drawn
+            .entry(icon)
+            .or_insert_with(|| {
+                // An image that does not draw shows as no icon, as a shortcut without one does.
+                youarel_icon::normalize(image)
+                    .map_or_else(|_undrawable| None, |redrawn| Some(data_address(&redrawn)))
+            })
+            .clone()
     }
 
     /// Starts over, as the window does each time it appears.
@@ -117,22 +143,23 @@ impl Launcher {
     pub fn view(&mut self) -> Result<View> {
         let screen = shell::load(&self.store, &self.ui)?;
         self.ui = step(&self.ui, &screen.rows, &Event::Refresh).0;
+        let mut rows = Vec::with_capacity(screen.rows.len());
+        for row in &screen.rows {
+            let text = shell::row_text(&screen.state, row);
+            let icon = shell::row_icon(&screen.state, row)
+                .and_then(|(icon, image)| self.picture(icon, image));
+            rows.push(RowView {
+                kind: kind(text.kind),
+                name: text.name,
+                detail: text.detail,
+                alias: text.alias,
+                icon,
+            });
+        }
         Ok(View {
             header: shell::header(&self.ui, &screen.state),
             prompt: shell::prompt(&self.ui, &screen.state),
-            rows: screen
-                .rows
-                .iter()
-                .map(|row| {
-                    let text = shell::row_text(&screen.state, row);
-                    RowView {
-                        kind: kind(text.kind),
-                        name: text.name,
-                        detail: text.detail,
-                        alias: text.alias,
-                    }
-                })
-                .collect(),
+            rows,
             selected: self.ui.selected,
             footer: self
                 .notice
@@ -212,6 +239,7 @@ impl Launcher {
 #[cfg(test)]
 mod tests {
     use super::{After, Launcher, Press, View, key};
+    use youarel_core::state::{Edit, IconId};
     use youarel_core::ui_rules::Key;
     use youarel_store::Store;
 
@@ -299,5 +327,48 @@ mod tests {
         assert_eq!(cleared.prompt, "> ", "the first escape clears the query");
         assert_eq!(launcher.press(&press("Escape")).unwrap(), After::Hide);
         assert_eq!(launcher.view().unwrap().prompt, "> ");
+    }
+
+    #[test]
+    fn the_window_shows_each_icon_drawn_again_and_none_for_an_image_that_does_not_draw() {
+        const PNG: &[u8] = include_bytes!("../icons/32x32.png");
+        let home = tempfile::tempdir().unwrap();
+        let store = Store::new(home.path().to_path_buf());
+        store
+            .session(1, |session| {
+                for (link, image) in [
+                    ("https://drawn.example/", PNG),
+                    ("https://broken.example/", &b"not an image"[..]),
+                ] {
+                    let id = session.fresh_id()?;
+                    session.edit(Edit::AddShortcut {
+                        id,
+                        link: link.to_owned(),
+                        title: link.to_owned(),
+                        folder: None,
+                    })?;
+                    session.edit(Edit::SetIcon {
+                        id,
+                        icon: Some((IconId([image.len().to_le_bytes()[0]; 32]), image.to_vec())),
+                    })?;
+                }
+                Ok(())
+            })
+            .unwrap();
+        let mut launcher = Launcher::new(store);
+        let view = launcher.view().unwrap();
+        let icon = |name: &str| {
+            view.rows
+                .iter()
+                .find(|row| row.name == name)
+                .map(|row| row.icon.clone())
+        };
+        let redrawn = youarel_icon::normalize(PNG).unwrap();
+        assert_eq!(
+            icon("https://drawn.example/"),
+            Some(Some(super::data_address(&redrawn)))
+        );
+        assert_eq!(icon("https://broken.example/"), Some(None));
+        assert_eq!(launcher.view().unwrap(), view, "a drawn icon stays drawn");
     }
 }

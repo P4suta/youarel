@@ -57,6 +57,16 @@ path = "crates/youarel-crypto/src/recovery.rs"
 by = "fuzz/fuzz_targets/recovery_key.rs"
 
 [[owner]]
+shape = "parser"
+path = "crates/youarel-html/src/icon.rs"
+by = "fuzz/fuzz_targets/page_title.rs"
+
+[[owner]]
+shape = "parser"
+path = "crates/youarel-icon/src/lib.rs"
+by = "fuzz/fuzz_targets/icon_normalize.rs"
+
+[[owner]]
 shape = "protocol"
 path = "crates/youarel-core/src/ui_rules.rs"
 by = "crates/youarel-cli/tests/ui_replay.rs"

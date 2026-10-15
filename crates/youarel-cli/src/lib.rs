@@ -5,6 +5,7 @@
 pub mod clock;
 pub mod commands;
 pub mod home;
+pub mod icons;
 pub mod resolve;
 pub mod shell;
 pub mod sync;

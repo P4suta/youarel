@@ -27,6 +27,7 @@ ureq.workspace = true
 webbrowser.workspace = true
 youarel-core.workspace = true
 youarel-html.workspace = true
+youarel-icon.workspace = true
 youarel-link.workspace = true
 youarel-release.workspace = true
 youarel-store.workspace = true
@@ -40,6 +41,7 @@ url.workspace = true
 youarel-relay = { workspace = true, features = ["local"] }
 minisign.workspace = true
 tempfile.workspace = true
+tiny_http.workspace = true
 
 [lints]
 workspace = true

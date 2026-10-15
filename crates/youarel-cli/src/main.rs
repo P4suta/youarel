@@ -95,6 +95,8 @@ enum Command {
     },
     /// Show the window launcher's window, or hide it, for a desktop shortcut where the launcher cannot hold its own.
     Toggle,
+    /// Fetch the icon of every shortcut that shows none, such as the ones a bookmark file brought.
+    Icons,
     /// Replace this program with the latest release, when its signed manifest offers a newer one.
     SelfUpdate {
         /// Install the latest release even when it is older than the highest version this device reached.
@@ -287,6 +289,7 @@ fn run(cli: Cli) -> Result<()> {
             sync::recover(&store, now, &read_key()?, source.source()?)?
         }
         Some(Command::Toggle) => vec![youarel_cli::window::toggle()?],
+        Some(Command::Icons) => youarel_cli::icons::fill(&store, now)?,
         Some(Command::SelfUpdate { allow_downgrade }) => {
             let consent = if allow_downgrade {
                 Consent::Downgrade

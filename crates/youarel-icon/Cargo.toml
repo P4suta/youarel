@@ -1,0 +1,20 @@
+[package]
+name = "youarel-icon"
+description = "The icons youarel shows: an image in a common format, decoded within bounds and drawn again as one small PNG"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+authors.workspace = true
+readme.workspace = true
+repository.workspace = true
+keywords = ["bookmarks", "launcher", "icon"]
+categories = ["multimedia::images"]
+
+[dependencies]
+image.workspace = true
+youarel-core.workspace = true
+
+[lints]
+workspace = true

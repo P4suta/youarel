@@ -2,7 +2,7 @@
 
 ## What it protects
 
-- The links, titles, aliases, and folder names of an account.
+- The links, titles, aliases, icons, and folder names of an account.
 - Which device opened which shortcut, and how often, which never leaves the device.
 - The account's keys, which never leave its devices except inside a pairing or a key slot.
 
@@ -15,6 +15,7 @@
 - **A removed device.** The rotation that follows a removal gives the remaining members a key the removed device never sees, and its later bundles are refused because it is no longer a member.
 - **Someone who intercepts a pairing.** The PAKE gives them no offline test of the code, so each forged message is one guess against forty bits, and the invitation then expires.
 - **Anyone who replays a request to the relay, or sends one as a member it is not.** The relay admits a request once, within two minutes of its time, and only under the signature of a device the account's log lists.
+- **A site or a member that sends a crafted image as an icon.** The adding device decodes a site's image with a memory-safe decoder under limits, and the window launcher draws every icon again the same way before its webview shows it.
 - **A former member that steers a recovery to its own account.** It knows the recovery member's public keys from the log, so it can list them in an account it founds, and the relay's directory answers anyone; a recovering device joins only an account whose log holds the recovery member's own consent to it.
 
 ## What it does not resist

@@ -3,11 +3,12 @@
 //! A launcher reads its own input, asks [`step`](youarel_core::ui_rules::step) what it means, and hands the effect to [`carry_out`], which acts through the store and the browser.
 //! The texts here are what either launcher shows for the interface; each draws them its own way and decides nothing the machine decides.
 
-use crate::{clock, web};
+use crate::web::Page;
+use crate::{clock, icons, web};
 use anyhow::Result;
 use std::collections::BTreeMap;
 use youarel_core::rank_rules::Visits;
-use youarel_core::state::{Edit, Entry, ItemId, Slot, State};
+use youarel_core::state::{Edit, Entry, IconId, ItemId, Slot, State};
 use youarel_core::ui_rules::{Effect, Field, Mode, Row, Ui};
 use youarel_core::view;
 use youarel_link::Link;
@@ -16,7 +17,7 @@ use youarel_store::Store;
 /// The key hints a launcher shows while browsing.
 pub const HINTS: &str = "Enter open · → ← folders · ^E rename · ^L alias · ^D remove · ^O new folder · ^X ^V move · Shift ↑↓ reorder · Esc quit";
 /// The notice while the page of a link to add is read.
-pub const READING_TITLE: &str = "reading the page's title…";
+pub const READING_TITLE: &str = "reading the page's title and icon…";
 
 /// What a launcher shows: the state as read, and the rows for the interface.
 #[derive(Debug)]
@@ -178,13 +179,21 @@ fn add(store: &Store, folder: Option<ItemId>, text: &str) -> Outcome {
         Ok(link) => link,
         Err(error) => return Outcome::Continue(Some(format!("cannot add {text}: {error:#}"))),
     };
-    let (title, warning) = match web::fetch_title(&link) {
-        Ok(Some(title)) => (title, None),
-        Ok(None) => (link.as_str().to_owned(), None),
+    let page = web::fetch_page(&link);
+    let (title, warning) = match &page {
+        Ok(Page {
+            title: Some(title), ..
+        }) => (title.clone(), None),
+        Ok(Page { title: None, .. }) => (link.as_str().to_owned(), None),
         Err(error) => (
             link.as_str().to_owned(),
             Some(format!(" (no title: {error:#})")),
         ),
+    };
+    // A shortcut without an icon still opens, so the notice only mentions a missing icon.
+    let (icon, missing) = match page.as_ref().map(|page| icons::fetch(&link, page)) {
+        Ok(Ok(icon)) => (Some(icon), ""),
+        Ok(Err(_)) | Err(_) => (None, " (no icon)"),
     };
     let added = clock::now().and_then(|now| {
         store
@@ -195,12 +204,19 @@ fn add(store: &Store, folder: Option<ItemId>, text: &str) -> Outcome {
                     link: link.as_str().to_owned(),
                     title: title.clone(),
                     folder,
-                })
+                })?;
+                if let Some(icon) = icon {
+                    session.edit(Edit::SetIcon {
+                        id,
+                        icon: Some(icon),
+                    })?;
+                }
+                Ok(())
             })
             .map_err(anyhow::Error::from)
     });
     Outcome::Continue(Some(match added {
-        Ok(()) => format!("added {title}{}", warning.unwrap_or_default()),
+        Ok(()) => format!("added {title}{}{missing}", warning.unwrap_or_default()),
         Err(error) => format!("{error:#}"),
     }))
 }
@@ -262,6 +278,18 @@ pub fn row_text(state: &State, row: &Row) -> RowText {
                 )
             },
         ),
+    }
+}
+
+/// The icon of a row and its image, for a launcher that draws pictures.
+#[must_use]
+pub fn row_icon<'a>(state: &'a State, row: &Row) -> Option<(IconId, &'a [u8])> {
+    match row {
+        Row::Entry(Entry::Shortcut(id)) => {
+            let icon = state.shortcut(*id)?.icon.value?;
+            state.icon(*id).map(|image| (icon, image))
+        }
+        Row::Entry(Entry::Folder(_)) | Row::Parent(_) | Row::Add(_) => None,
     }
 }
 

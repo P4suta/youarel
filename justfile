@@ -20,6 +20,21 @@ check-staged: trust
 push-check: trust
     mise x -- cargo xtask push-check
 
+# The checks that depend on the operating system, on the Linux host over the current files, uncommitted edits included.
+check-linux:
+    domyjob run linux --wait -- /bin/bash -lc 'export MISE_TRUSTED_CONFIG_PATHS="$PWD" RUSTC_WRAPPER=; mise x -- cargo xtask check --platform'
+
+# The checks that depend on the operating system, on the Windows host over the current files, uncommitted edits included.
+check-win:
+    domyjob run win --wait -- powershell.exe -NoProfile -Command '$env:MISE_TRUSTED_CONFIG_PATHS=(Get-Location).Path; $env:RUSTC_WRAPPER=""; mise x -- cargo xtask check --platform; exit $LASTEXITCODE'
+
+# The checks that depend on the operating system, on every other host.
+check-fleet: check-linux check-win
+
+# The proofs a hosted Linux runner repeats, on the Linux host over the current files.
+proofs-linux:
+    domyjob run linux --wait -- /bin/bash -lc 'export MISE_TRUSTED_CONFIG_PATHS="$PWD" RUSTC_WRAPPER=; mise x -- just proofs-ci'
+
 # The pure core keeps its boundary and every crate keeps its place.
 structure: trust
     mise x -- cargo xtask structure

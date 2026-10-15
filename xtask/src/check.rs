@@ -14,6 +14,8 @@ pub enum Scope {
     Everything,
     /// The staged files alone, as the pre-commit hook sees them.
     Staged,
+    /// The checks whose outcome depends on the operating system, for a host that receives the files without their Git history.
+    Platform,
 }
 
 const WORKFLOWS: &str = ".github/workflows";
@@ -256,6 +258,18 @@ fn staged(root: &Path) -> Result<()> {
     report.finish("check --staged")
 }
 
+/// The compiler, the lints under the host's configuration, the structure, the bare build, and the tests.
+///
+/// Formatting, spelling, the records, the generated files, and the workflows read the same bytes on every host and need the Git history, so the full check covers them.
+fn platform(root: &Path) -> Result<()> {
+    let mut report = Report::default();
+    report.stage("clippy", || clippy(root));
+    report.stage("structure", || structure::check(root));
+    report.stage("bare", || bare(root));
+    report.stage("tests", || tests(root));
+    report.finish("check --platform")
+}
+
 /// Runs the checks of one scope and reports every failure together.
 ///
 /// # Errors
@@ -265,6 +279,7 @@ pub fn run(root: &Path, scope: Scope) -> Result<()> {
     match scope {
         Scope::Everything => everything(root),
         Scope::Staged => staged(root),
+        Scope::Platform => platform(root),
     }
 }
 

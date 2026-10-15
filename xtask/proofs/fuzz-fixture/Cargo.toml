@@ -1,0 +1,23 @@
+# A cargo-fuzz target whose committed corpus makes it panic, which the corpus replay must refuse, so the replay shows it can fail.
+[package]
+name = "fuzz-fixture"
+version = "0.0.0"
+edition = "2024"
+publish = false
+license = "MIT OR Apache-2.0"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4.13"
+
+[[bin]]
+name = "crash"
+path = "fuzz_targets/crash.rs"
+test = false
+doc = false
+bench = false
+
+[workspace]
+members = ["."]

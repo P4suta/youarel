@@ -1,0 +1,15 @@
+{
+  $schema: 'https://docs.renovatebot.com/renovate-schema.json',
+  // The shared preset holds the schedule, grouping, digest pins, and automerge policy.
+  extends: ['github>P4suta/renovate-config'],
+  // A release waits three days before Renovate proposes it, so a pulled release never reaches a host.
+  minimumReleaseAge: '3 days',
+  enabledManagers: ['github-actions', 'mise', 'cargo'],
+  packageRules: [
+    {
+      matchUpdateTypes: ['major'],
+      automerge: false,
+      labels: ['breaking-change'],
+    },
+  ],
+}

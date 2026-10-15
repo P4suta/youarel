@@ -1,0 +1,7 @@
+/target/
+/fuzz/target/
+/fuzz/artifacts/
+/fuzz/coverage/
+/xtask/proofs/*/target/
+/xtask/proofs/*/artifacts/
+/mutants.out*/

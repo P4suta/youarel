@@ -1,0 +1,12 @@
+# A harness that asserts a false claim, which the Kani gate must refuse, so the gate shows it can fail.
+[package]
+name = "kani-negative"
+version = "0.0.0"
+edition = "2024"
+publish = false
+license = "MIT OR Apache-2.0"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
+
+[workspace]

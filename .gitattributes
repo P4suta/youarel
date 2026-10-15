@@ -1,0 +1,3 @@
+* text=auto eol=lf
+fuzz/corpus/** binary
+xtask/proofs/*/corpus/** binary

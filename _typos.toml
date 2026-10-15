@@ -1,0 +1,10 @@
+[default]
+extend-ignore-identifiers-re = ["[A-Fa-f0-9]{7,}"]
+
+[default.extend-words]
+Yasunobu = "Yasunobu"
+youarel = "youarel"
+ratatui = "ratatui"
+
+[files]
+extend-exclude = ["target/", "*.lock", "fuzz/corpus/", "xtask/proofs/*/corpus/"]

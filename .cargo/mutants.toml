@@ -1,0 +1,11 @@
+# cargo-mutants reads this file, and `just proofs` runs one campaign per pure crate with `--package` and `--test-package`.
+# Fixed timeouts keep the outcome independent of how fast a host runs the unmutated tests.
+timeout_multiplier = 3.0
+minimum_test_timeout = 20.0
+exclude_re = [
+  # Exempt as no-decision: each `proofs` module holds only the specifications and harnesses that test the rules.
+  # The probes of the proof gate show they fail when weakened.
+  # Evidence: `xtask/src/proofs.rs`.
+  # Reconsider when a rule module keeps production code in `proofs`.
+  "proofs::",
+]

@@ -1,0 +1,16 @@
+[package]
+name = "youarel-core"
+description = "The pure decision core of youarel, which reaches no file, process, network, clock, or environment"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+authors.workspace = true
+readme.workspace = true
+repository.workspace = true
+keywords = ["bookmarks", "launcher", "url"]
+categories = ["no-std"]
+
+[lints]
+workspace = true

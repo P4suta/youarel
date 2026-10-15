@@ -1,0 +1,20 @@
+[package]
+name = "youarel-link"
+description = "Links as people type or paste them, parsed by the WHATWG URL standard and admitted by the youarel core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+authors.workspace = true
+readme.workspace = true
+repository.workspace = true
+keywords = ["bookmarks", "launcher", "url"]
+categories = ["parser-implementations"]
+
+[dependencies]
+url.workspace = true
+youarel-core.workspace = true
+
+[lints]
+workspace = true

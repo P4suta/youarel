@@ -1,0 +1,13 @@
+# Every verification obligation of this repository, which `just proofs` discharges and `just check` holds to the source.
+# Each rule module of crates/youarel-core has one Kani obligation: every harness it defines must pass with the covers it declares, and every `rejects_*` probe must fail on its named assertion.
+# A harness names its contract, the inputs it admits, and the bound it proves to, so a reader can tell a complete proof from a bounded one.
+
+[[obligation]]
+verifier = "kani"
+source = "crates/youarel-core/src/link_rules.rs"
+harnesses = [
+  { name = "proofs::only_web_links_with_a_host_are_admitted", covers = 4, contract = "admit returns a scheme only for exactly `http` or `https` with a non-empty host, returns the matching scheme for every such link, and refuses any other scheme before it reads the host", input_domain = "every UTF-8 scheme of up to six bytes and a host that is absent, empty, or a name", bound = "six bytes; a longer scheme differs from `http` and `https` in its length alone" },
+]
+probes = [
+  { harness = "proofs::rejects_a_file_link_as_admitted", assertion = "NEGATIVE_LINK_CONTROL" },
+]

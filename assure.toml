@@ -1,0 +1,20 @@
+# What owns each code shape that the shape catalog of `~/.config/assure/shapes.toml` finds in this repository, and the budgets no change may weaken.
+# Each rule module of crates/youarel-core owns its decisions through its own Kani harnesses, so only the other shapes need an entry.
+
+[[owner]]
+shape = "parser"
+path = "crates/youarel-link/src/lib.rs"
+by = "fuzz/fuzz_targets/link_parse.rs"
+
+[[budget]]
+name = "unsafe-sites"
+ceiling = 0
+
+# The mutation campaign of `just proofs` over the pure crates leaves no mutant alive and none timed out.
+[[budget]]
+name = "mutants-missed"
+ceiling = 0
+
+[[budget]]
+name = "mutants-timed-out"
+ceiling = 0

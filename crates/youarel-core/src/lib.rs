@@ -28,4 +28,5 @@ pub mod rank_rules;
 pub mod state;
 pub mod tree_rules;
 pub mod ui_rules;
+pub mod update_rules;
 pub mod view;

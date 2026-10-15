@@ -45,13 +45,15 @@ pub enum StoreError {
     Clock,
 }
 
+/// The failure in a sentence; an underlying error is the source, which a chain of errors prints next.
 impl core::fmt::Display for StoreError {
     fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::File(error) => write!(formatter, "{error}"),
-            Self::Decode { path, error } => write!(formatter, "{}: {error}", path.display()),
-            Self::Local { path, error } => write!(formatter, "{}: {error}", path.display()),
-            Self::Encode(error) => write!(formatter, "cannot write the state: {error}"),
+            Self::Decode { path, .. } | Self::Local { path, .. } => {
+                write!(formatter, "cannot read {}", path.display())
+            }
+            Self::Encode(_) => formatter.write_str("cannot write the state"),
             Self::Random(error) => write!(formatter, "no randomness for a new identifier: {error}"),
             Self::Edit(error) => write!(formatter, "{}", describe(*error)),
             Self::Clock => formatter.write_str("the clock has no stamp left"),
@@ -72,7 +74,8 @@ const fn describe(error: EditError) -> &'static str {
 impl std::error::Error for StoreError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Self::File(error) => Some(error),
+            // The file error is this error's own sentence, so its reason comes next.
+            Self::File(error) => std::error::Error::source(error),
             Self::Decode { error, .. } => Some(error),
             Self::Local { error, .. } | Self::Encode(error) => Some(error),
             Self::Random(_) | Self::Edit(_) | Self::Clock => None,
@@ -336,6 +339,30 @@ mod tests {
                 Ok(id)
             })
             .unwrap()
+    }
+
+    #[test]
+    fn a_merged_replica_persists_and_the_session_runs_at_its_time() {
+        let directory = tempfile::tempdir().unwrap();
+        let mine = Store::new(directory.path().join("mine"));
+        let theirs = Store::new(directory.path().join("theirs"));
+        let shared = add(&theirs, "https://example.net/");
+        let other = theirs
+            .session(NOW, |session| Ok(session.state().clone()))
+            .unwrap();
+        let now = mine
+            .session(NOW + 7, |session| {
+                session.merge(&other);
+                Ok(session.now())
+            })
+            .unwrap();
+        assert_eq!(now, NOW + 7);
+        let held = mine
+            .session(NOW + 8, |session| {
+                Ok(session.state().shortcut(shared).is_some())
+            })
+            .unwrap();
+        assert!(held, "the merged shortcut was written");
     }
 
     #[test]

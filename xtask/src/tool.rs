@@ -13,15 +13,30 @@ pub const KANI_VERSION: &str = "0.68.0";
 pub const MUTANTS_VERSION: &str = "27.1.0";
 pub const FUZZ_VERSION: &str = "0.13.2";
 
+/// The macOS tools of a release, by the fixed system paths that no `PATH` can redirect.
+pub const SECURITY: &str = "/usr/bin/security";
+pub const CODESIGN: &str = "/usr/bin/codesign";
+pub const PRODUCTSIGN: &str = "/usr/bin/productsign";
+pub const PKGBUILD: &str = "/usr/bin/pkgbuild";
+pub const PRODUCTBUILD: &str = "/usr/bin/productbuild";
+pub const PKGUTIL: &str = "/usr/sbin/pkgutil";
+pub const XCRUN: &str = "/usr/bin/xcrun";
+pub const SPCTL: &str = "/usr/sbin/spctl";
+
 mod raw {
     #![expect(
         clippy::disallowed_methods,
         reason = "the repository tasks' one process owner constructs each command in a single statement"
     )]
 
+    use std::path::Path;
     use std::process::Command;
 
     pub(super) fn command(program: &str) -> Command {
+        Command::new(program)
+    }
+
+    pub(super) fn command_path(program: &Path) -> Command {
         Command::new(program)
     }
 }
@@ -41,6 +56,20 @@ pub enum Tool {
     Dotfiles,
     /// Docker, which hosts the proof gate with a memory limit on a workstation.
     Docker,
+    Rustc,
+    /// The GitHub CLI, which publishes a release.
+    Gh,
+    /// PowerShell, which checks an Authenticode signature on Windows.
+    Pwsh,
+    /// The macOS tools of a release, by their fixed system paths.
+    Security,
+    Codesign,
+    Productsign,
+    Pkgbuild,
+    Productbuild,
+    Pkgutil,
+    Xcrun,
+    Spctl,
 }
 
 impl Tool {
@@ -55,6 +84,17 @@ impl Tool {
             Self::Git => "git",
             Self::Dotfiles => "dotfiles",
             Self::Docker => "docker",
+            Self::Rustc => "rustc",
+            Self::Gh => "gh",
+            Self::Pwsh => "pwsh",
+            Self::Security => SECURITY,
+            Self::Codesign => CODESIGN,
+            Self::Productsign => PRODUCTSIGN,
+            Self::Pkgbuild => PKGBUILD,
+            Self::Productbuild => PRODUCTBUILD,
+            Self::Pkgutil => PKGUTIL,
+            Self::Xcrun => XCRUN,
+            Self::Spctl => SPCTL,
         }
     }
 
@@ -68,6 +108,14 @@ impl Tool {
         }
         command
     }
+}
+
+/// A command for a program the tasks built, such as a release candidate, run from `root`.
+#[must_use]
+pub fn built(root: &Path, program: &Path) -> Command {
+    let mut command = raw::command_path(program);
+    command.current_dir(root);
+    command
 }
 
 /// Runs a command with inherited streams and requires success.

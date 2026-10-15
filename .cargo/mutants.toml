@@ -8,4 +8,15 @@ exclude_re = [
   # Evidence: `xtask/src/proofs.rs`.
   # Reconsider when a rule module keeps production code in `proofs`.
   "proofs::",
+  # Exempt as equivalent: `|` and `^` agree on bits that do not overlap.
+  # The version and variant marks of an identifier sit above the random bits they join, and a high nibble sits above a low one.
+  # Evidence: the tests of `ItemId::v7`, `unhex`, and `Digest::parse` fix every bit of their results.
+  # Reconsider when one of these joins operands that can share a bit.
+  "replace \\| with \\^ in (ItemId::v7|unhex|Digest::parse)",
+]
+exclude_globs = [
+  # Exempt as other-platform: the campaign runs on Linux, which never builds this Windows-only code, so its mutants would pass unbuilt.
+  # Evidence: `just check-win` runs the program replacement test on Windows.
+  # Reconsider when the campaign runs on a Windows host too.
+  "crates/youarel-store/src/fs/windows.rs",
 ]

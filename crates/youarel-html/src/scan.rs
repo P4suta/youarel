@@ -123,7 +123,11 @@ fn attribute_value(after_equals: &str) -> (&str, &str) {
 fn attributes(inside: &str) -> Vec<(String, String)> {
     let mut found = Vec::new();
     let mut rest = inside.trim_start();
-    while !rest.is_empty() {
+    // Every step consumes at least one byte, so no more steps run than the inside has bytes.
+    for _ in 0..inside.len() {
+        if rest.is_empty() {
+            break;
+        }
         let name_end = rest
             .find(|character: char| {
                 character.is_whitespace() || character == '=' || character == '/'
@@ -215,6 +219,12 @@ mod tests {
         );
         assert_eq!(decode("日本&#26085;"), "日本日");
         assert_eq!(decode(&escape("<\"&>")), "<\"&>");
+        assert_eq!(decode("&apos;&nbsp;"), "'\u{a0}");
+    }
+
+    #[test]
+    fn escaping_covers_every_character_that_ends_text() {
+        assert_eq!(escape("a&b<c>d\"e'f"), "a&amp;b&lt;c&gt;d&quot;e'f");
     }
 
     #[test]

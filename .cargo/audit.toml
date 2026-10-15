@@ -1,0 +1,8 @@
+# The advisories `cargo audit` accepts, each with the reason and the condition that ends the exception.
+[advisories]
+ignore = [
+  # proc-macro-error2 is unmaintained, and only libcrux's verification annotations reach it, through hax-lib-macros, while they compile.
+  # No code of it runs in youarel, and the advisory names no flaw.
+  # Reconsider when libcrux moves off hax-lib-macros or an advisory names a vulnerability.
+  "RUSTSEC-2026-0173",
+]

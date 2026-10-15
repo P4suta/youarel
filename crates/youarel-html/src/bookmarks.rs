@@ -127,7 +127,8 @@ pub fn parse(text: &str) -> Vec<Item> {
         }
     }
     reader.settle();
-    while !reader.frames.is_empty() {
+    // A file cut short leaves folders open, and each close takes one off the stack.
+    for _ in 0..reader.frames.len() {
         reader.close_folder();
     }
     reader.top

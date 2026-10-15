@@ -232,10 +232,11 @@ impl Tree {
     pub fn lineage(&self, folder: Option<ItemId>) -> Vec<ItemId> {
         let mut lineage = Vec::new();
         let mut current = folder.filter(|folder| self.holds(*folder));
-        while let Some(node) = current {
-            if lineage.len() > self.parents.len() {
+        // The tree has no cycle, so a walk up meets each live folder at most once.
+        for _ in 0..self.parents.len() {
+            let Some(node) = current else {
                 break;
-            }
+            };
             lineage.push(node);
             current = self.parent(node);
         }
@@ -525,7 +526,7 @@ impl State {
                     .folders
                     .keys()
                     .copied()
-                    .filter(|folder| tree.holds(*folder) && tree.within(*folder, removed))
+                    .filter(|folder| tree.within(*folder, removed))
                     .collect();
                 let held: Vec<ItemId> = self
                     .shortcuts
@@ -724,6 +725,8 @@ mod tests {
         folder(&mut state, 2, Some(id(1)), 2);
         add(&mut state, 3, Some(id(2)), 3);
         add(&mut state, 4, None, 4);
+        folder(&mut state, 6, None, 4);
+        add(&mut state, 7, Some(id(6)), 4);
         state
             .apply(
                 Edit::Remove {
@@ -733,7 +736,11 @@ mod tests {
             )
             .unwrap();
         let tree = state.tree();
-        assert_eq!(state.entries(&tree, None), [Entry::Shortcut(id(4))]);
+        assert_eq!(
+            state.entries(&tree, None),
+            [Entry::Shortcut(id(4)), Entry::Folder(id(6))]
+        );
+        assert_eq!(state.entries(&tree, Some(id(6))), [Entry::Shortcut(id(7))]);
         assert!(state.shortcut(id(3)).is_none());
         assert!(state.folder(id(2)).is_none());
         assert_eq!(

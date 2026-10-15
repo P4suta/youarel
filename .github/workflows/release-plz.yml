@@ -1,0 +1,49 @@
+name: release-plz
+
+# The proposal runs only while the repository variable RELEASES_ENABLED is `true` and the release-plz App is configured.
+on:
+  push:
+    branches: [main]
+
+permissions: {}
+
+concurrency:
+  group: release-plz-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  MISE_AUTO_INSTALL: "false"
+  MISE_TASK_RUN_AUTO_INSTALL: "false"
+
+jobs:
+  release-pr:
+    name: keep the release pull request
+    if: github.repository == 'P4suta/youarel' && vars.RELEASES_ENABLED == 'true' && vars.RELEASE_PLZ_APP_CLIENT_ID != ''
+    runs-on: ubuntu-26.04
+    timeout-minutes: 20
+    environment: release-plz
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Mint the App token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.RELEASE_PLZ_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_PLZ_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: jdx/mise-action@7a4e45a543138629540c9a1616d08632b893e492 # v5.0.1
+        with:
+          install_args: rust
+          cache: false
+      - uses: release-plz/action@b8d6b54b02889ff2ae2bb82e8b57c3a8fc1683a5 # v0.5.139
+        with:
+          command: release-pr
+        env:
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}

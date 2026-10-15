@@ -16,6 +16,8 @@ const BASE: u8 = 62;
 const FIRST_CAPITAL: u8 = 10;
 /// The digit value of `a`, which follows the decimal digits and the twenty-six capitals.
 const FIRST_SMALL: u8 = 36;
+/// The steps of a midpoint beyond one per digit of the lower bound: the one past the shared prefix and the one past the last digit.
+const STEPS_PAST_LOW: usize = 2;
 
 /// A place among siblings, which orders as its text.
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
@@ -67,9 +69,11 @@ fn digits(key: &str) -> Option<Vec<u8>> {
 }
 
 /// The digits strictly between `low` and `high`, where an exhausted `low` reads as zeros and `None` is the open end.
+///
+/// Every step that does not finish consumes a digit of `low`, and the step after the last one finishes, so the walk takes at most two steps more than `low` has digits.
 fn midpoint(mut low: &[u8], mut high: Option<&[u8]>) -> Result<Vec<u8>, Unordered> {
     let mut found = Vec::new();
-    loop {
+    for _ in 0..low.len().saturating_add(STEPS_PAST_LOW) {
         if let Some(upper) = high {
             let shared = upper
                 .iter()
@@ -106,6 +110,7 @@ fn midpoint(mut low: &[u8], mut high: Option<&[u8]>) -> Result<Vec<u8>, Unordere
         low = low.get(1..).unwrap_or_default();
         high = None;
     }
+    Err(Unordered)
 }
 
 /// A key strictly between `low` and `high`, where `None` is the open end on that side.
@@ -309,6 +314,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "an exhaustive sweep that Kani and the native run cover; Miri checks the same code on the other tests"
+    )]
     fn the_specification_agrees_over_every_short_pair() {
         let mut texts: Vec<String> = alloc::vec![String::new(), String::from("-")];
         for first in ALPHABET {
@@ -337,6 +346,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "an exhaustive sweep that Kani and the native run cover; Miri checks the same code on the other tests"
+    )]
     fn the_digit_specifications_agree_over_a_drawn_domain() {
         let values = [0, 1, 30, 31, 32, 60, 61];
         let mut drawn: Vec<Vec<u8>> = alloc::vec![Vec::new()];

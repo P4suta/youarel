@@ -1,0 +1,49 @@
+# release-plz only proposes the release pull request, and only while releases are enabled.
+# The maintainer's signed tag starts release.yml, which publishes after an approved deployment.
+[workspace]
+allow_dirty = false
+changelog_update = false
+dependencies_update = false
+git_only = true
+git_release_enable = false
+git_tag_enable = false
+git_tag_name = "v{{ version }}"
+pr_draft = true
+pr_name = "chore(release): v{{ version }}"
+publish = false
+# No crate is published, so no registry version is a baseline to compare against.
+semver_check = false
+
+[[package]]
+name = "youarel-cli"
+changelog_path = "./CHANGELOG.md"
+changelog_update = true
+version_group = "youarel"
+
+[[package]]
+name = "youarel-core"
+version_group = "youarel"
+
+[[package]]
+name = "youarel-html"
+version_group = "youarel"
+
+[[package]]
+name = "youarel-link"
+version_group = "youarel"
+
+[[package]]
+name = "youarel-release"
+version_group = "youarel"
+
+[[package]]
+name = "youarel-store"
+version_group = "youarel"
+
+[[package]]
+name = "xtask"
+release = false
+
+[changelog]
+protect_breaking_commits = true
+tag_pattern = "^v[0-9]+\\.[0-9]+\\.[0-9]+$"

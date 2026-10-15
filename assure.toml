@@ -23,6 +23,16 @@ by = "fuzz/fuzz_targets/position_key.rs"
 
 [[owner]]
 shape = "parser"
+path = "crates/youarel-core/src/update_rules.rs"
+by = "fuzz/fuzz_targets/version_parse.rs"
+
+[[owner]]
+shape = "parser"
+path = "crates/youarel-release/src/manifest.rs"
+by = "fuzz/fuzz_targets/release_manifest.rs"
+
+[[owner]]
+shape = "parser"
 path = "crates/youarel-html/src/scan.rs"
 by = "fuzz/fuzz_targets/html_scan.rs"
 

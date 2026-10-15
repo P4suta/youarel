@@ -156,9 +156,11 @@ mod proofs {
     }
 
     /// A query whose characters appear out of order must not match; this probe claims it does and must fail.
+    ///
+    /// The scan checks each character against the separators, so the probe unwinds as far as the harness.
     #[cfg(kani)]
     #[kani::proof]
-    #[kani::unwind(5)]
+    #[kani::unwind(11)]
     fn rejects_a_query_out_of_order() {
         kani::assert(
             score_characters(['b', 'a'].into_iter(), ['a', 'b'].into_iter()).is_some(),

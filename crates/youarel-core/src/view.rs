@@ -106,7 +106,7 @@ pub fn rows(state: &State, ui: &Ui, visits: &BTreeMap<ItemId, Visits>, now: u64)
 
 #[cfg(test)]
 mod tests {
-    use super::{ALIAS_EXACT, rows};
+    use super::{ALIAS_EXACT, joined, rows};
     use crate::clock_rules::{DeviceId, Stamp};
     use crate::rank_rules::Visits;
     use crate::state::{Edit, Entry, ItemId, State};
@@ -218,5 +218,45 @@ mod tests {
         let visited = rows(&state, &search("o"), &visits, 0);
         assert_eq!(tie.len(), visited.len());
         assert_eq!(visited.first(), Some(&Row::Entry(Entry::Shortcut(id(3)))));
+    }
+
+    #[test]
+    fn the_exact_alias_outranks_a_title_that_matches_as_well() {
+        let mut state = State::default();
+        let stamp = |wall| Stamp {
+            wall,
+            counter: 0,
+            device: DeviceId([9; 16]),
+        };
+        let edits = [
+            Edit::AddShortcut {
+                id: id(4),
+                link: String::from("https://example.com/"),
+                title: String::from("gh"),
+                folder: None,
+            },
+            Edit::AddShortcut {
+                id: id(5),
+                link: String::from("https://github.com/"),
+                title: String::from("Code"),
+                folder: None,
+            },
+            Edit::Realias {
+                id: id(5),
+                alias: String::from("GH"),
+            },
+        ];
+        for (wall, edit) in (1..).zip(edits) {
+            state.apply(edit, stamp(wall)).unwrap();
+        }
+        let found = rows(&state, &search("gh"), &BTreeMap::new(), 0);
+        assert_eq!(found.first(), Some(&Row::Entry(Entry::Shortcut(id(5)))));
+    }
+
+    #[test]
+    fn a_path_joins_its_folders_with_slashes() {
+        assert_eq!(joined(&[]), "");
+        assert_eq!(joined(&["Work"]), "Work");
+        assert_eq!(joined(&["Work", "Infra", "Cloud"]), "Work/Infra/Cloud");
     }
 }

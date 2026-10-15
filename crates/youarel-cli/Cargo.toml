@@ -28,9 +28,11 @@ webbrowser.workspace = true
 youarel-core.workspace = true
 youarel-html.workspace = true
 youarel-link.workspace = true
+youarel-release.workspace = true
 youarel-store.workspace = true
 
 [dev-dependencies]
+minisign.workspace = true
 tempfile.workspace = true
 
 [lints]

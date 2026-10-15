@@ -14,6 +14,7 @@ libfuzzer-sys = "0.4.13"
 youarel-core = { path = "../crates/youarel-core" }
 youarel-html = { path = "../crates/youarel-html" }
 youarel-link = { path = "../crates/youarel-link" }
+youarel-release = { path = "../crates/youarel-release" }
 youarel-store = { path = "../crates/youarel-store" }
 
 [[bin]]
@@ -47,6 +48,20 @@ bench = false
 [[bin]]
 name = "position_key"
 path = "fuzz_targets/position_key.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "version_parse"
+path = "fuzz_targets/version_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "release_manifest"
+path = "fuzz_targets/release_manifest.rs"
 test = false
 doc = false
 bench = false

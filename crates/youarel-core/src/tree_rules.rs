@@ -42,16 +42,20 @@ pub fn resolve<K: Ord>(declared: &[Declared<K>]) -> Vec<Option<usize>> {
 fn breaks_cycle<K: Ord>(declared: &[Declared<K>], index: usize) -> bool {
     let mut current = declared.get(index).and_then(|folder| folder.parent);
     for _ in 0..declared.len() {
-        let Some(node) = current.filter(|node| *node < declared.len()) else {
+        let Some(node) = current else {
             return false;
         };
         if node == index {
             return true;
         }
+        // A parent out of range ends the walk at the top.
+        let Some(folder) = declared.get(node) else {
+            return false;
+        };
         if recency(declared, node, index) == Ordering::Greater {
             return false;
         }
-        current = declared.get(node).and_then(|folder| folder.parent);
+        current = folder.parent;
     }
     false
 }

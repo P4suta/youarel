@@ -77,6 +77,14 @@ probes = [
 
 [[obligation]]
 verifier = "kani"
+source = "crates/youarel-core/src/update_rules.rs"
+harnesses = [
+  { name = "proofs::an_update_never_lands_below_the_mark_without_consent", covers = 1, contract = "decide installs without consent only a release above the running version and the mark, always installs such a release, never reinstalls the running version, installs any other release with consent, and refuses naming the mark; reached covers the running and recorded versions and never falls", input_domain = "every running version, every recorded mark or none, every offered version, and both consents", bound = "complete" },
+]
+probes = [{ harness = "proofs::rejects_a_replayed_release", assertion = "NEGATIVE_UPDATE_CONTROL" }]
+
+[[obligation]]
+verifier = "kani"
 source = "crates/youarel-core/src/ui_rules.rs"
 harnesses = [
   { name = "proofs::browsing_keeps_the_selection_on_a_row_and_opens_only_the_selected_shortcut", covers = 1, contract = "a browsing step leaves the selection on one of the rows it read, asks to open a shortcut only for Enter on that selected shortcut, and asks to remove nothing", input_domain = "every browsing interface with a query of at most one character, either folder, every selection on the rows, and every carried entry, over every list of up to three rows, with every key, a paste, and a refresh", bound = "three rows and one-character texts; the Quint model's traces replay through step for longer runs" },

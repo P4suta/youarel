@@ -5,3 +5,4 @@
 /xtask/proofs/*/target/
 /xtask/proofs/*/artifacts/
 /mutants.out*/
+/dist/

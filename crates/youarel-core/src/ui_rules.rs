@@ -756,6 +756,17 @@ mod tests {
         assert_eq!(after(&rows, &[Key::Char('g'), Key::Backspace]).query, "");
         let moved = after(&rows, &[Key::Down, Key::Control('p'), Key::Control('n')]);
         assert_eq!(moved.selected, 1);
+        assert_eq!(after(&rows, &[Key::Down, Key::Control('p')]).selected, 0);
+    }
+
+    #[test]
+    fn a_rename_without_text_changes_nothing() {
+        let rows = [Row::Entry(Entry::Shortcut(SHORTCUT))];
+        let (ui, effects) = keys(&rows, &[Key::Control('e'), Key::Enter]);
+        assert_eq!(effects, [Effect::None, Effect::None]);
+        assert_eq!(ui.mode, Mode::Browse);
+        let (_, unnamed) = keys(&rows, &[Key::Control('o'), Key::Enter]);
+        assert_eq!(unnamed, [Effect::None, Effect::None]);
     }
 
     #[test]

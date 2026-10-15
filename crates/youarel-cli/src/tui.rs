@@ -270,7 +270,7 @@ fn open(store: &Store, id: ItemId) -> Outcome {
 fn add(store: &Store, folder: Option<ItemId>, text: &str) -> Outcome {
     let link = match Link::parse(text) {
         Ok(link) => link,
-        Err(error) => return Outcome::Continue(Some(format!("cannot add {text}: {error}"))),
+        Err(error) => return Outcome::Continue(Some(format!("cannot add {text}: {error:#}"))),
     };
     let (title, warning) = match web::fetch_title(&link) {
         Ok(Some(title)) => (title, None),

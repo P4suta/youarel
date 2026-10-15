@@ -5,6 +5,8 @@ extend-ignore-identifiers-re = ["[A-Fa-f0-9]{7,}"]
 Yasunobu = "Yasunobu"
 youarel = "youarel"
 ratatui = "ratatui"
+# The verification toolchain behind libcrux.
+hax = "hax"
 
 [files]
 extend-exclude = ["target/", "*.lock", "fuzz/corpus/", "xtask/proofs/*/corpus/"]

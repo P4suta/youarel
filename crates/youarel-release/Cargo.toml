@@ -1,0 +1,28 @@
+[package]
+name = "youarel-release"
+description = "The signed release manifests that youarel's updater trusts and its release task writes"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+authors.workspace = true
+readme.workspace = true
+repository.workspace = true
+keywords = ["release", "signature", "update"]
+categories = ["cryptography"]
+
+[dependencies]
+libcrux-ml-dsa.workspace = true
+minisign-verify.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+youarel-core.workspace = true
+
+[dev-dependencies]
+anyhow.workspace = true
+minisign.workspace = true
+
+[lints]
+workspace = true

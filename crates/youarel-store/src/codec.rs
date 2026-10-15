@@ -32,7 +32,7 @@ pub enum DecodeError {
 impl core::fmt::Display for DecodeError {
     fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            Self::Json(error) => write!(formatter, "not a youarel state: {error}"),
+            Self::Json(_) => formatter.write_str("not a youarel state"),
             Self::Format(format) => write!(
                 formatter,
                 "the state has format {format}, but this youarel reads format {FORMAT}"

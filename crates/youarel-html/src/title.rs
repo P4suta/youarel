@@ -71,6 +71,18 @@ mod tests {
     }
 
     #[test]
+    fn only_an_open_graph_title_meta_tag_overrides_the_title() {
+        for page in [
+            "<meta name=\"description\" content=\"other\"><title>t</title>",
+            "<meta property=\"og:description\" content=\"other\"><title>t</title>",
+            "<link property=\"og:title\" content=\"other\"><title>t</title>",
+            "</meta property=\"og:title\" content=\"other\"><title>t</title>",
+        ] {
+            assert_eq!(title_of(page).as_deref(), Some("t"), "{page}");
+        }
+    }
+
+    #[test]
     fn a_page_without_a_title_has_none() {
         assert_eq!(title_of(""), None);
         assert_eq!(title_of("<p>body</p>"), None);

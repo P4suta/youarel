@@ -5,7 +5,8 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use std::process::ExitCode;
 use youarel_cli::commands::{self, Addition, Format};
-use youarel_cli::{clock, home, tui};
+use youarel_cli::{clock, home, tui, update};
+use youarel_core::update_rules::Consent;
 use youarel_store::Store;
 
 /// Open your web shortcuts from any browser; without a command, the terminal launcher opens.
@@ -63,6 +64,12 @@ enum Command {
     },
     /// Print the directory that holds youarel's files.
     Where,
+    /// Replace this program with the latest release, when its signed manifest offers a newer one.
+    SelfUpdate {
+        /// Install the latest release even when it is older than the highest version this device reached.
+        #[arg(long)]
+        allow_downgrade: bool,
+    },
 }
 
 fn joined(words: &[String]) -> String {
@@ -116,6 +123,14 @@ fn run(cli: Cli) -> Result<()> {
             vec![text.trim_end().to_owned()]
         }
         Some(Command::Where) => vec![store.directory().display().to_string()],
+        Some(Command::SelfUpdate { allow_downgrade }) => {
+            let consent = if allow_downgrade {
+                Consent::Downgrade
+            } else {
+                Consent::Forward
+            };
+            vec![update::run(store.directory(), consent)?]
+        }
     };
     commands::print(&lines)
 }

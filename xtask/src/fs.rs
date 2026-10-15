@@ -33,6 +33,98 @@ mod raw {
     pub(super) fn remove_dir_all(path: &Path) -> std::io::Result<()> {
         std::fs::remove_dir_all(path)
     }
+
+    pub(super) fn append(path: &Path) -> std::io::Result<std::fs::File> {
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+    }
+
+    /// A new file that only its owner may read or write.
+    #[cfg(unix)]
+    pub(super) fn create_private(path: &Path) -> std::io::Result<std::fs::File> {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(super::PRIVATE_MODE)
+            .open(path)
+    }
+
+    /// A new file, which a fresh private directory keeps from other users.
+    #[cfg(not(unix))]
+    pub(super) fn create_private(path: &Path) -> std::io::Result<std::fs::File> {
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)
+    }
+
+    /// A new file that its owner may write and everyone may read and run.
+    #[cfg(unix)]
+    pub(super) fn create_executable(path: &Path) -> std::io::Result<std::fs::File> {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(super::EXECUTABLE_MODE)
+            .open(path)
+    }
+
+    /// A new file, which Windows runs by its name.
+    #[cfg(not(unix))]
+    pub(super) fn create_executable(path: &Path) -> std::io::Result<std::fs::File> {
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)
+    }
+}
+
+/// The mode of a secret's file: its owner may read and write it, and nobody else may touch it.
+#[cfg(unix)]
+const PRIVATE_MODE: u32 = 0o600;
+/// The mode of a program's file: its owner may write it, and everyone may read and run it.
+#[cfg(unix)]
+const EXECUTABLE_MODE: u32 = 0o755;
+
+/// Appends bytes to a file, creating it when it is absent.
+///
+/// # Errors
+///
+/// Returns an error naming the path when the file cannot be written.
+pub fn append(path: &Path, bytes: &[u8]) -> Result<()> {
+    use std::io::Write as _;
+    let mut file = raw::append(path).with_context(|| format!("open {}", path.display()))?;
+    file.write_all(bytes)
+        .with_context(|| format!("append to {}", path.display()))
+}
+
+/// Writes a secret to a new file that only its owner may read.
+///
+/// # Errors
+///
+/// Returns an error naming the path when the file exists or cannot be written.
+pub fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
+    use std::io::Write as _;
+    let mut file =
+        raw::create_private(path).with_context(|| format!("create {}", path.display()))?;
+    file.write_all(bytes)
+        .with_context(|| format!("write {}", path.display()))
+}
+
+/// Writes a program to a new file that may run, without the extended attributes a copy would carry along.
+///
+/// # Errors
+///
+/// Returns an error naming the path when the file exists or cannot be written.
+pub fn write_executable(path: &Path, bytes: &[u8]) -> Result<()> {
+    use std::io::Write as _;
+    let mut file =
+        raw::create_executable(path).with_context(|| format!("create {}", path.display()))?;
+    file.write_all(bytes)
+        .with_context(|| format!("write {}", path.display()))
 }
 
 /// What a path names.

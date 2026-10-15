@@ -1,0 +1,49 @@
+(* The probe of ../pairing.pv: the inviter adds the joiner and seals the entry without checking its confirmation, so the attacker gets a device of its own added, and a query must fail. *)
+
+free password: code [private].
+free epochkey: key [private].
+free state: bitstring [private].
+
+event Welcomed(kempk, bitstring).
+event Confirmed(kempk, bitstring).
+event Added(kempk, bitstring).
+event Installed(kempk, bitstring).
+
+weaksecret password.
+query attacker(epochkey).
+query attacker(state).
+query joiner: kempk, transcript: bitstring; event(Confirmed(joiner, transcript)) ==> event(Welcomed(joiner, transcript)).
+query joiner: kempk, transcript: bitstring; event(Added(joiner, transcript)) ==> event(Confirmed(joiner, transcript)).
+query joiner: kempk, transcript: bitstring; event(Installed(joiner, transcript)) ==> event(Added(joiner, transcript)).
+
+let joining(invitation: bitstring) =
+  new sk: kemsk;
+  new x: exponent;
+  let share = blind(exp(g, x), password) in
+  out(c, (invitation, kempublic(sk), share));
+  in(c, (=invitation, answer: G, encapsulation: bitstring, welcomed: bitstring));
+  let transcript = (invitation, kempublic(sk), share, answer, encapsulation) in
+  let k = channelkey(pakekey(exp(unblind(answer, password), x), share, answer), decapsulate(encapsulation, sk), transcript) in
+  if welcomed = mac(k, (welcomedLabel, transcript)) then
+  event Confirmed(kempublic(sk), transcript);
+  out(c, (invitation, mac(k, (joinedLabel, transcript))));
+  in(c, (=invitation, sealed: bitstring));
+  let (keybits(received: key), held: bitstring) = unseal(sealed, k, invitation) in
+  event Installed(kempublic(sk), transcript).
+
+let inviting(invitation: bitstring) =
+  in(c, (=invitation, joiner: kempk, share: G));
+  new y: exponent;
+  new r: seed;
+  let answer = blind(exp(g, y), password) in
+  let encapsulation = encapsulate(joiner, r) in
+  let transcript = (invitation, joiner, share, answer, encapsulation) in
+  let k = channelkey(pakekey(exp(unblind(share, password), y), share, answer), shared(joiner, r), transcript) in
+  event Welcomed(joiner, transcript);
+  out(c, (invitation, answer, encapsulation, mac(k, (welcomedLabel, transcript))));
+  in(c, (=invitation, joined: bitstring));
+  event Added(joiner, transcript);
+  out(c, (invitation, seal((keybits(epochkey), state), k, invitation))).
+
+process
+  ! (new invitation: bitstring; out(c, invitation); (joining(invitation) | inviting(invitation)))

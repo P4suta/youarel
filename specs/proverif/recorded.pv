@@ -1,0 +1,46 @@
+(* A pairing attacked now by an active carrier and later by a quantum computer, as specs/THREAT_MODEL.md describes.
+   The pairings run in phase 0 against an attacker who controls the channel and may answer either side itself; in phase 1 the attacker learns the code and the Diffie-Hellman exponent of every pairing that began, as breaking the classical PAKE would give it.
+   It checks that the epoch key and the state stay secret, because the inviter seals them only for a joiner that proved the channel key while the code was still secret, and the key encapsulation keeps that channel key from the later attacker. *)
+
+free password: code [private].
+free epochkey: key [private].
+free state: bitstring [private].
+
+query attacker(epochkey) phase 1.
+query attacker(state) phase 1.
+
+let joining(invitation: bitstring) =
+  new sk: kemsk;
+  new x: exponent;
+  let share = blind(exp(g, x), password) in
+  out(c, (invitation, kempublic(sk), share));
+  (
+    (phase 1; out(c, x))
+  | (
+    in(c, (=invitation, answer: G, encapsulation: bitstring, welcomed: bitstring));
+    let transcript = (invitation, kempublic(sk), share, answer, encapsulation) in
+    let k = channelkey(pakekey(exp(unblind(answer, password), x), share, answer), decapsulate(encapsulation, sk), transcript) in
+    if welcomed = mac(k, (welcomedLabel, transcript)) then
+    out(c, (invitation, mac(k, (joinedLabel, transcript))))
+  )).
+
+let inviting(invitation: bitstring) =
+  in(c, (=invitation, joiner: kempk, share: G));
+  new y: exponent;
+  new r: seed;
+  let answer = blind(exp(g, y), password) in
+  let encapsulation = encapsulate(joiner, r) in
+  let transcript = (invitation, joiner, share, answer, encapsulation) in
+  let k = channelkey(pakekey(exp(unblind(share, password), y), share, answer), shared(joiner, r), transcript) in
+  out(c, (invitation, answer, encapsulation, mac(k, (welcomedLabel, transcript))));
+  (
+    (phase 1; out(c, y))
+  | (
+    in(c, (=invitation, joined: bitstring));
+    if joined = mac(k, (joinedLabel, transcript)) then
+    out(c, (invitation, seal((keybits(epochkey), state), k, invitation)))
+  )).
+
+process
+  (! (new invitation: bitstring; out(c, invitation); (joining(invitation) | inviting(invitation))))
+  | (phase 1; out(c, password))

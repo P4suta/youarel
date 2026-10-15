@@ -68,6 +68,7 @@ pub fn run(root: &Path, words: &[&str]) -> Result<()> {
                 ci: true,
                 only: None,
                 without: None,
+                inside: false,
             },
         ),
         ["gate", name] => gate(name),

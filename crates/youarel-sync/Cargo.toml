@@ -1,0 +1,27 @@
+[package]
+name = "youarel-sync"
+description = "Accounts, pairing, and bundles that carry youarel's state between devices, end-to-end encrypted"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+authors.workspace = true
+readme.workspace = true
+repository.workspace = true
+keywords = ["sync", "end-to-end-encryption", "pairing"]
+categories = ["cryptography"]
+
+[dependencies]
+keyring.workspace = true
+youarel-core.workspace = true
+youarel-crypto.workspace = true
+youarel-protocol.workspace = true
+youarel-store.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

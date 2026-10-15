@@ -94,19 +94,30 @@ multiple_crate_versions = "allow"
 
 [workspace.dependencies]
 youarel-core = { path = "crates/youarel-core" }
+youarel-crypto = { path = "crates/youarel-crypto" }
 youarel-html = { path = "crates/youarel-html" }
 youarel-link = { path = "crates/youarel-link" }
+youarel-protocol = { path = "crates/youarel-protocol" }
 youarel-release = { path = "crates/youarel-release" }
 youarel-store = { path = "crates/youarel-store" }
+youarel-sync = { path = "crates/youarel-sync" }
 
 anyhow = "1.0"
 base64 = "0.22"
 clap = { version = "4.6", features = ["derive", "wrap_help"] }
 flate2 = "1.1"
+keyring = "4.2"
 getrandom = "0.4"
+libcrux-chacha20poly1305 = "0.0.10"
+libcrux-ed25519 = "0.0.10"
+libcrux-hkdf = "0.0.9"
+libcrux-hmac = "0.0.9"
+libcrux-kem = "0.0.10"
 libcrux-ml-dsa = { version = "0.0.11", default-features = false, features = ["mldsa65", "std"] }
 minisign = "0.7"
 minisign-verify = "0.2"
+rand_chacha = "0.3"
+rand_core = "0.6"
 ratatui = "0.30"
 # The operating system verifies certificates, so its trust store and its updates apply and no root bundle ships with the binary.
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
@@ -120,6 +131,7 @@ proc-macro2 = { version = "1.0", default-features = false, features = ["span-loc
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sha2 = "0.11"
+spake2 = { version = "0.4", default-features = false }
 syn = { version = "2.0", default-features = false, features = [
   "full",
   "parsing",
@@ -132,6 +144,7 @@ tempfile = "3"
 toml = { version = "1.0", features = ["preserve_order"] }
 url = "2.5"
 zip = { version = "8", default-features = false, features = ["deflate"] }
+zeroize = "1.8"
 
 [profile.test]
 debug = 0

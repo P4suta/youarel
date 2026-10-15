@@ -56,16 +56,30 @@ pub const TRACES: &str = "specs/traces";
 ///
 /// Returns an error when a definition file cannot be read.
 pub fn image(root: &Path) -> Result<String> {
+    pinned_image(root, IMAGE_DIRECTORY, &IMAGE_INPUTS, "youarel-quint")
+}
+
+/// The name `repository:digest` of the image that `directory` defines, whose digest covers the bytes of `inputs`.
+///
+/// # Errors
+///
+/// Returns an error when a definition file cannot be read.
+pub fn pinned_image(
+    root: &Path,
+    directory: &str,
+    inputs: &[&str],
+    repository: &str,
+) -> Result<String> {
     let mut hasher = Sha256::new();
-    for input in IMAGE_INPUTS {
-        hasher.update(fs::read(&root.join(IMAGE_DIRECTORY).join(input))?);
+    for input in inputs {
+        hasher.update(fs::read(&root.join(directory).join(input))?);
     }
     let mut digest = String::new();
     for byte in hasher.finalize() {
         write!(digest, "{byte:02x}").context("format the digest")?;
     }
     Ok(format!(
-        "youarel-quint:{}",
+        "{repository}:{}",
         digest.get(..DIGEST_DIGITS).unwrap_or(&digest)
     ))
 }
@@ -76,6 +90,15 @@ pub fn image(root: &Path) -> Result<String> {
 ///
 /// Returns an error when Docker cannot build it.
 pub fn build(root: &Path, image: &str) -> Result<()> {
+    build_pinned(root, IMAGE_DIRECTORY, image)
+}
+
+/// Builds `image` from `directory` unless it exists.
+///
+/// # Errors
+///
+/// Returns an error when Docker cannot build it.
+pub fn build_pinned(root: &Path, directory: &str, image: &str) -> Result<()> {
     let mut inspect = Tool::Docker.command(root);
     inspect.args(["image", "inspect", image]);
     if tool::output(&mut inspect, "docker image inspect")?
@@ -87,11 +110,13 @@ pub fn build(root: &Path, image: &str) -> Result<()> {
     let mut build = Tool::Docker.command(root);
     build
         .args(["build", "--tag", image])
-        .arg(root.join(IMAGE_DIRECTORY));
-    tool::succeed(&mut build, "docker build of the Quint image")
+        .arg(root.join(directory));
+    tool::succeed(&mut build, &format!("docker build of {image}"))
 }
 
-fn mount(source: &Path, target: &str, readonly: bool) -> OsString {
+/// The `--mount` value that binds `source` at `target`.
+#[must_use]
+pub fn mount(source: &Path, target: &str, readonly: bool) -> OsString {
     // Docker reads `--mount` as one CSV record, so quoting keeps a comma in the path inside the field.
     let mut mount = OsString::from("type=bind,\"source=");
     mount.push(source);
@@ -410,7 +435,7 @@ fn models(manifest: &obligations::Manifest) -> Vec<(String, &QuintModel)> {
         .iter()
         .filter_map(|obligation| match obligation {
             Obligation::Quint(quint) => Some((format!("{SOURCE}/{}", quint.spec), quint)),
-            Obligation::Kani { .. } => None,
+            Obligation::Kani { .. } | Obligation::Proverif(_) => None,
         })
         .collect()
 }

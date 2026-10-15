@@ -1,6 +1,7 @@
 ---
-status: accepted
+status: amended
 date: 2026-10-15
+amended-by: membership-replayed-from-a-signed-log.md
 ---
 # Passwordless identity held by devices
 

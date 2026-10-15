@@ -128,3 +128,59 @@ harnesses = [
 probes = [
   { harness = "proofs::rejects_a_cycle_left_in_place", assertion = "NEGATIVE_TREE_CONTROL" },
 ]
+
+[[obligation]]
+verifier = "kani"
+source = "crates/youarel-core/src/membership_rules.rs"
+harnesses = [
+  { name = "proofs::every_decision_keeps_a_member_and_counts_only_members", covers = 2, contract = "decide founds only an empty account from its genesis, skips every other action whose author is no member, adds only a stranger, never removes the last member, and rotates only to a greater epoch, naming the device or epoch of the action", input_domain = "every action with every device and epoch, every member count and epoch, and every value of the genesis, author, and target facts", bound = "complete for decide; Members::apply, which carries out a decision on its vector, is covered by the exhaustive test over every account of up to three members, and resolve's order by the exhaustive test over every log of three operations and by the replay of the Quint model's traces" },
+]
+probes = [
+  { harness = "proofs::rejects_a_removal_of_the_last_member", assertion = "NEGATIVE_MEMBERSHIP_CONTROL" },
+]
+
+[[obligation]]
+verifier = "kani"
+source = "crates/youarel-core/src/wire_rules.rs"
+harnesses = [
+  { name = "proofs::a_field_never_passes_its_limit_or_the_message", covers = 2, contract = "a length-prefixed field reads exactly the bytes its prefix declares, never more than its limit or the message holds, and moves the reader past it; it fails only as too long, when the declaration exceeds the limit, or as truncated, when the field passes the end", input_domain = "every message of eight bytes and every limit up to eight", bound = "messages of eight bytes; the fuzz target wire_decode reads every message kind at any length" },
+  { name = "proofs::every_value_reads_back_as_written", covers = 1, contract = "a byte, a u16, a u32, a u64, and a field written in turn read back as written, with nothing after them", input_domain = "every integer of each width and every field of up to three bytes", bound = "fields of up to three bytes" },
+  { name = "proofs::ascending_holds_exactly_for_strictly_increasing_keys", covers = 1, contract = "ascending holds exactly when each key is greater than the one before it", input_domain = "every list of up to three byte keys", bound = "three keys" },
+]
+probes = [
+  { harness = "proofs::rejects_a_field_longer_than_its_limit", assertion = "NEGATIVE_WIRE_CONTROL" },
+]
+
+[[obligation]]
+verifier = "quint"
+spec = "specs/membership.qnt"
+main = "membership"
+probe = "membership_probe"
+invariant = "safe"
+witnesses = ["joined", "left", "rotated", "contested"]
+seed = "0x2a"
+samples = 1000
+steps = 12
+distinct_states = 838100
+traces = 100
+
+[[obligation]]
+verifier = "proverif"
+model = "specs/proverif/pairing.pv"
+library = "specs/proverif/primitives.pvl"
+queries = 6
+probe = "specs/proverif/probes/pairing.pv"
+
+[[obligation]]
+verifier = "proverif"
+model = "specs/proverif/recorded.pv"
+library = "specs/proverif/primitives.pvl"
+queries = 2
+probe = "specs/proverif/probes/recorded.pv"
+
+[[obligation]]
+verifier = "proverif"
+model = "specs/proverif/rotation.pv"
+library = "specs/proverif/primitives.pvl"
+queries = 4
+probe = "specs/proverif/probes/rotation.pv"

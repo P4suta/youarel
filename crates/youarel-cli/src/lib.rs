@@ -6,6 +6,7 @@ pub mod clock;
 pub mod commands;
 pub mod home;
 pub mod resolve;
+pub mod sync;
 pub mod tui;
 pub mod update;
 pub mod web;

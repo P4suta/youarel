@@ -45,16 +45,23 @@ mod raw {
         File::open(path)
     }
 
+    pub(super) fn read_dir(path: &Path) -> std::io::Result<std::fs::ReadDir> {
+        std::fs::read_dir(path)
+    }
+
     /// A new file that its owner may run, and others may read and run.
     #[cfg(unix)]
     pub(super) fn create_executable(path: &Path) -> std::io::Result<File> {
-        use std::os::unix::fs::OpenOptionsExt as _;
-        OpenOptions::new()
+        use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
+        let file = OpenOptions::new()
             .write(true)
             .create(true)
             .truncate(true)
             .mode(super::EXECUTABLE_MODE)
-            .open(path)
+            .open(path)?;
+        // The process's umask narrows the mode a file is created with, so the open file takes the mode again.
+        file.set_permissions(std::fs::Permissions::from_mode(super::EXECUTABLE_MODE))?;
+        Ok(file)
     }
 }
 
@@ -140,6 +147,36 @@ pub fn replace(path: &Path, bytes: &[u8]) -> Result<(), FileError> {
         drop(raw::remove_file(&staging));
     }
     written
+}
+
+/// The names of the files in a directory that are UTF-8, in ascending order.
+///
+/// # Errors
+///
+/// Returns a [`FileError`] when the directory cannot be read.
+pub fn list(directory: &Path) -> Result<Vec<String>, FileError> {
+    let mut names = Vec::new();
+    for entry in raw::read_dir(directory).map_err(failed("list", directory))? {
+        let entry = entry.map_err(failed("list", directory))?;
+        if let Ok(name) = entry.file_name().into_string() {
+            names.push(name);
+        }
+    }
+    names.sort_unstable();
+    Ok(names)
+}
+
+/// Removes a file that may be absent.
+///
+/// # Errors
+///
+/// Returns a [`FileError`] when a present file cannot be removed.
+pub fn remove_if_present(path: &Path) -> Result<(), FileError> {
+    match raw::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(failed("remove", path)(error)),
+    }
 }
 
 /// The bytes of a file, no more than `limit` of them, or `None` when the file does not exist.
@@ -234,8 +271,8 @@ impl Drop for Lock {
 #[cfg(test)]
 mod tests {
     use super::{
-        Lock, create_dir_all, read_bounded, read_bounded_if_present, read_if_present, replace,
-        replace_executable,
+        Lock, create_dir_all, list, read_bounded, read_bounded_if_present, read_if_present,
+        remove_if_present, replace, replace_executable,
     };
 
     #[test]
@@ -276,6 +313,25 @@ mod tests {
         let longer = read_bounded(&path, 3).unwrap_err();
         let reason = std::error::Error::source(&longer).unwrap().to_string();
         assert!(reason.contains("larger than 3 bytes"), "{reason}");
+    }
+
+    #[test]
+    fn a_directory_lists_its_names_in_order_and_an_absent_file_counts_as_removed() {
+        let directory = tempfile::tempdir().unwrap();
+        replace(&directory.path().join("b"), b"").unwrap();
+        replace(&directory.path().join("a"), b"").unwrap();
+        assert_eq!(list(directory.path()).unwrap(), ["a", "b"]);
+        remove_if_present(&directory.path().join("a")).unwrap();
+        remove_if_present(&directory.path().join("a")).unwrap();
+        assert_eq!(list(directory.path()).unwrap(), ["b"]);
+        assert_eq!(
+            remove_if_present(directory.path()).unwrap_err().action,
+            "remove"
+        );
+        assert_eq!(
+            list(&directory.path().join("missing")).unwrap_err().action,
+            "list"
+        );
     }
 
     #[test]

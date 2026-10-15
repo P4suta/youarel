@@ -124,7 +124,7 @@ pub fn arguments(root: &Path, image: &str, words: &[&str]) -> Vec<OsString> {
 
 /// Runs `cargo xtask` with `words` in the proof image.
 ///
-/// The Quint step already runs in its own limited container, so a `proofs` task runs it from the host and everything else inside.
+/// The Quint and ProVerif steps already run in their own limited containers, so a `proofs` task runs them from the host and everything else inside.
 ///
 /// # Errors
 ///
@@ -135,17 +135,17 @@ pub fn run(root: &Path, words: &[&str]) -> Result<()> {
         let options = proofs::Options::from_words(rest)
             .with_context(|| format!("unknown proof options {rest:?}"))?;
         let selected = options.selected();
-        if selected.contains(&proofs::Step::Quint) {
-            let quint = proofs::Options {
-                only: Some(proofs::Step::Quint),
+        for step in selected.iter().filter(|step| step.contained()) {
+            let hosted = proofs::Options {
+                only: Some(*step),
                 ..options
             };
-            proofs::run(root, quint)?;
+            proofs::run(root, hosted)?;
         }
-        if selected.iter().all(|step| *step == proofs::Step::Quint) {
+        if selected.iter().all(|step| step.contained()) {
             return Ok(());
         }
-        inner.extend(["--without", proofs::Step::Quint.name()]);
+        inner.push("--inside");
     }
     let image = image(root)?;
     build(root, &image)?;

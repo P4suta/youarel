@@ -1,0 +1,40 @@
+(* The probe of ../recorded.pv: the inviter seals the admission into its welcome, before any confirmation, as the first design of the pairing did.
+   An attacker who answers the inviter with a join of its own keeps the welcome, and opens it once it learns the code and the exponents, so the queries must fail. *)
+
+free password: code [private].
+free epochkey: key [private].
+free state: bitstring [private].
+
+query attacker(epochkey) phase 1.
+query attacker(state) phase 1.
+
+let joining(invitation: bitstring) =
+  new sk: kemsk;
+  new x: exponent;
+  let share = blind(exp(g, x), password) in
+  out(c, (invitation, kempublic(sk), share));
+  (
+    (phase 1; out(c, x))
+  | (
+    in(c, (=invitation, answer: G, encapsulation: bitstring, welcomed: bitstring, sealed: bitstring));
+    let transcript = (invitation, kempublic(sk), share, answer, encapsulation) in
+    let k = channelkey(pakekey(exp(unblind(answer, password), x), share, answer), decapsulate(encapsulation, sk), transcript) in
+    if welcomed = mac(k, (welcomedLabel, transcript)) then
+    out(c, (invitation, mac(k, (joinedLabel, transcript))))
+  )).
+
+let inviting(invitation: bitstring) =
+  in(c, (=invitation, joiner: kempk, share: G));
+  new y: exponent;
+  new r: seed;
+  let answer = blind(exp(g, y), password) in
+  let encapsulation = encapsulate(joiner, r) in
+  let transcript = (invitation, joiner, share, answer, encapsulation) in
+  let k = channelkey(pakekey(exp(unblind(share, password), y), share, answer), shared(joiner, r), transcript) in
+  out(c, (invitation, answer, encapsulation, mac(k, (welcomedLabel, transcript)), seal((keybits(epochkey), state), k, invitation)));
+  phase 1;
+  out(c, y).
+
+process
+  (! (new invitation: bitstring; out(c, invitation); (joining(invitation) | inviting(invitation))))
+  | (phase 1; out(c, password))

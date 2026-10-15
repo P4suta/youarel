@@ -9,10 +9,10 @@ exclude_re = [
   # Reconsider when a rule module keeps production code in `proofs`.
   "proofs::",
   # Exempt as equivalent: `|` and `^` agree on bits that do not overlap.
-  # The version and variant marks of an identifier sit above the random bits they join, and a high nibble sits above a low one.
-  # Evidence: the tests of `ItemId::v7`, `unhex`, and `Digest::parse` fix every bit of their results.
+  # The version and variant marks of an identifier sit above the random bits they join, a high nibble sits above a low one, and a code symbol's five bits join a value shifted left by five.
+  # Evidence: the tests of `ItemId::v7`, `unhex`, `Digest::parse`, and `Code::parse` fix every bit of their results.
   # Reconsider when one of these joins operands that can share a bit.
-  "replace \\| with \\^ in (ItemId::v7|unhex|Digest::parse)",
+  "replace \\| with \\^ in (ItemId::v7|unhex|Digest::parse|Code::parse)",
 ]
 exclude_globs = [
   # Exempt as other-platform: the campaign runs on Linux, which never builds this Windows-only code, so its mutants would pass unbuilt.

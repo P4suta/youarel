@@ -1,0 +1,30 @@
+[package]
+name = "youarel-crypto"
+description = "The hybrid signatures, X-Wing key slots, sealed states, and pairing channel of youarel's sync"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+authors.workspace = true
+readme.workspace = true
+repository.workspace = true
+keywords = ["cryptography", "post-quantum", "pake"]
+categories = ["cryptography"]
+
+[dependencies]
+getrandom.workspace = true
+libcrux-chacha20poly1305.workspace = true
+libcrux-ed25519.workspace = true
+libcrux-hkdf.workspace = true
+libcrux-hmac.workspace = true
+libcrux-kem.workspace = true
+libcrux-ml-dsa.workspace = true
+rand_chacha.workspace = true
+rand_core.workspace = true
+sha2.workspace = true
+spake2.workspace = true
+zeroize.workspace = true
+
+[lints]
+workspace = true

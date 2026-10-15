@@ -53,12 +53,15 @@ const MIRI_TARGET: &str = "target/miri";
 const MIRI_PROFILE: &str = "miri";
 const MUTANTS_OUTPUT: &str = "target/proofs/mutants";
 /// The crates the mutation campaign runs over, each judged by its own tests alone.
-const MUTANT_PACKAGES: [&str; 5] = [
+const MUTANT_PACKAGES: [&str; 8] = [
     "youarel-core",
     "youarel-link",
     "youarel-html",
     "youarel-release",
     "youarel-store",
+    "youarel-crypto",
+    "youarel-protocol",
+    "youarel-sync",
 ];
 const CORE_PACKAGE: &str = "youarel-core";
 const FIXTURE_OUTPUT: &str = "target/proofs/fixtures";
@@ -70,15 +73,17 @@ const FUZZ_SCRATCH: &str = "target/fuzz-corpus";
 pub enum Step {
     Kani,
     Quint,
+    Proverif,
     Miri,
     Fuzz,
     Mutants,
 }
 
 impl Step {
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::Kani,
         Self::Quint,
+        Self::Proverif,
         Self::Miri,
         Self::Fuzz,
         Self::Mutants,
@@ -89,9 +94,19 @@ impl Step {
         match self {
             Self::Kani => "kani",
             Self::Quint => "quint",
+            Self::Proverif => "proverif",
             Self::Miri => "miri",
             Self::Fuzz => "fuzz",
             Self::Mutants => "mutants",
+        }
+    }
+
+    /// Whether the step starts its own limited container, so a host runs it outside the proof container.
+    #[must_use]
+    pub const fn contained(self) -> bool {
+        match self {
+            Self::Quint | Self::Proverif => true,
+            Self::Kani | Self::Miri | Self::Fuzz | Self::Mutants => false,
         }
     }
 
@@ -107,18 +122,21 @@ pub struct Options {
     /// A hosted run, which skips the mutation campaign that stays local.
     pub ci: bool,
     pub only: Option<Step>,
-    /// A verifier to leave out, such as the one a host runs outside the proof container.
+    /// A verifier to leave out.
     pub without: Option<Step>,
+    /// Whether to leave out the steps that start their own containers, which the host runs outside the proof container.
+    pub inside: bool,
 }
 
 impl Options {
-    /// Reads `--ci`, `--only STEP`, and `--without STEP`, refusing anything else.
+    /// Reads `--ci`, `--only STEP`, `--without STEP`, and `--inside`, refusing anything else.
     #[must_use]
     pub fn from_words(words: &[&str]) -> Option<Self> {
         let mut options = Self {
             ci: false,
             only: None,
             without: None,
+            inside: false,
         };
         let mut words = words.iter();
         while let Some(word) = words.next() {
@@ -126,6 +144,7 @@ impl Options {
                 "--ci" => options.ci = true,
                 "--only" => options.only = Some(Step::named(words.next()?)?),
                 "--without" => options.without = Some(Step::named(words.next()?)?),
+                "--inside" => options.inside = true,
                 _ => return None,
             }
         }
@@ -145,7 +164,7 @@ impl Options {
         );
         chosen
             .into_iter()
-            .filter(|step| Some(*step) != self.without)
+            .filter(|step| Some(*step) != self.without && !(self.inside && step.contained()))
             .collect()
     }
 }
@@ -474,7 +493,7 @@ fn verify_kani(root: &Path) -> Result<()> {
                     ..harness.clone()
                 })
                 .collect(),
-            Obligation::Quint(_) => Vec::new(),
+            Obligation::Quint(_) | Obligation::Proverif(_) => Vec::new(),
         })
         .collect();
     ensure!(
@@ -837,6 +856,7 @@ fn receipt(root: &Path, step: Step) -> Result<()> {
     let version = match step {
         Step::Kani => KANI_VERSION,
         Step::Quint => crate::quint::QUINT_VERSION,
+        Step::Proverif => crate::proverif::PROVERIF_VERSION,
         Step::Miri => tool::NIGHTLY,
         Step::Fuzz => FUZZ_VERSION,
         Step::Mutants => MUTANTS_VERSION,
@@ -855,6 +875,7 @@ fn verify(root: &Path, step: Step) -> Result<()> {
     match step {
         Step::Kani => verify_kani(root)?,
         Step::Quint => crate::quint::verify(root)?,
+        Step::Proverif => crate::proverif::verify(root)?,
         Step::Miri => verify_miri(root)?,
         Step::Fuzz => verify_fuzz(root)?,
         Step::Mutants => verify_mutants(root)?,
@@ -971,7 +992,12 @@ mod tests {
     }
 
     const fn options(ci: bool, only: Option<Step>, without: Option<Step>) -> Options {
-        Options { ci, only, without }
+        Options {
+            ci,
+            only,
+            without,
+            inside: false,
+        }
     }
 
     #[test]
@@ -990,7 +1016,13 @@ mod tests {
         assert_eq!(Options::from_words(&["--verbose"]), None);
         assert_eq!(
             options(true, None, None).selected(),
-            [Step::Kani, Step::Quint, Step::Miri, Step::Fuzz]
+            [
+                Step::Kani,
+                Step::Quint,
+                Step::Proverif,
+                Step::Miri,
+                Step::Fuzz
+            ]
         );
         assert_eq!(options(false, None, None).selected(), Step::ALL);
         assert_eq!(
@@ -999,6 +1031,17 @@ mod tests {
         );
         assert_eq!(
             options(false, None, Some(Step::Quint)).selected(),
+            [
+                Step::Kani,
+                Step::Proverif,
+                Step::Miri,
+                Step::Fuzz,
+                Step::Mutants
+            ]
+        );
+        let inside = Options::from_words(&["--inside"]).unwrap();
+        assert_eq!(
+            inside.selected(),
             [Step::Kani, Step::Miri, Step::Fuzz, Step::Mutants]
         );
         assert_eq!(

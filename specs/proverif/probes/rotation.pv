@@ -1,0 +1,52 @@
+(* The probe of ../rotation.pv: the rotating member also wraps the new key for the removed device, so the attacker reads it, and the secrecy queries must fail. *)
+
+free account: bitstring.
+free epoch: bitstring.
+free oldkey: key [private].
+free newkey: key [private].
+free state: bitstring [private].
+
+event Rotated(key).
+event Installed(key).
+event Sealed(bitstring).
+event Read(bitstring).
+
+query attacker(newkey).
+query attacker(state).
+query k: key; event(Installed(k)) ==> event(Rotated(k)).
+query s: bitstring; event(Read(s)) ==> event(Sealed(s)).
+
+(* The slot of one member: the encapsulation to its key and the epoch key under the key that encapsulation yields. *)
+letfun slot(member: kempk, r: seed) =
+  (member, encapsulate(member, r), seal(keybits(newkey), slotkey(shared(member, r), (account, epoch, member)), account)).
+
+let rotating(classical: signsk, quantum: signsk, remaining: kempk, removed: kempk) =
+  new r: seed;
+  new leaked: seed;
+  out(c, slot(removed, leaked));
+  let operation = (account, epoch, slot(remaining, r)) in
+  event Rotated(newkey);
+  out(c, (operation, sign((operationLabel, operation), classical), sign((operationLabel, operation), quantum)));
+  event Sealed(state);
+  out(c, seal(state, newkey, (stateLabel, account, epoch, signpublic(quantum)))).
+
+let remaining(sk: kemsk, classical: signpk, quantum: signpk) =
+  in(c, (operation: bitstring, first: bitstring, second: bitstring));
+  if verify(first, classical, (operationLabel, operation)) = true then
+  if verify(second, quantum, (operationLabel, operation)) = true then
+  let (=account, =epoch, (=kempublic(sk), encapsulation: bitstring, wrapped: bitstring)) = operation in
+  let keybits(k: key) = unseal(wrapped, slotkey(decapsulate(encapsulation, sk), (account, epoch, kempublic(sk))), account) in
+  event Installed(k);
+  in(c, sealed: bitstring);
+  let s = unseal(sealed, k, (stateLabel, account, epoch, quantum)) in
+  event Read(s).
+
+process
+  new classical: signsk;
+  new quantum: signsk;
+  new member: kemsk;
+  new removed: kemsk;
+  out(c, (signpublic(classical), signpublic(quantum), kempublic(member), kempublic(removed)));
+  (* The removed device is the attacker's, with the old epoch key it held, and Ed25519 is broken. *)
+  out(c, (removed, oldkey, classical));
+  (rotating(classical, quantum, kempublic(member), kempublic(removed)) | ! remaining(member, signpublic(classical), signpublic(quantum)))

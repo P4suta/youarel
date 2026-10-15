@@ -13,6 +13,7 @@ pub mod fs;
 pub mod obligations;
 pub mod package;
 pub mod proofs;
+pub mod proverif;
 pub mod quint;
 pub mod release;
 pub mod report;

@@ -16,6 +16,8 @@ youarel-html = { path = "../crates/youarel-html" }
 youarel-link = { path = "../crates/youarel-link" }
 youarel-release = { path = "../crates/youarel-release" }
 youarel-store = { path = "../crates/youarel-store" }
+youarel-crypto = { path = "../crates/youarel-crypto" }
+youarel-protocol = { path = "../crates/youarel-protocol" }
 
 [[bin]]
 name = "link_parse"
@@ -69,6 +71,20 @@ bench = false
 [[bin]]
 name = "page_title"
 path = "fuzz_targets/page_title.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "wire_decode"
+path = "fuzz_targets/wire_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "invitation_code"
+path = "fuzz_targets/invitation_code.rs"
 test = false
 doc = false
 bench = false

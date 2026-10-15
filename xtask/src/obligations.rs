@@ -28,6 +28,20 @@ pub enum Obligation {
     },
     /// The model must hold its invariant in every reachable state, witness every outcome, and reproduce its traces.
     Quint(QuintModel),
+    /// Every query of the model must hold, and a query of its probe must fail.
+    Proverif(ProverifModel),
+}
+
+/// A ProVerif model, the library of primitives it reads, and its probe.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProverifModel {
+    pub model: String,
+    pub library: String,
+    /// How many queries the model states, each of which ProVerif must prove.
+    pub queries: usize,
+    /// The model with one safeguard removed, of which ProVerif must refute a query.
+    pub probe: String,
 }
 
 /// A Quint model, its probe, and the runs that bind it to the implementation.

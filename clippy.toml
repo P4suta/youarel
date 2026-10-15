@@ -1,6 +1,7 @@
 doc-valid-idents = [
   "..",
   "GitHub",
+  "ProVerif",
   "UTF-8",
   "JSON",
   "TOML",

@@ -30,6 +30,8 @@ youarel-html.workspace = true
 youarel-link.workspace = true
 youarel-release.workspace = true
 youarel-store.workspace = true
+youarel-crypto.workspace = true
+youarel-sync.workspace = true
 
 [dev-dependencies]
 minisign.workspace = true

@@ -1,0 +1,55 @@
+(* The primitives of specs/CRYPTO.md as the symbolic model sees them.
+   Each primitive is perfect here, so the models check the constructions of specs/PROTOCOL.md and not the primitives, which the libcrux proofs and the test vectors cover.
+   An attacker controls the public channel: it reads, drops, replays, and forges every message it can build. *)
+
+free c: channel.
+
+type key.
+type seed.
+type kemsk.
+type kempk.
+type signsk.
+type signpk.
+type code.
+type G.
+type exponent.
+
+(* Authenticated encryption with associated data: a wrong key or wrong associated data opens nothing. *)
+fun seal(bitstring, key, bitstring): bitstring.
+reduc forall m: bitstring, k: key, ad: bitstring; unseal(seal(m, k, ad), k, ad) = m.
+
+(* An epoch key as a plaintext, for a key slot or an admission. *)
+fun keybits(key): bitstring [data, typeConverter].
+
+(* X-Wing: the encapsulation to a public key and the shared secret only the secret key recovers from it. *)
+fun kempublic(kemsk): kempk.
+fun encapsulate(kempk, seed): bitstring.
+fun shared(kempk, seed): key.
+reduc forall sk: kemsk, r: seed; decapsulate(encapsulate(kempublic(sk), r), sk) = shared(kempublic(sk), r).
+
+(* One signature scheme; a device signs with Ed25519 and ML-DSA-65, and a reader requires both. *)
+fun signpublic(signsk): signpk.
+fun sign(bitstring, signsk): bitstring.
+reduc forall m: bitstring, k: signsk; verify(sign(m, k), signpublic(k), m) = true.
+
+(* HKDF and HMAC, each a one-way function of its inputs. *)
+fun channelkey(key, key, bitstring): key.
+fun slotkey(key, bitstring): key.
+fun mac(key, bitstring): bitstring.
+
+(* SPAKE2, abstracted as Diffie-Hellman whose shares travel blinded by the code.
+   Blinding and unblinding invert each other whatever the code, so a guess at the code yields a share that looks as valid as the true one, and only a party that completes the exchange can test a guess. *)
+const g: G [data].
+fun exp(G, exponent): G.
+equation forall x: exponent, y: exponent; exp(exp(g, x), y) = exp(exp(g, y), x).
+fun blind(G, code): G.
+fun unblind(G, code): G.
+equation forall e: G, w: code; unblind(blind(e, w), w) = e.
+equation forall e: G, w: code; blind(unblind(e, w), w) = e.
+fun pakekey(G, G, G): key.
+
+(* The labels of specs/CRYPTO.md that the models tell apart. *)
+const welcomedLabel: bitstring.
+const joinedLabel: bitstring.
+const operationLabel: bitstring.
+const stateLabel: bitstring.

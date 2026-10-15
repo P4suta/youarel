@@ -1,6 +1,7 @@
-//! The window launcher's Linux check: a pinned container with `WebKitGTK` builds, lints, and tests the launcher, and types into its window on a virtual display, so a Linux host needs none of the webview's development packages.
+//! The window launcher's Linux check, in a pinned container with `WebKitGTK`.
 //!
-//! The container reaches the network to fetch crates, and nothing in it installs on the host.
+//! The container builds, lints, and tests the launcher, and types into its window on a virtual display, so a Linux host needs none of the webview's development packages.
+//! It reaches the network to fetch crates, and nothing in it installs on the host.
 
 use crate::quint;
 use crate::tool::{self, Tool};

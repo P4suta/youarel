@@ -93,6 +93,8 @@ enum Command {
         #[command(flatten)]
         source: RecoverySource,
     },
+    /// Show the window launcher's window, or hide it, for a desktop shortcut where the launcher cannot hold its own.
+    Toggle,
     /// Replace this program with the latest release, when its signed manifest offers a newer one.
     SelfUpdate {
         /// Install the latest release even when it is older than the highest version this device reached.
@@ -284,6 +286,7 @@ fn run(cli: Cli) -> Result<()> {
         Some(Command::Recover { source }) => {
             sync::recover(&store, now, &read_key()?, source.source()?)?
         }
+        Some(Command::Toggle) => vec![youarel_cli::window::toggle()?],
         Some(Command::SelfUpdate { allow_downgrade }) => {
             let consent = if allow_downgrade {
                 Consent::Downgrade

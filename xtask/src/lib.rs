@@ -4,12 +4,14 @@
 //! Files are read and written only through [`fs`], and children start only through [`tool`].
 
 pub mod adr;
+pub mod app;
 pub mod apple;
 pub mod check;
 pub mod ci;
 pub mod commit_msg;
 pub mod container;
 pub mod fs;
+pub mod icons;
 pub mod obligations;
 pub mod package;
 pub mod proofs;

@@ -59,6 +59,10 @@ mutants: trust
 worker: trust
     mise x -- cargo xtask worker
 
+# The window launcher on Linux: compile its script, then lint and test it in a container that holds WebKitGTK.
+app-linux: trust
+    mise x -- cargo xtask app-linux
+
 # Fuzz one target beyond its corpus for a bounded number of runs, in the container.
 fuzz target runs="20000": trust
     mise x -- cargo xtask contain fuzz {{quote(target)}} {{runs}}

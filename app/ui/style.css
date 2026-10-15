@@ -1,0 +1,113 @@
+:root {
+  color-scheme: light dark;
+  --background: #f8fafc;
+  --text: #0f172a;
+  --dim: #64748b;
+  --selected: #dbeafe;
+  --accent: #1d4ed8;
+  font-family: system-ui, sans-serif;
+  font-size: 15px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: #0f172a;
+    --text: #e2e8f0;
+    --dim: #94a3b8;
+    --selected: #1e3a8a;
+    --accent: #93c5fd;
+  }
+}
+
+html,
+body {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  display: flex;
+  flex-direction: column;
+  background: var(--background);
+  color: var(--text);
+  overflow: hidden;
+}
+
+#header {
+  padding: 10px 16px 0;
+  font-weight: 600;
+  color: var(--dim);
+}
+
+#line {
+  display: flex;
+  align-items: baseline;
+  padding: 8px 16px;
+  font-size: 20px;
+  border-bottom: 1px solid var(--selected);
+}
+
+#prompt {
+  white-space: pre;
+}
+
+#field {
+  flex: 1;
+  min-width: 2ch;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  caret-color: var(--accent);
+}
+
+#rows {
+  flex: 1;
+  margin: 0;
+  padding: 4px 0;
+  list-style: none;
+  overflow-y: auto;
+}
+
+#rows li {
+  display: flex;
+  gap: 12px;
+  padding: 6px 16px;
+  white-space: nowrap;
+}
+
+#rows li[aria-selected="true"] {
+  background: var(--selected);
+}
+
+#rows .name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#rows .detail,
+#rows .alias {
+  color: var(--dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#rows .folder .name::after {
+  content: "/";
+  color: var(--dim);
+}
+
+#rows .add .name::before {
+  content: "+ ";
+  color: var(--accent);
+}
+
+#footer {
+  padding: 6px 16px 10px;
+  font-size: 12px;
+  color: var(--dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}

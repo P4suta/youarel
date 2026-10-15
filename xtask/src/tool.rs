@@ -23,6 +23,9 @@ pub const PKGUTIL: &str = "/usr/sbin/pkgutil";
 pub const XCRUN: &str = "/usr/bin/xcrun";
 pub const SPCTL: &str = "/usr/sbin/spctl";
 
+/// The TypeScript compiler as npm installs it: a script that Windows runs only by its `.cmd` name.
+const TSC: &str = if cfg!(windows) { "tsc.cmd" } else { "tsc" };
+
 mod raw {
     #![expect(
         clippy::disallowed_methods,
@@ -61,6 +64,8 @@ pub enum Tool {
     Gh,
     /// PowerShell, which checks an Authenticode signature on Windows.
     Pwsh,
+    /// The TypeScript compiler, which checks the window launcher's script under strict rules.
+    Tsc,
     /// The macOS tools of a release, by their fixed system paths.
     Security,
     Codesign,
@@ -87,6 +92,7 @@ impl Tool {
             Self::Rustc => "rustc",
             Self::Gh => "gh",
             Self::Pwsh => "pwsh",
+            Self::Tsc => TSC,
             Self::Security => SECURITY,
             Self::Codesign => CODESIGN,
             Self::Productsign => PRODUCTSIGN,

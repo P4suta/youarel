@@ -27,6 +27,27 @@ pub const BARE_TARGET: &str = "thumbv7em-none-eabi";
 /// The relay's Worker, its own workspace, and the WebAssembly target it builds for.
 const WORKER: &str = "server";
 const WORKER_TARGET: &str = "wasm32-unknown-unknown";
+/// The window launcher's workspace, and its script's TypeScript configuration.
+pub const APP: &str = "app";
+const APP_SCRIPT: &str = "app/tsconfig.json";
+/// The window launcher's manifest and its build's directory, relative to the checkout.
+const APP_MANIFEST: &str = "app/Cargo.toml";
+const APP_TARGET: &str = "target";
+/// The advisories the window launcher's lockfile accepts, with their reasons.
+///
+/// Tauri's Linux webview and tray reach GTK 3 through `gtk` 0.18, and no release of Tauri reaches GTK 4 yet.
+/// Every crate of the lockfile, for every target, was searched for a use of the unsound iterator, and only `glib` itself names it.
+/// Reconsider both when Tauri leaves GTK 3.
+const APP_ACCEPTED_ADVISORIES: [(&str, &str); 2] = [
+    (
+        "RUSTSEC-2024-0370",
+        "proc-macro-error is unmaintained, and it runs only while glib-macros compiles",
+    ),
+    (
+        "RUSTSEC-2024-0429",
+        "glib 0.18's VariantStrIter is unsound, and no crate the launcher builds iterates one",
+    ),
+];
 
 fn staged_paths(root: &Path) -> Result<Vec<String>> {
     let listing = capture(
@@ -131,6 +152,52 @@ fn worker(root: &Path) -> Result<()> {
     )
 }
 
+/// The window launcher, in its own workspace: its script under strict TypeScript, then its formatting, its lints, and its tests.
+///
+/// The compiled script lands beside its source, where the launcher's build embeds it.
+/// Each command names the launcher's manifest relative to the checkout, since the checkout's resolved path is a verbatim `\\?\` path on Windows, which reaches the linker through Cargo and fails it.
+/// The launcher builds into the checkout's own target directory, the one place a remote runner lets a build write.
+fn app(root: &Path) -> Result<()> {
+    succeed(
+        Tool::Tsc.command(root).args(["--project", APP_SCRIPT]),
+        "tsc of the window launcher's script",
+    )?;
+    succeed(
+        Tool::Cargo
+            .command(root)
+            .args(["fmt", "--check", "--manifest-path", APP_MANIFEST]),
+        "cargo fmt --check of the window launcher",
+    )?;
+    succeed(
+        Tool::Cargo.command(root).args([
+            "clippy",
+            "--locked",
+            "--all-targets",
+            "--manifest-path",
+            APP_MANIFEST,
+            "--target-dir",
+            APP_TARGET,
+            "--",
+            "-D",
+            "warnings",
+        ]),
+        "cargo clippy of the window launcher",
+    )?;
+    succeed(
+        Tool::Cargo.command(root).args([
+            "nextest",
+            "run",
+            "--locked",
+            "--no-tests=fail",
+            "--manifest-path",
+            APP_MANIFEST,
+            "--target-dir",
+            APP_TARGET,
+        ]),
+        "cargo nextest of the window launcher",
+    )
+}
+
 /// Builds the core for a target without an operating system, which fails the moment the core reaches `std`.
 fn bare(root: &Path) -> Result<()> {
     succeed(
@@ -160,10 +227,10 @@ fn tests(root: &Path) -> Result<()> {
     )
 }
 
-/// Every manifest with its own lockfile: the workspace, the fuzz workspace, the Worker, and each proof fixture.
+/// Every manifest with its own lockfile: the workspace, the fuzz workspace, the Worker, the window launcher, and each proof fixture.
 fn manifests(root: &Path) -> Result<Vec<std::path::PathBuf>> {
     let mut found = vec![root.join("Cargo.toml")];
-    for workspace in [proofs::FUZZ, WORKER] {
+    for workspace in [proofs::FUZZ, WORKER, APP] {
         let manifest = root.join(workspace).join("Cargo.toml");
         if fs::is_file(&manifest)? {
             found.push(manifest);
@@ -199,16 +266,21 @@ fn deny(root: &Path) -> Result<()> {
     Ok(())
 }
 
+/// The advisories of every lockfile, refusing each warning but the ones the window launcher's lockfile accepts.
 fn audit(root: &Path) -> Result<()> {
+    let app = root.join(APP).join("Cargo.toml");
     for manifest in manifests(root)? {
         let lock = manifest.with_file_name("Cargo.lock");
-        succeed(
-            Tool::Cargo
-                .command(root)
-                .args(["audit", "--deny", "warnings", "--file"])
-                .arg(&lock),
-            "cargo audit",
-        )?;
+        let mut command = Tool::Cargo.command(root);
+        command
+            .args(["audit", "--deny", "warnings", "--file"])
+            .arg(&lock);
+        if manifest == app {
+            for (advisory, _reason) in APP_ACCEPTED_ADVISORIES {
+                command.args(["--ignore", advisory]);
+            }
+        }
+        succeed(&mut command, "cargo audit")?;
     }
     Ok(())
 }
@@ -252,6 +324,8 @@ fn everything(root: &Path) -> Result<()> {
     report.stage("typos", || typos(root, None));
     report.stage("clippy", || clippy(root));
     report.stage("worker", || worker(root));
+    report.stage("app", || app(root));
+    report.stage("icons", || crate::icons::check(root));
     report.stage("structure", || structure::check(root));
     report.stage("bare", || bare(root));
     report.stage("adr", || adr::check(root));
@@ -287,12 +361,16 @@ fn staged(root: &Path) -> Result<()> {
 /// The compiler, the lints under the host's configuration, the structure, the bare build, and the tests.
 ///
 /// Formatting, spelling, the records, the generated files, and the workflows read the same bytes on every host and need the Git history, so the full check covers them.
+/// A Linux host builds the window launcher only with the `WebKitGTK` development packages, so there the container of `just app-linux` covers it instead.
 fn platform(root: &Path) -> Result<()> {
     let mut report = Report::default();
     report.stage("clippy", || clippy(root));
     report.stage("structure", || structure::check(root));
     report.stage("bare", || bare(root));
     report.stage("tests", || tests(root));
+    if !cfg!(target_os = "linux") {
+        report.stage("app", || app(root));
+    }
     report.finish("check --platform")
 }
 
@@ -309,13 +387,14 @@ pub fn run(root: &Path, scope: Scope) -> Result<()> {
     }
 }
 
-/// Every check and then every proof, which a push requires; the proofs run in the memory-limited container.
+/// Every check, the window launcher's Linux check, and then every proof, which a push requires; the Linux check and the proofs run in memory-limited containers.
 ///
 /// # Errors
 ///
 /// Returns an error when a check or a proof fails.
 pub fn push_check(root: &Path) -> Result<()> {
     run(root, Scope::Everything)?;
+    crate::app::linux(root)?;
     crate::container::run(root, &["proofs"])
 }
 
@@ -326,6 +405,7 @@ pub fn push_check(root: &Path) -> Result<()> {
 /// Returns an error when a generator fails.
 pub fn generate(root: &Path) -> Result<()> {
     crate::quint::generate(root)?;
+    crate::icons::generate(root)?;
     repository(root, "generate")
 }
 
@@ -337,6 +417,7 @@ pub fn generate(root: &Path) -> Result<()> {
 pub fn generated(root: &Path) -> Result<()> {
     let mut report = Report::default();
     report.stage("adr", || adr::check(root));
+    report.stage("icons", || crate::icons::check(root));
     report.stage("repository", || repository(root, "check"));
     report.finish("gen --check")
 }

@@ -1,0 +1,94 @@
+# The window launcher, which a global shortcut or the tray brings up, in a workspace of its own so that the webview's dependencies stay out of the other crates.
+[package]
+name = "youarel-launcher"
+description = "The youarel window launcher, which opens web shortcuts from any browser"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.99.0"
+publish = false
+license = "MIT OR Apache-2.0"
+authors = ["Yasunobu"]
+readme = "../README.md"
+repository = "https://github.com/P4suta/youarel"
+keywords = ["bookmarks", "launcher", "gui"]
+categories = ["gui"]
+
+[[bin]]
+name = "youarel-launcher"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2.7.3", features = [] }
+
+[dependencies]
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+tauri = { version = "2.12.4", features = ["tray-icon"] }
+tauri-plugin-global-shortcut = "2.4.1"
+tauri-plugin-single-instance = "2.5.4"
+youarel-cli = { path = "../crates/youarel-cli" }
+youarel-core = { path = "../crates/youarel-core" }
+youarel-store = { path = "../crates/youarel-store" }
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints.rust]
+unsafe_code = "forbid"
+non_ascii_idents = "deny"
+unfulfilled_lint_expectations = "deny"
+unused = { level = "deny", priority = -1 }
+future_incompatible = { level = "deny", priority = -1 }
+missing_debug_implementations = "deny"
+missing_copy_implementations = "deny"
+unreachable_pub = "deny"
+unused_qualifications = "deny"
+elided_lifetimes_in_paths = "deny"
+unused_lifetimes = "deny"
+single_use_lifetimes = "deny"
+redundant_lifetimes = "deny"
+trivial_casts = "deny"
+trivial_numeric_casts = "deny"
+let_underscore_drop = "deny"
+meta_variable_misuse = "deny"
+unit_bindings = "deny"
+variant_size_differences = "deny"
+ambiguous_negative_literals = "deny"
+
+[lints.clippy]
+pedantic = { level = "deny", priority = -1 }
+nursery = { level = "deny", priority = -1 }
+cargo = { level = "deny", priority = -1 }
+allow_attributes = "deny"
+allow_attributes_without_reason = "deny"
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
+unreachable = "deny"
+dbg_macro = "deny"
+indexing_slicing = "deny"
+string_slice = "deny"
+as_conversions = "deny"
+clone_on_ref_ptr = "deny"
+str_to_string = "deny"
+mem_forget = "deny"
+arithmetic_side_effects = "deny"
+let_underscore_must_use = "deny"
+map_err_ignore = "deny"
+unwrap_in_result = "deny"
+unused_result_ok = "deny"
+exit = "deny"
+disallowed_methods = "deny"
+disallowed_types = "deny"
+wildcard_enum_match_arm = "deny"
+shadow_unrelated = "deny"
+# The webview's tree holds several versions of the same crates, as the URL parser's does in the main workspace.
+multiple_crate_versions = "allow"
+
+[profile.dev.package."*"]
+opt-level = 2
+
+[workspace]
+members = ["."]

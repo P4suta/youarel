@@ -1,0 +1,7 @@
+{
+  "name": "youarel-app-linux-host",
+  "private": true,
+  "dependencies": {
+    "typescript": "7.0.2"
+  }
+}

@@ -101,6 +101,7 @@ youarel-protocol = { path = "crates/youarel-protocol" }
 youarel-release = { path = "crates/youarel-release" }
 youarel-store = { path = "crates/youarel-store" }
 youarel-sync = { path = "crates/youarel-sync" }
+youarel-relay = { path = "crates/youarel-relay" }
 
 anyhow = "1.0"
 base64 = "0.22"
@@ -141,10 +142,15 @@ syn = { version = "2.0", default-features = false, features = [
 ] }
 tar = { version = "0.4", default-features = false }
 tempfile = "3"
+tiny_http = { version = "0.12", default-features = false }
 toml = { version = "1.0", features = ["preserve_order"] }
 url = "2.5"
 zip = { version = "8", default-features = false, features = ["deflate"] }
 zeroize = "1.8"
+
+# The dependencies build optimized, so the tests sign and verify with ML-DSA at its real speed, while the workspace's own crates keep their checks.
+[profile.dev.package."*"]
+opt-level = 2
 
 [profile.test]
 debug = 0

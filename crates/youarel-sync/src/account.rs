@@ -8,17 +8,20 @@ use crate::keystore::KeyStore;
 use crate::{SyncError, hex, sealed, unhex};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use youarel_core::membership_rules::{self, Resolution};
+use youarel_core::membership_rules::Resolution;
+use youarel_core::relay_rules::NONCE;
 use youarel_crypto::kem::{self, KeyPair};
 use youarel_crypto::pairing::{self, Code};
 use youarel_crypto::seal::{self, COMMITMENT};
 use youarel_crypto::sign::{ED25519_KEY, ML_DSA_SIGNING_KEY, SigningKeys};
 use youarel_crypto::slot::{self, Binding};
 use youarel_crypto::{DIGEST, KEY, Label};
+use youarel_protocol::log::{self, Checked};
 use youarel_protocol::message::{
     Action, Admission, Bundle, DevicePublic, Digest, Entry, Join, Joined, Operation, Rotation,
     Unsigned, UnsignedBundle, Welcome, account_of, operation_digest,
 };
+use youarel_protocol::relay::{Request, UnsignedRequest, Verb};
 use youarel_protocol::wire::{Reader, Writer};
 use youarel_store::fs;
 use zeroize::Zeroizing;
@@ -151,13 +154,6 @@ pub struct Imported {
     pub sender: Digest,
     /// The sender's state in the JSON form of the store.
     pub state: Zeroizing<Vec<u8>>,
-}
-
-/// The log after its checks: every operation that verified, and its resolution.
-struct Checked {
-    operations: BTreeMap<Digest, Operation>,
-    keys: BTreeMap<Digest, DevicePublic>,
-    resolution: Resolution,
 }
 
 /// A device's account, open in its directory.
@@ -308,64 +304,7 @@ impl Account {
 
     /// The log with every operation that verifies, under the key its author published, and its resolution.
     fn check(&self) -> Result<Checked, SyncError> {
-        let genesis = self.genesis()?;
-        let account = self.account_id()?;
-        let mut decoded = BTreeMap::new();
-        let mut keys = BTreeMap::new();
-        for (digest, bytes) in &self.log {
-            let Ok(operation) = Operation::decode(bytes) else {
-                continue;
-            };
-            if let Action::Genesis(device) | Action::Add(device) = &operation.action {
-                keys.insert(device.id(), device.clone());
-            }
-            decoded.insert(*digest, operation);
-        }
-        let mut operations = BTreeMap::new();
-        for (digest, operation) in decoded {
-            let expected = if digest == genesis { [0; 32] } else { account };
-            let verifies = operation.account == expected
-                && operation.unsigned().bytes().is_ok_and(|unsigned| {
-                    keys.get(&operation.author).is_some_and(|author| {
-                        author
-                            .signing
-                            .verify(Label::Operation, &unsigned, &operation.signature)
-                    })
-                });
-            if verifies {
-                operations.insert(digest, operation);
-            }
-        }
-        let rules: Vec<membership_rules::Operation> = operations
-            .iter()
-            .map(|(digest, operation)| membership_rules::Operation {
-                digest: *digest,
-                parents: operation.parents.clone(),
-                author: operation.author,
-                action: operation.action.rule(),
-            })
-            .collect();
-        let resolution = membership_rules::resolve(genesis, &rules);
-        Ok(Checked {
-            operations,
-            keys,
-            resolution,
-        })
-    }
-
-    /// The operations no other operation names as a parent, which a new operation names.
-    fn heads(checked: &Checked) -> Vec<Digest> {
-        let named: BTreeSet<Digest> = checked
-            .operations
-            .values()
-            .flat_map(|operation| operation.parents.iter().copied())
-            .collect();
-        checked
-            .operations
-            .keys()
-            .filter(|digest| !named.contains(*digest))
-            .copied()
-            .collect()
+        Ok(log::check(self.genesis()?, self.account_id()?, &self.log))
     }
 
     /// Writes an operation of this device into the log.
@@ -380,7 +319,7 @@ impl Account {
         } else {
             self.account_id()?
         };
-        let parents = Self::heads(checked);
+        let parents = checked.heads();
         let author = self.device();
         let unsigned = Unsigned {
             account: &account,
@@ -723,14 +662,55 @@ impl Account {
     ///
     /// Returns [`SyncError::Refused`] when this device is no member of an account.
     pub fn invite(&self) -> Result<Code, SyncError> {
+        self.invite_as(Code::generate()?)
+    }
+
+    /// An invitation under `code`, whose number a relay's mailbox holds.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SyncError::Refused`] when this device is no member of an account.
+    pub fn invite_as(&self, code: Code) -> Result<Code, SyncError> {
         if !self.status()?.member {
             return Err(SyncError::Refused(String::from(
                 "only a member invites a device",
             )));
         }
-        let code = Code::generate()?;
         self.save_invitation(code.number, &Invitation::Waiting(code))?;
         Ok(code)
+    }
+
+    /// A request to the relay with `payload`, stamped `now` and signed by this device, under a nonce of its own.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`SyncError`] when the device belongs to no account, the payload passes the request's limit, or signing fails.
+    pub fn request(&self, now: u64, verb: Verb, payload: Vec<u8>) -> Result<Vec<u8>, SyncError> {
+        let account = self.account_id()?;
+        let device = self.device();
+        let nonce = youarel_crypto::random::<NONCE>()?;
+        let unsigned = UnsignedRequest {
+            account: &account,
+            device: &device,
+            verb,
+            stamped: now,
+            nonce: &nonce,
+            payload: &payload,
+        };
+        let signature = self
+            .identity
+            .signing
+            .sign(Label::Request, &unsigned.bytes()?)?;
+        Ok(Request {
+            account,
+            device,
+            verb,
+            stamped: now,
+            nonce,
+            payload,
+            signature,
+        }
+        .encode()?)
     }
 
     fn joining(&self) -> Result<Option<Joining>, SyncError> {

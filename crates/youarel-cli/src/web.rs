@@ -10,6 +10,8 @@ use youarel_link::Link;
 pub const FETCH_TIMEOUT: Duration = Duration::from_secs(5);
 /// How long a release download may take in all, redirects included.
 pub const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(300);
+/// How long one exchange with a relay may take, longer than a pick waits there for mail.
+pub const RELAY_TIMEOUT: Duration = Duration::from_secs(60);
 /// The redirects a fetch follows.
 pub const REDIRECTS: u32 = 5;
 /// The most bytes of a page a title fetch reads.
@@ -30,19 +32,47 @@ pub fn open(link: &str) -> Result<()> {
         .with_context(|| format!("cannot open {admitted} in the default browser"))
 }
 
-/// An HTTP client whose certificates the operating system verifies, which gives up after `timeout`.
-fn agent(timeout: Duration) -> ureq::Agent {
-    let tls = ureq::tls::TlsConfig::builder()
+/// The TLS settings of every fetch: the operating system verifies the certificates.
+fn tls() -> ureq::tls::TlsConfig {
+    ureq::tls::TlsConfig::builder()
         .root_certs(ureq::tls::RootCerts::PlatformVerifier)
         .unversioned_rustls_crypto_provider(Arc::new(rustls::crypto::ring::default_provider()))
-        .build();
+        .build()
+}
+
+/// An HTTP client whose certificates the operating system verifies, which gives up after `timeout`.
+fn agent(timeout: Duration) -> ureq::Agent {
     let config = ureq::Agent::config_builder()
-        .tls_config(tls)
+        .tls_config(tls())
         .timeout_global(Some(timeout))
         .max_redirects(REDIRECTS)
         .user_agent(USER_AGENT)
         .build();
     ureq::Agent::new_with_config(config)
+}
+
+/// Posts one message to the relay at `url` and returns the status and the body of its answer, no more than `limit` bytes.
+///
+/// A refusal is an answer like any other, and the relay's answers never redirect.
+///
+/// # Errors
+///
+/// Returns an error when the relay cannot be reached within [`RELAY_TIMEOUT`] or its answer exceeds the limit.
+pub fn post(url: &str, message: &[u8], limit: u64) -> Result<(u16, Vec<u8>)> {
+    let config = ureq::Agent::config_builder()
+        .tls_config(tls())
+        .timeout_global(Some(RELAY_TIMEOUT))
+        .max_redirects(0)
+        .http_status_as_error(false)
+        .user_agent(USER_AGENT)
+        .build();
+    let mut response = ureq::Agent::new_with_config(config)
+        .post(url)
+        .header("Content-Type", youarel_relay::MEDIA_TYPE)
+        .send(message)
+        .with_context(|| format!("cannot reach the relay at {url}"))?;
+    let status = response.status().as_u16();
+    Ok((status, body(&mut response, url, limit)?))
 }
 
 /// The body of a response, no more than `limit` bytes.

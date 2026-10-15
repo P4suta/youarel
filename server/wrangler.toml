@@ -1,0 +1,20 @@
+# The relay's Worker for `wrangler dev --local`.
+# It names no account and no route, so nothing here deploys it; deploying waits until the owner lifts the hold on releases.
+name = "youarel-relay"
+main = "build/worker/shim.mjs"
+compatibility_date = "2026-10-01"
+
+[build]
+command = "worker-build --release"
+
+[[durable_objects.bindings]]
+name = "ACCOUNTS"
+class_name = "AccountObject"
+
+[[durable_objects.bindings]]
+name = "MAILBOXES"
+class_name = "MailboxObject"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["AccountObject", "MailboxObject"]

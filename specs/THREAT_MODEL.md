@@ -14,12 +14,16 @@
 - **Anyone who records ciphertext now to decrypt it once a quantum computer exists.** Every secret travels under a symmetric key or through X-Wing, whose ML-KEM half stands when X25519 falls.
 - **A removed device.** The rotation that follows a removal gives the remaining members a key the removed device never sees, and its later bundles are refused because it is no longer a member.
 - **Someone who intercepts a pairing.** The PAKE gives them no offline test of the code, so each forged message is one guess against forty bits, and the invitation then expires.
+- **Anyone who replays a request to the relay, or sends one as a member it is not.** The relay admits a request once, within two minutes of its time, and only under the signature of a device the account's log lists.
 
 ## What it does not resist
 
 - **A member device under an attacker's control.** A member holds the keys, so it can read the state and write anything into it.
 - **A carrier that withholds bundles or replays old ones.** The state merge keeps every write a device has, so an old bundle loses nothing, but a device can miss writes until another channel brings them.
 - **Traffic analysis** of when and how much a device sends.
+- **What the relay learns by serving.** It sees each request's address, time, and size, the account and device identifiers, the device public keys, how many devices an account holds, and when each publishes; it holds no key to any state.
+- **A flood of pairings at the relay.** Its mailboxes need no signature, so someone can hold them open until they expire; the relay bounds how many it keeps and what each holds.
+- **A flood of accounts at the relay.** Anyone can found an account, so the relay bounds what each holds and deletes an idle one after its retention; a deployment adds the rate limits of its platform.
 - **A person who loses every device and has neither a passkey nor a recovery key.** The data is then gone, and a relay deletes its copy after its retention period.
 - **A quantum attacker during a pairing.** The PAKE's authentication is classical, so an attacker who can break it while the pairing runs can impersonate a side; recorded pairings stay secret through the key encapsulation.
 

@@ -26,5 +26,9 @@ sha2.workspace = true
 spake2.workspace = true
 zeroize.workspace = true
 
+# The relay runs as WebAssembly on Workers, whose randomness comes from the JavaScript host.
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+getrandom = { workspace = true, features = ["wasm_js"] }
+
 [lints]
 workspace = true

@@ -29,6 +29,7 @@ pub enum Label {
     Pairing,
     Welcomed,
     Joined,
+    Request,
 }
 
 impl Label {
@@ -46,6 +47,7 @@ impl Label {
             Self::Pairing => "youarel/v1/pairing",
             Self::Welcomed => "youarel/v1/welcomed",
             Self::Joined => "youarel/v1/joined",
+            Self::Request => "youarel/v1/request",
         }
     }
 }
@@ -173,6 +175,7 @@ mod tests {
             Label::Pairing,
             Label::Welcomed,
             Label::Joined,
+            Label::Request,
         ];
         for (index, label) in labels.iter().enumerate() {
             assert!(label.text().starts_with("youarel/v1/"));

@@ -75,6 +75,18 @@ impl Code {
         })
     }
 
+    /// A new code for the invitation `number` that a relay handed out, with a secret from the operating system's randomness.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CryptoError::Random`] when the operating system gives no randomness.
+    pub fn for_number(number: u16) -> Result<Self, CryptoError> {
+        Ok(Self {
+            number,
+            secret: crate::random::<SECRET>()?,
+        })
+    }
+
     /// The code that `text` spells: the number, then eight symbols of the secret, with any dashes or spaces between them.
     #[must_use]
     pub fn parse(text: &str) -> Option<Self> {

@@ -1,0 +1,26 @@
+[package]
+name = "youarel-relay"
+description = "The optional relay of youarel, which keeps each member's newest sealed bundle and carries the mail of pairings"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+authors.workspace = true
+readme.workspace = true
+repository.workspace = true
+keywords = ["relay", "sync", "end-to-end-encryption"]
+categories = ["network-programming"]
+
+[features]
+# A relay that serves HTTP on this host, for the end-to-end tests and for people who keep their own relay.
+local = ["dep:tiny_http"]
+
+[dependencies]
+tiny_http = { workspace = true, optional = true }
+youarel-core.workspace = true
+youarel-crypto.workspace = true
+youarel-protocol.workspace = true
+
+[lints]
+workspace = true

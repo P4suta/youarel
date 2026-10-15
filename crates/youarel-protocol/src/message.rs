@@ -12,7 +12,7 @@ use youarel_crypto::{DIGEST, KEY, Label, digest, kem, pairing};
 /// The version every message carries.
 pub const VERSION: u16 = 1;
 /// The bytes of the magic that starts each message.
-const MAGIC: usize = 4;
+pub(crate) const MAGIC: usize = 4;
 /// The magic of each kind of message.
 const OPERATION: [u8; MAGIC] = *b"YRO1";
 const BUNDLE: [u8; MAGIC] = *b"YRB1";
@@ -45,7 +45,7 @@ const ADD: u8 = 1;
 const REMOVE: u8 = 2;
 const ROTATE: u8 = 3;
 
-fn magic(reader: &mut Reader<'_>, expected: [u8; MAGIC]) -> Result<(), WireError> {
+pub(crate) fn magic(reader: &mut Reader<'_>, expected: [u8; MAGIC]) -> Result<(), WireError> {
     if reader.array::<MAGIC>()? != expected {
         return Err(WireError::Magic);
     }
@@ -56,7 +56,7 @@ fn magic(reader: &mut Reader<'_>, expected: [u8; MAGIC]) -> Result<(), WireError
     Ok(())
 }
 
-fn begin(kind: [u8; MAGIC]) -> Writer {
+pub(crate) fn begin(kind: [u8; MAGIC]) -> Writer {
     let mut writer = Writer::new();
     writer.raw(&kind).short(VERSION);
     writer
@@ -121,13 +121,13 @@ impl DevicePublic {
     }
 }
 
-fn write_signature(writer: &mut Writer, signature: &Signature) {
+pub(crate) fn write_signature(writer: &mut Writer, signature: &Signature) {
     writer
         .raw(&signature.ed25519)
         .raw(signature.ml_dsa.as_slice());
 }
 
-fn read_signature(reader: &mut Reader<'_>) -> Result<Signature, WireError> {
+pub(crate) fn read_signature(reader: &mut Reader<'_>) -> Result<Signature, WireError> {
     Ok(Signature {
         ed25519: reader.array::<ED25519_SIGNATURE>()?,
         ml_dsa: Box::new(reader.array::<ML_DSA_SIGNATURE>()?),

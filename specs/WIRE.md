@@ -39,6 +39,13 @@ Each message starts with a four-byte magic and a `u16` version, which is 1.
 | `YRC1` | Joined | invitation `u16`, joiner's `confirmation` |
 | `YRE1` | Entry | invitation `u16`, admission `sealed` |
 | `YRA1` | Admission | account `digest`, operations `list<bytes>`, epoch keys `list<(u32, 32 bytes)>`, state `bytes` |
+| `YRQ1` | Request | account `digest`, device `digest`, verb `u8`, time `u64`, nonce (16 bytes), payload `bytes`, `signature` |
+| `YRL1` | Collected | slots `list<(device digest, time u64, bundle bytes)>` |
+| `YRM1` | Mail | a `u8` tag, then nothing for an opening, a nameplate `u16`, a side `u8`, and a message `bytes` for a drop, or a nameplate and a side for a pick |
+
+A request's verb is 0 for a publication, 1 for a collection, and 2 for an erasure; a mail's side is 0 for the inviter and 1 for the joiner.
+The relay answers an opening with the version and the nameplate, each a `u16`.
+The relay's paths are `/v1/requests` and `/v1/mail`, which take a `POST` of one message under the media type `application/vnd.youarel.v1`, and answer with a status and a message, or with the reason of a refusal as text.
 
 A bundle and an admission list their operations in ascending order of the operations' digests, and an admission lists its epoch keys in ascending order of the epoch and then the key.
 The genesis operation names the zero digest as its account, since the account's identifier is the genesis operation's digest.

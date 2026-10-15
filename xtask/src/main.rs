@@ -5,7 +5,7 @@ use std::process::ExitCode;
 
 const USAGE_EXIT_CODE: u8 = 2;
 
-const USAGE: &str = "usage: cargo xtask check [--staged | --platform] | push-check | structure | commit-msg FILE | proofs [--ci] [--only STEP] [--without STEP] [--inside], where STEP is kani|quint|proverif|miri|fuzz|mutants | fuzz TARGET RUNS | contain TASK... | gen [--check] | ci check|test|proofs|gate NAME | release STEP...";
+const USAGE: &str = "usage: cargo xtask check [--staged | --platform] | push-check | structure | commit-msg FILE | proofs [--ci] [--only STEP] [--without STEP] [--inside], where STEP is kani|quint|proverif|miri|fuzz|mutants | fuzz TARGET RUNS | worker | contain TASK... | gen [--check] | ci check|test|proofs|gate NAME | release STEP...";
 
 fn report(task: &str, result: anyhow::Result<()>) -> ExitCode {
     match result {
@@ -33,6 +33,7 @@ fn dispatch(root: &Path, words: &[&str]) -> ExitCode {
         ),
         ["push-check"] => report("push-check", xtask::check::push_check(root)),
         ["structure"] => report("structure", xtask::structure::check(root)),
+        ["worker"] => report("worker", xtask::worker::run(root)),
         ["commit-msg", message] => report(
             "commit-msg",
             xtask::commit_msg::check(root, Path::new(message)),

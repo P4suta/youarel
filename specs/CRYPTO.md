@@ -32,6 +32,7 @@ A signed message is the label, a zero byte, and the payload.
 | `youarel/v1/pairing` | The channel key of a pairing |
 | `youarel/v1/welcomed` | The inviter's confirmation of a pairing |
 | `youarel/v1/joined` | The joiner's confirmation of a pairing |
+| `youarel/v1/request` | The signature of a member's request to the relay |
 
 ## Constructions
 

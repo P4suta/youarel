@@ -63,7 +63,29 @@ A device importing a bundle MUST:
 
 A bundle can travel as a file through any channel: a USB drive, a messenger, or a shared folder in which each device writes only `<device>.youarel`, named by its identifier in hexadecimal.
 A device syncing through a shared folder imports every other device's file there, reports and skips any it refuses, and then writes its own.
-The relay service of a later version carries the same bundles.
+
+## The relay
+
+The optional relay is a shared folder that checks who writes: it keeps one slot per member, holding that member's newest bundle, and hands every member's slot to any member.
+It never holds an epoch key, so it reads no state.
+
+A member's request carries the account, the device, a verb, the device's clock in milliseconds, a random nonce, and a payload, signed by the device under `youarel/v1/request`.
+The relay MUST refuse a request whose time lies more than 120 seconds from its own clock, whose nonce it admitted before, whose device the account's log does not list as a member, or whose signature fails.
+It keeps each admitted nonce until the request would be stale anyway.
+
+- **Publish** carries the member's bundle, which the relay MUST verify against the account's log and the member's keys before it replaces the member's slot.
+  The relay merges the bundle's operations that verify into its own copy of the log, so the first bundle of an account founds the account at the relay, and a device that returns after the relay deleted the account seeds it again.
+- **Collect** hands back every member's slot, in ascending order of the devices.
+- **Erase** deletes everything the relay keeps of the account.
+
+The relay drops the slot of every device the log stops listing, keeps an account no longer than 400 days after its last admitted request, and bounds what an account holds in all.
+A member hears of a device whose slot the relay has not renewed for 180 days, and ends that membership only when its person says so, since the slot's time is the relay's own claim.
+A device that returns after a long absence revives nothing, because the state keeps every tombstone.
+
+A pairing through the relay uses a mailbox instead of files.
+The inviting device asks the relay for a mailbox, whose small nameplate becomes the code's number, and the four pairing messages travel through the mailbox, each to one side.
+The mailbox needs no signature, since the pairing messages authenticate themselves through the code, and it closes five minutes after it opens.
+A device that asks for its side's next message while none waits hears nothing for up to 25 seconds, unless a message arrives first, and asks again.
 
 ## Pairing
 

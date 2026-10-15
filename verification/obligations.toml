@@ -152,6 +152,19 @@ probes = [
 ]
 
 [[obligation]]
+verifier = "kani"
+source = "crates/youarel-core/src/relay_rules.rs"
+harnesses = [
+  { name = "proofs::a_forgotten_nonce_belongs_to_a_stale_request", covers = 1, contract = "a request is fresh exactly when its stamp lies within the window of the relay's clock, and the relay forgets a nonce only once its request is stale, so a forgotten nonce never returns as fresh", input_domain = "every clock reading and every stamp", bound = "complete" },
+  { name = "proofs::a_request_passes_only_fresh_and_new", covers = 1, contract = "admit lets a request pass exactly when it is fresh and its nonce is none the relay retains, and calls it a replay only for a retained nonce", input_domain = "every clock reading, stamp, and nonce, and every list of up to three retained nonces with their stamps", bound = "three retained nonces" },
+  { name = "proofs::the_quota_and_the_clocks_never_overflow", covers = 1, contract = "a bundle fits exactly when the account's total after it stays within the quota, an account expires its retention after its last request, a device is gone only after its inactivity, a mailbox stays open for its lifetime and takes a message exactly when it stays within its limit, with no overflow", input_domain = "every total, replaced and incoming size, clock reading, and timestamp", bound = "complete" },
+  { name = "proofs::the_nameplate_is_the_smallest_free_one", covers = 1, contract = "nameplate hands out a positive number that no open mailbox holds, and every smaller positive number is taken", input_domain = "every list of up to three open nameplates", bound = "three open mailboxes; the tests cover a full table" },
+]
+probes = [
+  { harness = "proofs::rejects_a_request_from_beyond_the_window", assertion = "NEGATIVE_RELAY_CONTROL" },
+]
+
+[[obligation]]
 verifier = "quint"
 spec = "specs/membership.qnt"
 main = "membership"

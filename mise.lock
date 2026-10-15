@@ -355,7 +355,7 @@ specifiers = ["1.99.0"]
 
 [tools.rust.options]
 components = "clippy,rustfmt"
-targets = "thumbv7em-none-eabi"
+targets = "thumbv7em-none-eabi,wasm32-unknown-unknown"
 
 [[tools.taplo]]
 version = "0.10.0"

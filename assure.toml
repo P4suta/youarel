@@ -43,6 +43,11 @@ by = "fuzz/fuzz_targets/wire_decode.rs"
 
 [[owner]]
 shape = "parser"
+path = "crates/youarel-protocol/src/relay.rs"
+by = "fuzz/fuzz_targets/wire_decode.rs"
+
+[[owner]]
+shape = "parser"
 path = "crates/youarel-crypto/src/pairing.rs"
 by = "fuzz/fuzz_targets/invitation_code.rs"
 

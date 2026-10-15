@@ -39,7 +39,7 @@ proofs-linux:
 structure: trust
     mise x -- cargo xtask structure
 
-# Kani, Miri, fuzz corpus replays, and mutation testing, in a container limited to 8 GB of memory and 4 processors.
+# Kani, Quint, ProVerif, Miri, fuzz corpus replays, and mutation testing, in containers limited to 8 GB of memory and 4 processors at most.
 proofs *args: trust
     mise x -- cargo xtask contain proofs {{args}}
 
@@ -54,6 +54,10 @@ proofs-ci: trust
 # Mutation testing of the pure crates alone, in the container.
 mutants: trust
     mise x -- cargo xtask contain proofs --only mutants
+
+# The relay's Worker: lint and build it, serve it with `wrangler dev --local` in a container, and run the relay's end-to-end test against it; nothing deploys it.
+worker: trust
+    mise x -- cargo xtask worker
 
 # Fuzz one target beyond its corpus for a bounded number of runs, in the container.
 fuzz target runs="20000": trust

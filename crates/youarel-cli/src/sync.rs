@@ -2,9 +2,13 @@
 //!
 //! Each command opens the account beside the store and reads or merges the store's state in one locked session.
 
+use crate::{clock, web};
 use anyhow::{Context, Result, anyhow, bail};
 use std::path::Path;
+use youarel_core::relay_rules;
 use youarel_crypto::pairing::Code;
+use youarel_protocol::relay::{self, Collected, Mail, Side, Verb, read_nameplate};
+use youarel_relay::Status;
 use youarel_store::{Store, codec, fs};
 use youarel_sync::account::Account;
 use youarel_sync::keystore::KeyStore;
@@ -274,4 +278,187 @@ pub fn remove(store: &Store, now: u64, prefix: &str) -> Result<Vec<String>> {
         "removed {}; the next bundle carries a key it never sees",
         hex(device)
     )])
+}
+
+/// Whether `target` names a relay rather than a folder.
+#[must_use]
+pub fn is_relay(target: &str) -> bool {
+    ["https://", "http://"]
+        .iter()
+        .any(|scheme| target.starts_with(scheme))
+}
+
+/// The address of `path` at the relay, which takes HTTPS, or plain HTTP on this host alone.
+fn endpoint(relay: &str, path: &str) -> Result<String> {
+    let parsed = url::Url::parse(relay).with_context(|| format!("`{relay}` is no address"))?;
+    let local = match parsed.host() {
+        Some(url::Host::Domain(name)) => name == "localhost",
+        Some(url::Host::Ipv4(address)) => address.is_loopback(),
+        Some(url::Host::Ipv6(address)) => address.is_loopback(),
+        None => false,
+    };
+    if parsed.scheme() != "https" && !(parsed.scheme() == "http" && local) {
+        bail!("a relay takes https, or plain http only on this host");
+    }
+    Ok(format!("{}{path}", relay.trim_end_matches('/')))
+}
+
+/// The most bytes a relay's answer holds: every member's bundle, and room for their frames.
+fn longest_answer() -> Result<u64> {
+    let frames = relay_rules::MOST_SLOTS.saturating_mul(relay::LONGEST_FRAME);
+    Ok(u64::try_from(
+        relay_rules::MOST_BYTES.saturating_add(frames),
+    )?)
+}
+
+/// The reason in a relay's refusal.
+fn reason(body: &[u8]) -> String {
+    String::from_utf8_lossy(body).into_owned()
+}
+
+/// Syncs through a relay: merges every other member's newest bundle there, then publishes this device's own.
+///
+/// A bundle that fails is reported and skipped, as a shared folder's are.
+///
+/// # Errors
+///
+/// Returns an error when the relay cannot be reached or refuses this device's requests.
+pub fn relay(store: &Store, now: u64, relay: &str) -> Result<Vec<String>> {
+    let requests = endpoint(relay, youarel_relay::REQUESTS)?;
+    let limit = longest_answer()?;
+    let collect = account(store)?
+        .request(now, Verb::Collect, Vec::new())
+        .map_err(sync_error)?;
+    let (status, body) = web::post(&requests, &collect, limit)?;
+    let mut lines = Vec::new();
+    if status == Status::Ok.code() {
+        let own = account(store)?.device();
+        for slot in Collected::decode(&body)?.slots {
+            if slot.device == own {
+                continue;
+            }
+            // The relay's clock is its own claim, so a long silence is only reported, and a person decides on the removal.
+            if relay_rules::inactive(now, slot.published) {
+                lines.push(format!(
+                    "{} has published nothing here for half a year; `youarel remove {}` ends its membership",
+                    short(&slot.device),
+                    short(&slot.device)
+                ));
+            }
+            match account(store)?.import(&slot.bundle) {
+                Ok(imported) => {
+                    merge(store, now, &imported.state)?;
+                    lines.push(format!("merged {}", short(&slot.device)));
+                }
+                Err(error) => lines.push(format!("skipped {}: {error}", short(&slot.device))),
+            }
+        }
+    } else if status == Status::NotFound.code() {
+        lines.push(String::from("the relay holds no copy of this account yet"));
+    } else {
+        bail!(
+            "the relay refused to hand out the bundles: {}",
+            reason(&body)
+        );
+    }
+    let state = state(store, now)?;
+    let bundle = account(store)?.export(now, &state).map_err(sync_error)?;
+    let publish = account(store)?
+        .request(now, Verb::Publish, bundle)
+        .map_err(sync_error)?;
+    let (published, answer) = web::post(&requests, &publish, limit)?;
+    if published != Status::Ok.code() {
+        bail!(
+            "the relay refused this device's bundle: {}",
+            reason(&answer)
+        );
+    }
+    lines.push(String::from("published this device's bundle"));
+    Ok(lines)
+}
+
+/// Leaves a message in a pairing's mailbox at the relay.
+fn send(mail: &str, nameplate: u16, to: Side, message: Vec<u8>) -> Result<()> {
+    let dropped = Mail::Drop {
+        nameplate,
+        to,
+        message,
+    }
+    .encode()?;
+    let (status, body) = web::post(mail, &dropped, longest_answer()?)?;
+    if status != Status::Ok.code() {
+        bail!("the relay refused the pairing's message: {}", reason(&body));
+    }
+    Ok(())
+}
+
+/// The next message for one side of a pairing, which the relay hands out when it arrives, until the mailbox closes.
+fn receive(mail: &str, nameplate: u16, to: Side) -> Result<Vec<u8>> {
+    let started = clock::now()?;
+    let picked = Mail::Pick { nameplate, to }.encode()?;
+    loop {
+        let (status, body) = web::post(mail, &picked, longest_answer()?)?;
+        if status == Status::Ok.code() {
+            return Ok(body);
+        }
+        if status != Status::NoContent.code() {
+            bail!("the relay refused the pairing: {}", reason(&body));
+        }
+        if !relay_rules::open(started, clock::now()?) {
+            bail!("the other device answered nothing before the pairing expired");
+        }
+    }
+}
+
+/// Invites a device through a relay: shows a code under a nameplate the relay hands out, then answers the joining device there and admits it.
+///
+/// # Errors
+///
+/// Returns an error when the relay refuses, the joining device sends nothing in time, or its confirmation fails.
+pub fn invite_through(store: &Store, relay: &str) -> Result<Vec<String>> {
+    let mail = endpoint(relay, youarel_relay::MAIL)?;
+    let (status, body) = web::post(&mail, &Mail::Open.encode()?, longest_answer()?)?;
+    if status != Status::Ok.code() {
+        bail!("the relay opened no pairing: {}", reason(&body));
+    }
+    let nameplate = read_nameplate(&body)?;
+    let code = account(store)?
+        .invite_as(Code::for_number(nameplate).map_err(|error| anyhow!(error))?)
+        .map_err(sync_error)?;
+    crate::commands::print(&[
+        format!("invitation code {}", code.text()),
+        format!(
+            "type it on the new device with `youarel pair join CODE --relay {relay}`; this waits for it"
+        ),
+    ])?;
+    let join = receive(&mail, nameplate, Side::Inviter)?;
+    let welcome = account(store)?.accept(&join).map_err(sync_error)?;
+    send(&mail, nameplate, Side::Joiner, welcome)?;
+    let confirmation = receive(&mail, nameplate, Side::Inviter)?;
+    let now = clock::now()?;
+    let state = state(store, now)?;
+    let entry = account(store)?
+        .admit(now, &confirmation, &state)
+        .map_err(sync_error)?;
+    send(&mail, nameplate, Side::Joiner, entry)?;
+    Ok(vec![String::from("admitted the new device")])
+}
+
+/// Joins an account through a relay under the code its inviting device showed.
+///
+/// # Errors
+///
+/// Returns an error when the code is malformed, the relay refuses, the inviting device answers nothing in time, or the welcome does not authenticate.
+pub fn join_through(store: &Store, code: &str, relay: &str) -> Result<Vec<String>> {
+    let mail = endpoint(relay, youarel_relay::MAIL)?;
+    let code = Code::parse(code).with_context(|| format!("`{code}` is not an invitation code"))?;
+    let join = account(store)?.join(code).map_err(sync_error)?;
+    send(&mail, code.number, Side::Inviter, join)?;
+    let welcome = receive(&mail, code.number, Side::Joiner)?;
+    let confirmation = account(store)?.confirm(&welcome).map_err(sync_error)?;
+    send(&mail, code.number, Side::Inviter, confirmation)?;
+    let entry = receive(&mail, code.number, Side::Joiner)?;
+    let state = account(store)?.finish(&entry).map_err(sync_error)?;
+    merge(store, clock::now()?, &state)?;
+    Ok(vec![String::from("joined the account")])
 }

@@ -24,6 +24,9 @@ const PROOF_FIXTURES: &str = "xtask/proofs";
 const CORE_PACKAGE: &str = "youarel-core";
 /// A bare-metal target with no operating system, where only a crate without `std` and I/O builds.
 pub const BARE_TARGET: &str = "thumbv7em-none-eabi";
+/// The relay's Worker, its own workspace, and the WebAssembly target it builds for.
+const WORKER: &str = "server";
+const WORKER_TARGET: &str = "wasm32-unknown-unknown";
 
 fn staged_paths(root: &Path) -> Result<Vec<String>> {
     let listing = capture(
@@ -108,6 +111,26 @@ fn clippy(root: &Path) -> Result<()> {
     )
 }
 
+/// The relay's Worker, which builds only for WebAssembly: its formatting and its lints.
+fn worker(root: &Path) -> Result<()> {
+    let manifest = root.join(WORKER).join("Cargo.toml");
+    succeed(
+        Tool::Cargo
+            .command(root)
+            .args(["fmt", "--check", "--manifest-path"])
+            .arg(&manifest),
+        "cargo fmt --check of the Worker",
+    )?;
+    succeed(
+        Tool::Cargo
+            .command(root)
+            .args(["clippy", "--locked", "--manifest-path"])
+            .arg(&manifest)
+            .args(["--target", WORKER_TARGET, "--", "-D", "warnings"]),
+        "cargo clippy of the Worker",
+    )
+}
+
 /// Builds the core for a target without an operating system, which fails the moment the core reaches `std`.
 fn bare(root: &Path) -> Result<()> {
     succeed(
@@ -137,12 +160,14 @@ fn tests(root: &Path) -> Result<()> {
     )
 }
 
-/// Every manifest with its own lockfile: the workspace, the fuzz workspace, and each proof fixture.
+/// Every manifest with its own lockfile: the workspace, the fuzz workspace, the Worker, and each proof fixture.
 fn manifests(root: &Path) -> Result<Vec<std::path::PathBuf>> {
     let mut found = vec![root.join("Cargo.toml")];
-    let fuzz = root.join(proofs::FUZZ).join("Cargo.toml");
-    if fs::is_file(&fuzz)? {
-        found.push(fuzz);
+    for workspace in [proofs::FUZZ, WORKER] {
+        let manifest = root.join(workspace).join("Cargo.toml");
+        if fs::is_file(&manifest)? {
+            found.push(manifest);
+        }
     }
     for fixture in fs::entries(&root.join(PROOF_FIXTURES))? {
         let manifest = fixture.join("Cargo.toml");
@@ -226,6 +251,7 @@ fn everything(root: &Path) -> Result<()> {
     report.stage("taplo", || taplo(root, None));
     report.stage("typos", || typos(root, None));
     report.stage("clippy", || clippy(root));
+    report.stage("worker", || worker(root));
     report.stage("structure", || structure::check(root));
     report.stage("bare", || bare(root));
     report.stage("adr", || adr::check(root));

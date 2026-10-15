@@ -26,6 +26,7 @@ pub mod membership_rules;
 pub mod merge_rules;
 pub mod position_rules;
 pub mod rank_rules;
+pub mod relay_rules;
 pub mod state;
 pub mod tree_rules;
 pub mod ui_rules;

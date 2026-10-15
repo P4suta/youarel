@@ -1,0 +1,43 @@
+# The relay as a Cloudflare Worker, which only adapts youarel-relay to Durable Objects; nothing deploys it while releases stay prohibited.
+[package]
+name = "youarel-worker"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.99"
+publish = false
+license = "MIT OR Apache-2.0"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+futures-channel = "0.3"
+futures-util = { version = "0.3", default-features = false }
+serde = { version = "1", features = ["derive"] }
+wasm-bindgen = "0.2"
+worker = "0.8.7"
+youarel-core = { path = "../crates/youarel-core" }
+youarel-protocol = { path = "../crates/youarel-protocol" }
+youarel-relay = { path = "../crates/youarel-relay" }
+
+[lints.rust]
+# The bindings that `#[event]` and `#[durable_object]` generate hold unsafe blocks of their own, so this crate denies rather than forbids.
+unsafe_code = "deny"
+missing_debug_implementations = "deny"
+
+[lints.clippy]
+pedantic = { level = "deny", priority = -1 }
+nursery = { level = "deny", priority = -1 }
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+indexing_slicing = "deny"
+arithmetic_side_effects = "deny"
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+
+[workspace]
+members = ["."]

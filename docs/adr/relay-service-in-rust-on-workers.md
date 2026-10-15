@@ -22,3 +22,4 @@ If either fails, the relay follows the mylist layout instead: plain TypeScript, 
 
 One proof of the envelope and the membership rules covers both the clients and the relay.
 The relay depends on the maturity of workers-rs, which the confirmation above checks.
+The confirmation holds: workers-rs 0.8.7 offers a Durable Object's SQLite storage, hibernatable WebSockets, and alarms, and the cryptographic crates build for `wasm32-unknown-unknown` once `getrandom` takes its `wasm_js` backend there.

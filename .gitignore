@@ -6,3 +6,6 @@
 /xtask/proofs/*/artifacts/
 /mutants.out*/
 /dist/
+/server/target/
+/server/build/
+/server/.wrangler/

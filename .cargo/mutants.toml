@@ -19,4 +19,8 @@ exclude_globs = [
   # Evidence: `just check-win` runs the program replacement test on Windows.
   # Reconsider when the campaign runs on a Windows host too.
   "crates/youarel-store/src/fs/windows.rs",
+  # Exempt as other-configuration: the campaign builds each crate with its default features, which leave the local relay out, so its mutants would pass unbuilt.
+  # Evidence: `crates/youarel-cli/tests/relay_e2e.rs` serves this relay over HTTP and pairs and syncs three devices through it.
+  # Reconsider when the campaign builds every feature of a crate.
+  "crates/youarel-relay/src/local.rs",
 ]

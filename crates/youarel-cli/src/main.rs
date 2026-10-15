@@ -79,8 +79,8 @@ enum Command {
         #[command(subcommand)]
         command: BundleCommand,
     },
-    /// Sync through a shared folder, where each device writes its own bundle.
-    Sync { folder: PathBuf },
+    /// Sync through a shared folder, where each device writes its own bundle, or through a relay at an `https://` address.
+    Sync { target: String },
     /// Remove a device from the account, by the start of its identifier.
     Remove { device: String },
     /// Replace this program with the latest release, when its signed manifest offers a newer one.
@@ -101,13 +101,18 @@ enum AccountCommand {
 
 #[derive(Debug, Subcommand)]
 enum PairCommand {
-    /// Show a code that a new device types to join.
-    Invite,
-    /// On the new device: answer a code with a join file.
+    /// Show a code that a new device types to join; through a relay, wait there for it and admit it.
+    Invite {
+        #[arg(long)]
+        relay: Option<String>,
+    },
+    /// On the new device: answer a code with a join file, or through a relay, join the inviting device there.
     Join {
         code: String,
+        #[arg(long, required_unless_present = "relay", conflicts_with = "relay")]
+        out: Option<PathBuf>,
         #[arg(long)]
-        out: PathBuf,
+        relay: Option<String>,
     },
     /// On the inviting device: answer a join file with a welcome file.
     Accept {
@@ -141,6 +146,33 @@ enum BundleCommand {
 
 fn joined(words: &[String]) -> String {
     words.join(" ")
+}
+
+/// Runs one step of a pairing, through files or a relay.
+fn pair(store: &Store, now: u64, command: PairCommand) -> Result<Vec<String>> {
+    match command {
+        PairCommand::Invite { relay: None } => sync::invite(store),
+        PairCommand::Invite { relay: Some(relay) } => sync::invite_through(store, &relay),
+        PairCommand::Join {
+            code,
+            out: Some(out),
+            relay: None,
+        } => sync::join(store, &code, &out),
+        PairCommand::Join {
+            code,
+            relay: Some(relay),
+            ..
+        } => sync::join_through(store, &code, &relay),
+        PairCommand::Join {
+            out: None,
+            relay: None,
+            ..
+        } => anyhow::bail!("give `--out FILE` or `--relay URL`"),
+        PairCommand::Accept { join, out } => sync::accept(store, &join, &out),
+        PairCommand::Confirm { welcome, out } => sync::confirm(store, &welcome, &out),
+        PairCommand::Admit { confirmation, out } => sync::admit(store, now, &confirmation, &out),
+        PairCommand::Finish { entry } => sync::finish(store, now, &entry),
+    }
 }
 
 fn run(cli: Cli) -> Result<()> {
@@ -194,21 +226,15 @@ fn run(cli: Cli) -> Result<()> {
             AccountCommand::Create => sync::create(&store, now)?,
             AccountCommand::Show => sync::show(&store)?,
         },
-        Some(Command::Pair { command }) => match command {
-            PairCommand::Invite => sync::invite(&store)?,
-            PairCommand::Join { code, out } => sync::join(&store, &code, &out)?,
-            PairCommand::Accept { join, out } => sync::accept(&store, &join, &out)?,
-            PairCommand::Confirm { welcome, out } => sync::confirm(&store, &welcome, &out)?,
-            PairCommand::Admit { confirmation, out } => {
-                sync::admit(&store, now, &confirmation, &out)?
-            }
-            PairCommand::Finish { entry } => sync::finish(&store, now, &entry)?,
-        },
+        Some(Command::Pair { command }) => pair(&store, now, command)?,
         Some(Command::Bundle { command }) => match command {
             BundleCommand::Export { out } => sync::export(&store, now, &out)?,
             BundleCommand::Import { file } => sync::import(&store, now, &file)?,
         },
-        Some(Command::Sync { folder }) => sync::folder(&store, now, &folder)?,
+        Some(Command::Sync { target }) if sync::is_relay(&target) => {
+            sync::relay(&store, now, &target)?
+        }
+        Some(Command::Sync { target }) => sync::folder(&store, now, std::path::Path::new(&target))?,
         Some(Command::Remove { device }) => sync::remove(&store, now, &device)?,
         Some(Command::SelfUpdate { allow_downgrade }) => {
             let consent = if allow_downgrade {

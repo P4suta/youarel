@@ -32,8 +32,12 @@ youarel-release.workspace = true
 youarel-store.workspace = true
 youarel-crypto.workspace = true
 youarel-sync.workspace = true
+youarel-protocol.workspace = true
+youarel-relay.workspace = true
+url.workspace = true
 
 [dev-dependencies]
+youarel-relay = { workspace = true, features = ["local"] }
 minisign.workspace = true
 tempfile.workspace = true
 

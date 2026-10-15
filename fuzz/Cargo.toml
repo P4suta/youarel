@@ -12,11 +12,48 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4.13"
 youarel-core = { path = "../crates/youarel-core" }
+youarel-html = { path = "../crates/youarel-html" }
 youarel-link = { path = "../crates/youarel-link" }
+youarel-store = { path = "../crates/youarel-store" }
 
 [[bin]]
 name = "link_parse"
 path = "fuzz_targets/link_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "state_decode"
+path = "fuzz_targets/state_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "bookmarks_parse"
+path = "fuzz_targets/bookmarks_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "html_scan"
+path = "fuzz_targets/html_scan.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "position_key"
+path = "fuzz_targets/position_key.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "page_title"
+path = "fuzz_targets/page_title.rs"
 test = false
 doc = false
 bench = false

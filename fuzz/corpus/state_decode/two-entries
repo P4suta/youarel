@@ -1,0 +1,23 @@
+{
+  "format": 1,
+  "shortcuts": [
+    {
+      "id": "02020202020202020202020202020202",
+      "link": { "value": "https://example.com/", "stamp": { "wall": 2, "counter": 0, "device": "07070707070707070707070707070707" } },
+      "title": { "value": "Example", "stamp": { "wall": 2, "counter": 0, "device": "07070707070707070707070707070707" } },
+      "alias": { "value": "ex", "stamp": { "wall": 3, "counter": 1, "device": "07070707070707070707070707070707" } },
+      "folder": { "value": "01010101010101010101010101010101", "stamp": { "wall": 2, "counter": 0, "device": "07070707070707070707070707070707" } },
+      "position": { "value": "V", "stamp": { "wall": 2, "counter": 0, "device": "07070707070707070707070707070707" } },
+      "removed": { "value": false, "stamp": { "wall": 2, "counter": 0, "device": "07070707070707070707070707070707" } }
+    }
+  ],
+  "folders": [
+    {
+      "id": "01010101010101010101010101010101",
+      "name": { "value": "仕事", "stamp": { "wall": 1, "counter": 0, "device": "07070707070707070707070707070707" } },
+      "parent": { "value": null, "stamp": { "wall": 1, "counter": 0, "device": "07070707070707070707070707070707" } },
+      "position": { "value": "V", "stamp": { "wall": 1, "counter": 0, "device": "07070707070707070707070707070707" } },
+      "removed": { "value": false, "stamp": { "wall": 1, "counter": 0, "device": "07070707070707070707070707070707" } }
+    }
+  ]
+}

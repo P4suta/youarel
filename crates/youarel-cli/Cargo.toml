@@ -1,0 +1,37 @@
+[package]
+name = "youarel-cli"
+description = "The youarel command and its terminal launcher, which open web shortcuts from any browser"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+authors.workspace = true
+readme.workspace = true
+repository.workspace = true
+keywords = ["bookmarks", "launcher", "tui"]
+categories = ["command-line-utilities"]
+
+[[bin]]
+name = "youarel"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+ratatui.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+rustls.workspace = true
+ureq.workspace = true
+webbrowser.workspace = true
+youarel-core.workspace = true
+youarel-html.workspace = true
+youarel-link.workspace = true
+youarel-store.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

@@ -283,20 +283,14 @@ pub fn run(root: &Path, scope: Scope) -> Result<()> {
     }
 }
 
-/// Every check and then every proof, which a push requires.
+/// Every check and then every proof, which a push requires; the proofs run in the memory-limited container.
 ///
 /// # Errors
 ///
 /// Returns an error when a check or a proof fails.
 pub fn push_check(root: &Path) -> Result<()> {
     run(root, Scope::Everything)?;
-    proofs::run(
-        root,
-        proofs::Options {
-            ci: false,
-            only: None,
-        },
-    )
+    crate::container::run(root, &["proofs"])
 }
 
 /// Writes the generated files from their sources.
@@ -305,6 +299,7 @@ pub fn push_check(root: &Path) -> Result<()> {
 ///
 /// Returns an error when a generator fails.
 pub fn generate(root: &Path) -> Result<()> {
+    crate::quint::generate(root)?;
     repository(root, "generate")
 }
 

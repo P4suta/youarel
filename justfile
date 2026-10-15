@@ -39,21 +39,25 @@ proofs-linux:
 structure: trust
     mise x -- cargo xtask structure
 
-# Kani, Miri, fuzz corpus replays, mutation testing, and every other verifier of the obligation manifest.
+# Kani, Miri, fuzz corpus replays, and mutation testing, in a container limited to 8 GB of memory and 4 processors.
 proofs *args: trust
+    mise x -- cargo xtask contain proofs {{args}}
+
+# The same proofs on this host without a container, as a hosted Linux runner runs them.
+proofs-native *args: trust
     mise x -- cargo xtask proofs {{args}}
 
 # The proofs a hosted Linux runner repeats, without mutation testing.
 proofs-ci: trust
     mise x -- cargo xtask proofs --ci
 
-# Mutation testing of the pure crates alone.
+# Mutation testing of the pure crates alone, in the container.
 mutants: trust
-    mise x -- cargo xtask proofs --only mutants
+    mise x -- cargo xtask contain proofs --only mutants
 
-# Fuzz one target beyond its corpus for a bounded number of runs.
+# Fuzz one target beyond its corpus for a bounded number of runs, in the container.
 fuzz target runs="20000": trust
-    mise x -- cargo xtask fuzz {{quote(target)}} {{runs}}
+    mise x -- cargo xtask contain fuzz {{quote(target)}} {{runs}}
 
 # The generated files, such as the README, or `--check` to refuse drift.
 gen *args: trust

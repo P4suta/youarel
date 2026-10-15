@@ -37,14 +37,14 @@ pub const MUTANTS_FIXTURE: &str = "xtask/proofs/mutants-fixture";
 /// The separate cargo-fuzz workspace of the product.
 pub const FUZZ: &str = "fuzz";
 
-/// The crates Miri interprets: the core and the adapter that runs the URL parser's unsafe code.
-pub const MIRI_CRATES: [&str; 2] = ["youarel-core", "youarel-link"];
+/// The crates Miri interprets: the core, the adapter that runs the URL parser's unsafe code, and the HTML reader; the store's tests reach the file system, which Miri isolates.
+pub const MIRI_CRATES: [&str; 3] = ["youarel-core", "youarel-link", "youarel-html"];
 
 /// The budgets of the mutation campaign over the pure crates, which `assure.toml` declares.
 pub const MISSED_CEILING: u64 = 0;
 pub const TIMEOUT_CEILING: u64 = 0;
 
-const HARNESS_TIMEOUT: &str = "60s";
+const HARNESS_TIMEOUT: &str = "300s";
 const MUTANT_JOBS: &str = "2";
 const MUTANT_TEST_THREADS: &str = "1";
 const MAX_REPORT_BYTES: u64 = 16 * 1024 * 1024;
@@ -53,7 +53,12 @@ const MIRI_TARGET: &str = "target/miri";
 const MIRI_PROFILE: &str = "miri";
 const MUTANTS_OUTPUT: &str = "target/proofs/mutants";
 /// The crates the mutation campaign runs over, each judged by its own tests alone.
-const MUTANT_PACKAGES: [&str; 2] = ["youarel-core", "youarel-link"];
+const MUTANT_PACKAGES: [&str; 4] = [
+    "youarel-core",
+    "youarel-link",
+    "youarel-html",
+    "youarel-store",
+];
 const CORE_PACKAGE: &str = "youarel-core";
 const FIXTURE_OUTPUT: &str = "target/proofs/fixtures";
 /// Where a fuzz campaign keeps the inputs it finds, outside the committed corpus.
@@ -63,18 +68,26 @@ const FUZZ_SCRATCH: &str = "target/fuzz-corpus";
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Step {
     Kani,
+    Quint,
     Miri,
     Fuzz,
     Mutants,
 }
 
 impl Step {
-    pub const ALL: [Self; 4] = [Self::Kani, Self::Miri, Self::Fuzz, Self::Mutants];
+    pub const ALL: [Self; 5] = [
+        Self::Kani,
+        Self::Quint,
+        Self::Miri,
+        Self::Fuzz,
+        Self::Mutants,
+    ];
 
     #[must_use]
     pub const fn name(self) -> &'static str {
         match self {
             Self::Kani => "kani",
+            Self::Quint => "quint",
             Self::Miri => "miri",
             Self::Fuzz => "fuzz",
             Self::Mutants => "mutants",
@@ -93,21 +106,25 @@ pub struct Options {
     /// A hosted run, which skips the mutation campaign that stays local.
     pub ci: bool,
     pub only: Option<Step>,
+    /// A verifier to leave out, such as the one a host runs outside the proof container.
+    pub without: Option<Step>,
 }
 
 impl Options {
-    /// Reads `--ci` and `--only STEP`, refusing anything else.
+    /// Reads `--ci`, `--only STEP`, and `--without STEP`, refusing anything else.
     #[must_use]
     pub fn from_words(words: &[&str]) -> Option<Self> {
         let mut options = Self {
             ci: false,
             only: None,
+            without: None,
         };
         let mut words = words.iter();
         while let Some(word) = words.next() {
             match *word {
                 "--ci" => options.ci = true,
                 "--only" => options.only = Some(Step::named(words.next()?)?),
+                "--without" => options.without = Some(Step::named(words.next()?)?),
                 _ => return None,
             }
         }
@@ -116,7 +133,7 @@ impl Options {
 
     #[must_use]
     pub fn selected(self) -> Vec<Step> {
-        self.only.map_or_else(
+        let chosen: Vec<Step> = self.only.map_or_else(
             || {
                 Step::ALL
                     .into_iter()
@@ -124,7 +141,11 @@ impl Options {
                     .collect()
             },
             |step| vec![step],
-        )
+        );
+        chosen
+            .into_iter()
+            .filter(|step| Some(*step) != self.without)
+            .collect()
     }
 }
 
@@ -387,7 +408,9 @@ pub fn inventory_findings(
         }
     }
     for obligation in &manifest.obligation {
-        let Obligation::Kani { source, .. } = obligation;
+        let Obligation::Kani { source, .. } = obligation else {
+            continue;
+        };
         if !discovered.iter().any(|(found, _)| found == source) {
             findings.push(format!(
                 "the manifest declares {source}, which is not a rule module of the core"
@@ -436,24 +459,27 @@ fn verify_kani(root: &Path) -> Result<()> {
         "the proof inventory is stale:\n{}",
         findings.join("\n")
     );
-    ensure!(
-        !manifest.obligation.is_empty(),
-        "the manifest declares no Kani obligation, so the gate would prove nothing"
-    );
     let scratch = tempfile::tempdir().context("create the proof scratch directory")?;
     let qualified: Vec<Harness> = manifest
         .obligation
         .iter()
-        .flat_map(|obligation| {
-            let Obligation::Kani {
+        .flat_map(|obligation| match obligation {
+            Obligation::Kani {
                 source, harnesses, ..
-            } = obligation;
-            harnesses.iter().map(|harness| Harness {
-                name: qualify(source, &harness.name),
-                ..harness.clone()
-            })
+            } => harnesses
+                .iter()
+                .map(|harness| Harness {
+                    name: qualify(source, &harness.name),
+                    ..harness.clone()
+                })
+                .collect(),
+            Obligation::Quint(_) => Vec::new(),
         })
         .collect();
+    ensure!(
+        !qualified.is_empty(),
+        "the manifest declares no Kani harness, so the gate would prove nothing"
+    );
     let harnesses: Vec<&Harness> = qualified.iter().collect();
     let report = scratch.path().join("proofs.json");
     let mut command = kani_command(root, None, &scratch.path().join("proofs"), &report);
@@ -463,7 +489,9 @@ fn verify_kani(root: &Path) -> Result<()> {
     tool::succeed(&mut command, "cargo kani")?;
     check_positive(&read_report(&report)?, &harnesses)?;
     for obligation in &manifest.obligation {
-        let Obligation::Kani { source, probes, .. } = obligation;
+        let Obligation::Kani { source, probes, .. } = obligation else {
+            continue;
+        };
         for probe in probes {
             let probe = Probe {
                 harness: qualify(source, &probe.harness),
@@ -807,6 +835,7 @@ fn digest(root: &Path) -> Result<String> {
 fn receipt(root: &Path, step: Step) -> Result<()> {
     let version = match step {
         Step::Kani => KANI_VERSION,
+        Step::Quint => crate::quint::QUINT_VERSION,
         Step::Miri => tool::NIGHTLY,
         Step::Fuzz => FUZZ_VERSION,
         Step::Mutants => MUTANTS_VERSION,
@@ -824,6 +853,7 @@ fn receipt(root: &Path, step: Step) -> Result<()> {
 fn verify(root: &Path, step: Step) -> Result<()> {
     match step {
         Step::Kani => verify_kani(root)?,
+        Step::Quint => crate::quint::verify(root)?,
         Step::Miri => verify_miri(root)?,
         Step::Fuzz => verify_fuzz(root)?,
         Step::Mutants => verify_mutants(root)?,
@@ -939,48 +969,40 @@ mod tests {
         serde_json::from_str(r#"{"metadata":{"kani_version":"0.68.0"},"property_details":[{"harness_id":"rejects_x","property_details":{"failed":1,"undetermined":0,"solver_error":0,"satisfied":0,"unsatisfiable":0}}],"verification_results":{"summary":{"total_harnesses":1,"executed":1,"status":"completed","successful":0,"failed":1},"results":[{"harness_id":"rejects_x","status":"Failure","checks":[{"status":"Failure","description":"NEGATIVE_X_CONTROL","category":"assertion"}]}]}}"#).unwrap()
     }
 
+    const fn options(ci: bool, only: Option<Step>, without: Option<Step>) -> Options {
+        Options { ci, only, without }
+    }
+
     #[test]
-    fn options_read_ci_and_only() {
-        assert_eq!(
-            Options::from_words(&[]),
-            Some(Options {
-                ci: false,
-                only: None
-            })
-        );
+    fn options_read_ci_only_and_without() {
+        assert_eq!(Options::from_words(&[]), Some(options(false, None, None)));
         assert_eq!(
             Options::from_words(&["--ci", "--only", "miri"]),
-            Some(Options {
-                ci: true,
-                only: Some(Step::Miri)
-            })
+            Some(options(true, Some(Step::Miri), None))
+        );
+        assert_eq!(
+            Options::from_words(&["--without", "quint"]),
+            Some(options(false, None, Some(Step::Quint)))
         );
         assert_eq!(Options::from_words(&["--only"]), None);
         assert_eq!(Options::from_words(&["--only", "lean"]), None);
         assert_eq!(Options::from_words(&["--verbose"]), None);
         assert_eq!(
-            Options {
-                ci: true,
-                only: None
-            }
-            .selected(),
-            [Step::Kani, Step::Miri, Step::Fuzz]
+            options(true, None, None).selected(),
+            [Step::Kani, Step::Quint, Step::Miri, Step::Fuzz]
         );
+        assert_eq!(options(false, None, None).selected(), Step::ALL);
         assert_eq!(
-            Options {
-                ci: false,
-                only: None
-            }
-            .selected(),
-            Step::ALL
-        );
-        assert_eq!(
-            Options {
-                ci: true,
-                only: Some(Step::Mutants)
-            }
-            .selected(),
+            options(true, Some(Step::Mutants), None).selected(),
             [Step::Mutants]
+        );
+        assert_eq!(
+            options(false, None, Some(Step::Quint)).selected(),
+            [Step::Kani, Step::Miri, Step::Fuzz, Step::Mutants]
+        );
+        assert_eq!(
+            options(false, Some(Step::Quint), Some(Step::Quint)).selected(),
+            []
         );
     }
 

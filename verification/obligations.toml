@@ -11,3 +11,112 @@ harnesses = [
 probes = [
   { harness = "proofs::rejects_a_file_link_as_admitted", assertion = "NEGATIVE_LINK_CONTROL" },
 ]
+
+[[obligation]]
+verifier = "kani"
+source = "crates/youarel-core/src/clock_rules.rs"
+harnesses = [
+  { name = "proofs::a_tick_orders_after_the_last_stamp_and_keeps_up_with_the_clock", covers = 3, contract = "tick returns a stamp of the same device after the last one, at or after the clock's reading, and returns None only at the last wall time and counter", input_domain = "every stamp and every clock reading", bound = "complete" },
+  { name = "proofs::a_write_after_an_observed_stamp_orders_after_it", covers = 1, contract = "observe keeps the own device and reaches both clocks, so the next tick orders after the observed stamp and the last one", input_domain = "every pair of stamps and every clock reading", bound = "complete" },
+]
+probes = [
+  { harness = "proofs::rejects_a_tick_that_repeats_the_stamp", assertion = "NEGATIVE_CLOCK_CONTROL" },
+]
+
+[[obligation]]
+verifier = "kani"
+source = "crates/youarel-core/src/home_rules.rs"
+harnesses = [
+  { name = "proofs::the_data_directory_follows_the_first_usable_variable_in_precedence", covers = 2, contract = "the data directory stands on YOUAREL_HOME, else on LOCALAPPDATA under Windows, HOME/Library/Application Support under macOS, and XDG_DATA_HOME or HOME/.local/share elsewhere; an empty variable never names a directory", input_domain = "every variable unset, empty, or set, on every kind of host", bound = "the four variables and the three hosts, with drawn names of up to eight bytes" },
+]
+probes = [
+  { harness = "proofs::rejects_an_empty_youarel_home", assertion = "NEGATIVE_HOME_CONTROL" },
+]
+
+[[obligation]]
+verifier = "kani"
+source = "crates/youarel-core/src/match_rules.rs"
+harnesses = [
+  { name = "proofs::a_query_scores_exactly_when_its_characters_appear_in_order", covers = 2, contract = "score returns a value exactly when the query is a subsequence of the text under ASCII case folding, at least one character's score for a nonempty query and at most the full bonus per character", input_domain = "every query and text of up to three characters over lowercase, uppercase, a separator, and a non-ASCII letter", bound = "three characters; longer inputs are covered by the tests" },
+]
+probes = [
+  { harness = "proofs::rejects_a_query_out_of_order", assertion = "NEGATIVE_MATCH_CONTROL" },
+]
+
+[[obligation]]
+verifier = "kani"
+source = "crates/youarel-core/src/merge_rules.rs"
+harnesses = [
+  { name = "proofs::the_register_merge_is_a_join_that_keeps_the_latest_write", covers = 1, contract = "the register merge is commutative, associative, and idempotent, returns one of its inputs, and carries the later stamp", input_domain = "every triple of registers over every stamp and every byte value", bound = "complete for byte values; the merge reads values only through their total order" },
+  { name = "proofs::the_list_merge_holds_the_union_of_keys_with_merged_values", covers = 1, contract = "the merge of key-sorted lists is ascending and holds exactly the keys of either side, each with the item merge of both values or the one value one side holds; with a join as the item merge, commutativity, associativity, and idempotence follow pointwise", input_domain = "every pair of strictly ascending lists of up to two entries, with keys below three and values below two", bound = "two entries per list over three keys and two values; the merge compares keys and values only through their order, and the join laws over three lists are covered by the tests" },
+]
+probes = [
+  { harness = "proofs::rejects_an_earlier_write_winning", assertion = "NEGATIVE_MERGE_CONTROL" },
+]
+
+[[obligation]]
+verifier = "kani"
+source = "crates/youarel-core/src/position_rules.rs"
+harnesses = [
+  { name = "proofs::a_key_lands_strictly_between_its_bounds", covers = 2, contract = "midpoint returns a digit key strictly between ordered digit keys, or after the lower one when the upper end is open", input_domain = "every lower bound that is empty or a digit key and every upper bound that is absent or a greater digit key, of up to two digits", bound = "two digits per bound; three digits and repeated insertion are covered by the tests" },
+  { name = "proofs::every_symbol_decodes_to_its_place_in_byte_order", covers = 1, contract = "a byte decodes exactly when the alphabet holds it, to its place there, and two decoded bytes order as their digits", input_domain = "every pair of bytes", bound = "complete; between composes this encoding with the midpoint" },
+]
+probes = [
+  { harness = "proofs::rejects_a_key_at_its_lower_bound", assertion = "NEGATIVE_POSITION_CONTROL" },
+]
+
+[[obligation]]
+verifier = "kani"
+source = "crates/youarel-core/src/rank_rules.rs"
+harnesses = [
+  { name = "proofs::frecency_never_falls_with_more_or_more_recent_visits", covers = 2, contract = "frecency is zero without visits, never exceeds MOST, rises with every visit below the cap, and never falls for a more recent visit", input_domain = "every visit count, every visit time, and every clock reading", bound = "complete" },
+]
+probes = [
+  { harness = "proofs::rejects_a_score_without_visits", assertion = "NEGATIVE_RANK_CONTROL" },
+]
+
+[[obligation]]
+verifier = "kani"
+source = "crates/youarel-core/src/ui_rules.rs"
+harnesses = [
+  { name = "proofs::browsing_keeps_the_selection_on_a_row_and_opens_only_the_selected_shortcut", covers = 1, contract = "a browsing step leaves the selection on one of the rows it read, asks to open a shortcut only for Enter on that selected shortcut, and asks to remove nothing", input_domain = "every browsing interface with a query of at most one character, either folder, every selection on the rows, and every carried entry, over every list of up to three rows, with every key, a paste, and a refresh", bound = "three rows and one-character texts; the Quint model's traces replay through step for longer runs" },
+  { name = "proofs::typing_keeps_the_selection_on_a_row_and_opens_and_removes_nothing", covers = 1, contract = "a typing step leaves the selection on one of the rows it read and asks neither to open nor to remove", input_domain = "every interface typing each field with and without a target, with the query, folder, selection, and carried entry drawn as for browsing, with every key, a paste, and a refresh", bound = "three rows and one-character texts; the Quint model's traces replay through step for longer runs" },
+  { name = "proofs::confirming_removes_only_the_entry_waiting_for_confirmation", covers = 1, contract = "a confirming step leaves the selection on one of the rows it read, opens nothing, and asks to remove only the entry waiting for confirmation", input_domain = "every interface confirming a removal, with the query, folder, selection, and carried entry drawn as for browsing, with every key, a paste, and a refresh", bound = "three rows; the Quint model's traces replay through step for longer runs" },
+  { name = "proofs::control_c_leaves_from_every_state", covers = 1, contract = "control-c asks to quit from every interface", input_domain = "every interface of the two harnesses above, over every list of up to three rows", bound = "three rows and one-character texts" },
+]
+probes = [
+  { harness = "proofs::rejects_an_opening_from_a_folder_row", assertion = "NEGATIVE_UI_CONTROL" },
+]
+
+[[obligation]]
+verifier = "quint"
+spec = "specs/ui.qnt"
+main = "ui"
+probe = "ui_probe"
+invariant = "safe"
+witnesses = [
+  "opened",
+  "added",
+  "removed",
+  "moved",
+  "reordered",
+  "renamed",
+  "folderCreated",
+  "wentInside",
+]
+seed = "0x2a"
+samples = 1000
+steps = 12
+distinct_states = 120866
+traces = 100
+
+[[obligation]]
+verifier = "kani"
+source = "crates/youarel-core/src/tree_rules.rs"
+harnesses = [
+  { name = "proofs::the_tree_of_four_folders_breaks_each_cycle_at_its_most_recent_move", covers = 2, contract = "resolve keeps every declared parent in range except the most recent declaration of each declared cycle, which moves to the top, and the result has no cycle and names only folders of the list", input_domain = "every list of four folders, each declaring the top, a folder, or an index out of range, with recencies below four, which realize every order of four keys and every tie, since the resolution compares recencies only", bound = "four folders; larger trees are covered by the tests and the replay" },
+  { name = "proofs::the_tree_of_fewer_folders_breaks_each_cycle_at_its_most_recent_move", covers = 1, contract = "the same promise as for four folders", input_domain = "every list of none to three folders, each declaring the top, a folder, or an index out of range, with recencies below the folder count", bound = "three folders" },
+]
+probes = [
+  { harness = "proofs::rejects_a_cycle_left_in_place", assertion = "NEGATIVE_TREE_CONTROL" },
+]

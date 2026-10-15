@@ -1,0 +1,26 @@
+[package]
+name = "youarel-store"
+description = "The files that hold youarel's state on a device, read and written under a lock"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+authors.workspace = true
+readme.workspace = true
+repository.workspace = true
+keywords = ["bookmarks", "launcher", "url"]
+categories = ["filesystem"]
+
+[dependencies]
+getrandom.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+youarel-core.workspace = true
+youarel-link.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

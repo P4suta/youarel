@@ -39,6 +39,8 @@ pub enum Tool {
     Zizmor,
     Git,
     Dotfiles,
+    /// Docker, which hosts the proof gate with a memory limit on a workstation.
+    Docker,
 }
 
 impl Tool {
@@ -52,6 +54,7 @@ impl Tool {
             Self::Zizmor => "zizmor",
             Self::Git => "git",
             Self::Dotfiles => "dotfiles",
+            Self::Docker => "docker",
         }
     }
 

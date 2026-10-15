@@ -94,9 +94,22 @@ multiple_crate_versions = "allow"
 
 [workspace.dependencies]
 youarel-core = { path = "crates/youarel-core" }
+youarel-html = { path = "crates/youarel-html" }
 youarel-link = { path = "crates/youarel-link" }
+youarel-store = { path = "crates/youarel-store" }
 
 anyhow = "1.0"
+clap = { version = "4.6", features = ["derive", "wrap_help"] }
+getrandom = "0.4"
+ratatui = "0.30"
+# The operating system verifies certificates, so its trust store and its updates apply and no root bundle ships with the binary.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+ureq = { version = "3", default-features = false, features = [
+  "gzip",
+  "platform-verifier",
+  "rustls-no-provider",
+] }
+webbrowser = "1.2"
 proc-macro2 = { version = "1.0", default-features = false, features = ["span-locations"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

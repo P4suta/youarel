@@ -1,20 +1,22 @@
 # Youarel
 
-A launcher that opens your web shortcuts from any browser and syncs them end-to-end encrypted, with or without a server.
+A launcher that opens your web shortcuts in any browser, from a terminal or the command line.
 
 ## Installation
 
 ```sh
 git clone https://github.com/P4suta/youarel.git
 cd youarel
-mise install
+cargo install --locked --path crates/youarel-cli
 ```
 
 ## Usage
 
 ```sh
-just check
-just proofs
+youarel import bookmarks.html
+youarel add https://github.com/ --alias gh --folder Work
+youarel open gh
+youarel
 ```
 
 ## License

@@ -5,7 +5,7 @@ use std::process::ExitCode;
 
 const USAGE_EXIT_CODE: u8 = 2;
 
-const USAGE: &str = "usage: cargo xtask check [--staged | --platform] | push-check | structure | commit-msg FILE | proofs [--ci] [--only kani|miri|fuzz|mutants] | fuzz TARGET RUNS | gen [--check] | ci check|test|proofs|gate NAME";
+const USAGE: &str = "usage: cargo xtask check [--staged | --platform] | push-check | structure | commit-msg FILE | proofs [--ci] [--only STEP] [--without STEP], where STEP is kani|quint|miri|fuzz|mutants | fuzz TARGET RUNS | contain TASK... | gen [--check] | ci check|test|proofs|gate NAME";
 
 fn report(task: &str, result: anyhow::Result<()>) -> ExitCode {
     match result {
@@ -42,6 +42,9 @@ fn dispatch(root: &Path, words: &[&str]) -> ExitCode {
                 report("proofs", xtask::proofs::run(root, options))
             }),
         ["fuzz", target, runs] => report("fuzz", xtask::proofs::fuzz(root, target, runs)),
+        ["contain", rest @ ..] if !rest.is_empty() => {
+            report("contain", xtask::container::run(root, rest))
+        }
         ["gen"] => report("gen", xtask::check::generate(root)),
         ["gen", "--check"] => report("gen", xtask::check::generated(root)),
         ["ci", rest @ ..] if !rest.is_empty() => report("ci", xtask::ci::run(root, rest)),
@@ -81,6 +84,7 @@ mod tests {
             vec!["check", "--everything"],
             vec!["proofs", "--only", "lean"],
             vec!["ci"],
+            vec!["contain"],
         ] {
             assert_eq!(
                 dispatch(root.path(), &words),

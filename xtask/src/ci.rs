@@ -67,6 +67,7 @@ pub fn run(root: &Path, words: &[&str]) -> Result<()> {
             proofs::Options {
                 ci: true,
                 only: None,
+                without: None,
             },
         ),
         ["gate", name] => gate(name),

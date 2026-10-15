@@ -1,4 +1,4 @@
-//! The window launcher's Linux check: a pinned container with `WebKitGTK` builds, lints, and tests the launcher, so a Linux host needs none of the webview's development packages.
+//! The window launcher's Linux check: a pinned container with `WebKitGTK` builds, lints, and tests the launcher, and types into its window on a virtual display, so a Linux host needs none of the webview's development packages.
 //!
 //! The container reaches the network to fetch crates, and nothing in it installs on the host.
 
@@ -20,13 +20,17 @@ const PROCESSORS: &str = "4";
 const TARGET_VOLUME: &str = "youarel-app-linux-target";
 const REGISTRY_VOLUME: &str = "youarel-app-linux-registry";
 
-/// What the container runs: copy the checkout, compile the script, and lint and test the launcher.
+/// What the container runs: copy the checkout, compile the script, lint and test the launcher, then type into its window on a virtual display.
 const SCRIPT: &str = r"set -eu
 rsync --archive --delete --exclude=.git --exclude-from=/checkout/.gitignore --exclude=target /checkout/ /work/
 cd /work
 tsc --project app/tsconfig.json
-CARGO_TARGET_DIR=/work/target/app cargo clippy --locked --all-targets --manifest-path app/Cargo.toml -- -D warnings
-CARGO_TARGET_DIR=/work/target/app cargo nextest run --locked --no-tests=fail --manifest-path app/Cargo.toml
+export CARGO_TARGET_DIR=/work/target/app
+cargo clippy --locked --all-targets --manifest-path app/Cargo.toml -- -D warnings
+cargo nextest run --locked --no-tests=fail --manifest-path app/Cargo.toml
+Xvfb :99 -screen 0 1280x800x24 >/tmp/xvfb.log 2>&1 &
+export DISPLAY=:99
+dbus-run-session -- cargo nextest run --locked --no-tests=fail --manifest-path app/Cargo.toml --run-ignored only --test window
 ";
 
 /// Lints and tests the window launcher on Linux in the pinned container.

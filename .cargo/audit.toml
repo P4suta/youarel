@@ -5,4 +5,12 @@ ignore = [
   # No code of it runs in youarel, and the advisory names no flaw.
   # Reconsider when libcrux moves off hax-lib-macros or an advisory names a vulnerability.
   "RUSTSEC-2026-0173",
+  # zbus 6 took in zvariant, zbus_names, and zvariant_derive, which left their own crates without maintenance, and the advisories name no flaw.
+  # The Linux credential store reaches them through keyring, zbus-secret-service-keyring-store, secret-service 5.2.0, and zbus 5, and no build for macOS or Windows holds them.
+  # The newest secret-service and keyring store still require zbus 5, so no update clears them.
+  # The window launcher reaches zbus 5 through tauri-plugin-single-instance as well, so xtask's `APP_ACCEPTED_ADVISORIES` accepts them for its lockfile with that reason.
+  # Reconsider when secret-service or the keyring store releases on a maintained zbus, or an advisory names a vulnerability.
+  "RUSTSEC-2026-0370",
+  "RUSTSEC-2026-0371",
+  "RUSTSEC-2026-0372",
 ]

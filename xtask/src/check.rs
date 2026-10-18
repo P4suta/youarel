@@ -38,7 +38,12 @@ const APP_TARGET: &str = "target";
 /// Tauri's Linux webview and tray reach GTK 3 through `gtk` 0.18, and no release of Tauri reaches GTK 4 yet.
 /// Every crate of the lockfile, for every target, was searched for a use of the unsound iterator, and only `glib` itself names it.
 /// Reconsider both when Tauri leaves GTK 3.
-const APP_ACCEPTED_ADVISORIES: [(&str, &str); 2] = [
+///
+/// The launcher's Linux build reaches `zbus` 5 through the credential store and through `tauri-plugin-single-instance`, whose newest 2.x release still requires it.
+/// `zbus` 6 took in `zvariant`, `zbus_names`, and `zvariant_derive`, which left their own crates without maintenance, and their advisories name no flaw.
+/// `.cargo/audit.toml` accepts them for every lockfile because of the credential store, and this list keeps them for the plugin.
+/// Reconsider them when the plugin or the credential store releases on a maintained `zbus`, or an advisory names a vulnerability.
+const APP_ACCEPTED_ADVISORIES: [(&str, &str); 5] = [
     (
         "RUSTSEC-2024-0370",
         "proc-macro-error is unmaintained, and it runs only while glib-macros compiles",
@@ -46,6 +51,18 @@ const APP_ACCEPTED_ADVISORIES: [(&str, &str); 2] = [
     (
         "RUSTSEC-2024-0429",
         "glib 0.18's VariantStrIter is unsound, and no crate the launcher builds iterates one",
+    ),
+    (
+        "RUSTSEC-2026-0370",
+        "zvariant went into zbus 6, and only the Linux build reaches the unmaintained crate",
+    ),
+    (
+        "RUSTSEC-2026-0371",
+        "zbus_names went into zbus 6, and only the Linux build reaches the unmaintained crate",
+    ),
+    (
+        "RUSTSEC-2026-0372",
+        "zvariant_derive went into zbus 6, and only the Linux build reaches the unmaintained crate",
     ),
 ];
 

@@ -154,7 +154,7 @@ tempfile = "3"
 tiny_http = { version = "0.12", default-features = false }
 toml = { version = "1.0", features = ["preserve_order"] }
 url = "2.5"
-zip = { version = "8", default-features = false, features = ["deflate"] }
+zip = { version = "9", default-features = false, features = ["deflate"] }
 zeroize = "1.8"
 
 # The dependencies build optimized, so the tests sign and verify with ML-DSA at its real speed, while the workspace's own crates keep their checks.

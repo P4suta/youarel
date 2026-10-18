@@ -85,7 +85,9 @@ pub fn read_tar_gz(bytes: &[u8]) -> Result<Vec<Entry>> {
     Ok(found)
 }
 
-/// A zip archive of `entries`, deflated, with the earliest time a zip records.
+/// A zip archive of `entries`, deflated, with the earliest time a zip records and Unix modes on every host.
+///
+/// Left to itself, the writer marks an entry it makes on Windows as that host's, and the reader ignores the mode such an entry records.
 ///
 /// # Errors
 ///
@@ -96,6 +98,7 @@ pub fn zip(entries: &[Entry]) -> Result<Vec<u8>> {
         let options = zip::write::SimpleFileOptions::default()
             .compression_method(zip::CompressionMethod::Deflated)
             .last_modified_time(zip::DateTime::default())
+            .system(zip::System::Unix)
             .unix_permissions(entry.mode);
         writer
             .start_file(entry.path.as_str(), options)
@@ -124,7 +127,7 @@ pub fn read_zip(bytes: &[u8]) -> Result<Vec<Entry>> {
         file.read_to_end(&mut content)
             .context("read a zip entry's bytes")?;
         found.push(Entry {
-            path: String::from(file.name()),
+            path: file.name().context("read a zip entry's name")?.into_owned(),
             mode: file.unix_mode().unwrap_or(REGULAR) & PERMISSIONS,
             bytes: content,
         });

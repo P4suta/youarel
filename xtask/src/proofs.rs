@@ -913,7 +913,7 @@ fn verify_mutants(root: &Path, packages: &[String]) -> Result<()> {
     Ok(())
 }
 
-const INPUT_DIRECTORIES: [&str; 10] = [
+const INPUT_DIRECTORIES: [&str; 11] = [
     "crates",
     "fuzz",
     "specs",
@@ -922,6 +922,7 @@ const INPUT_DIRECTORIES: [&str; 10] = [
     ".cargo",
     ".github",
     ".config",
+    ".mise/locks",
     "app",
     "server",
 ];
@@ -1358,5 +1359,22 @@ probes = [{ harness = "rejects_x", assertion = "NEGATIVE_LINK_CONTROL" }]
         fs::write(&root.join("fuzz/target/ignored.rs"), b"output").unwrap();
         fs::write(&root.join("app/ui/main.js"), b"output").unwrap();
         assert_eq!(digest(root).unwrap(), original);
+    }
+
+    #[test]
+    fn proof_inputs_include_native_tool_locks_without_runtime_state() {
+        use super::digest;
+        use crate::fs;
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        let original = digest(root).unwrap();
+        fs::write(&root.join(".mise/cache/state"), b"runtime").unwrap();
+        assert_eq!(digest(root).unwrap(), original);
+        let sidecar = root.join(".mise/locks/npm-typescript/7.0.2/aube-lock.yaml");
+        fs::write(&sidecar, b"first").unwrap();
+        let locked = digest(root).unwrap();
+        assert_ne!(locked, original);
+        fs::write(&sidecar, b"second").unwrap();
+        assert_ne!(digest(root).unwrap(), locked);
     }
 }

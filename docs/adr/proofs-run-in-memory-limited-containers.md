@@ -5,6 +5,7 @@ date: 2026-10-15
 # Proofs run in memory-limited containers
 
 The [affected-contract verification decision](verification-follows-affected-contracts.md) amends when these campaigns run and how incomplete outcomes gate completion.
+The [compiler cache decision](compiler-caches-belong-to-a-checkout.md) restricts compiler volumes to a checkout and image and preserves committed native dependency locks in the source copy.
 
 ## Context
 

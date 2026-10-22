@@ -56,6 +56,7 @@ pub enum Tool {
     Actionlint,
     Zizmor,
     Git,
+    Rsync,
     Dotfiles,
     /// Docker, which hosts the proof gate with a memory limit on a workstation.
     Docker,
@@ -87,6 +88,7 @@ impl Tool {
             Self::Actionlint => "actionlint",
             Self::Zizmor => "zizmor",
             Self::Git => "git",
+            Self::Rsync => "rsync",
             Self::Dotfiles => "dotfiles",
             Self::Docker => "docker",
             Self::Rustc => "rustc",

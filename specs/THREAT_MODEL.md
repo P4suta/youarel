@@ -27,6 +27,7 @@
 - **A member device under an attacker's control.** A member holds the keys, so it can read the state and write anything into it.
 - **A carrier that withholds bundles or replays old ones.** The state merge keeps every write a device has, so an old bundle loses nothing, but a device can miss writes until another channel brings them.
 - **Traffic analysis** of when and how much a device sends.
+  A device that syncs on its own writes its bundle only after something changed on it, so a carrier learns roughly when a device's person edits.
 - **What a site learns from its icons.** A device asks a site for its page and its icons when a person adds one of its links, and for its favicon when a person opens one of its links and the device keeps no icon for its host.
   The site then sees the device's address, as it sees the browser's visit, and no device asks a site at any other time.
 - **What the relay learns by serving.** It sees each request's address, time, and size, the account and device identifiers, the device public keys, how many devices an account holds, and when each publishes; it holds no key to any state.

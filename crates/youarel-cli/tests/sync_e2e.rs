@@ -297,7 +297,11 @@ fn a_merge_writes_nothing_into_the_folder_while_the_store_gains_the_other_device
     let store = Store::new(second.home.path().to_path_buf());
     let now = youarel_cli::clock::now().unwrap();
     let merged = youarel_cli::sync::merge(&store, now, path(shared.path())).unwrap();
-    assert_eq!(merged, [format!("merged {}", first.bundle())]);
+    assert_eq!(merged.lines, [format!("merged {}", first.bundle())]);
+    assert!(
+        merged.pending,
+        "the folder lacks a bundle of the merging device"
+    );
     assert_eq!(
         fs::list(shared.path()).unwrap(),
         [first.bundle()],
@@ -307,5 +311,65 @@ fn a_merge_writes_nothing_into_the_folder_while_the_store_gains_the_other_device
     assert_eq!(
         youarel_cli::sync::own_bundle(&store).unwrap(),
         second.bundle()
+    );
+}
+
+#[test]
+fn a_device_with_nothing_new_writes_nothing_while_another_device_s_bundle_arrives() {
+    if !syncs_here("a_device_with_nothing_new_writes_nothing_while_another_device_s_bundle_arrives")
+    {
+        return;
+    }
+    let files = tempfile::tempdir().unwrap();
+    let shared = tempfile::tempdir().unwrap();
+    let (first, second) = (Device::new(), Device::new());
+    first.run(&["account", "create"]);
+    pair(&first, &second, files.path());
+    let store = Store::new(second.home.path().to_path_buf());
+    let target = path(shared.path());
+    let now = youarel_cli::clock::now().unwrap();
+    assert!(
+        youarel_cli::sync::unpublished(&store, now, target).unwrap(),
+        "a device that never published there"
+    );
+    sync_all(&[&first, &second], shared.path());
+    assert!(!youarel_cli::sync::unpublished(&store, now, target).unwrap());
+    let own = shared.path().join(second.bundle());
+    let written = fs::read_bytes_if_present(&own).unwrap().unwrap();
+    for _ in 0..2 {
+        let merged = youarel_cli::sync::merge(&store, now, target).unwrap();
+        assert!(!merged.pending, "{merged:?}");
+        assert_eq!(fs::read_bytes_if_present(&own).unwrap().unwrap(), written);
+    }
+    first.run(&["add", "https://arrived.example/", "--no-fetch"]);
+    first.run(&["sync", target]);
+    let merged = youarel_cli::sync::merge(&store, now, target).unwrap();
+    assert!(
+        merged.lines.contains(&format!("merged {}", first.bundle())),
+        "{merged:?}"
+    );
+    assert!(
+        !merged.pending,
+        "another device's write is that device's to publish"
+    );
+    assert_eq!(fs::read_bytes_if_present(&own).unwrap().unwrap(), written);
+    assert!(second.run(&["find", "arrived"]).contains("arrived.example"));
+    second.run(&["add", "https://own.example/", "--no-fetch"]);
+    assert!(
+        youarel_cli::sync::merge(&store, now, target)
+            .unwrap()
+            .pending,
+        "a write of its own waits for a publish"
+    );
+    assert!(
+        youarel_cli::sync::unpublished(&store, now, target).unwrap(),
+        "and a restart finds it unpublished"
+    );
+    second.run(&["sync", target]);
+    assert!(!youarel_cli::sync::unpublished(&store, now, target).unwrap());
+    let elsewhere = tempfile::tempdir().unwrap();
+    assert!(
+        youarel_cli::sync::unpublished(&store, now, path(elsewhere.path())).unwrap(),
+        "a publish carries nothing to another folder"
     );
 }

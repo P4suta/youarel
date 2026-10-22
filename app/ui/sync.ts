@@ -67,14 +67,15 @@ function long(sync: SyncView): string {
   }
 }
 
-/** How soon a change from another device arrives, which only a window that syncs can say. */
+/** When the window writes this device's bundle and when it reads the others', which only a window that syncs can say. */
 function pace(sync: SyncView): string {
   if (sync.state === "off" || sync.state === "noAccount") {
     return "";
   }
+  const writes = "The window writes this device's bundle only after a change here.";
   return sync.watched
-    ? "The folder is watched, so a change from another device arrives within seconds."
-    : "The window checks every five minutes.";
+    ? `${writes} It reads the other devices' bundles as soon as the folder changes, and every five minutes.`
+    : `${writes} It reads the other devices' bundles every five minutes.`;
 }
 
 let editing = false;

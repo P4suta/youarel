@@ -3,7 +3,7 @@
 //! An edit writes registers under one stamp, which the shell takes from the device's clock after it observed [`State::latest`].
 //! Removal writes a tombstone, so a removal on one device and an edit on another merge to the removal or the edit by their stamps.
 
-use crate::clock_rules::Stamp;
+use crate::clock_rules::{DeviceId, Stamp};
 use crate::merge_rules::{Register, merge_sorted};
 use crate::position_rules::{self, Key, Unordered};
 use crate::tree_rules::{self, Declared};
@@ -125,7 +125,8 @@ impl Shortcut {
         }
     }
 
-    fn latest(&self) -> Stamp {
+    /// The stamp of every register.
+    const fn stamps(&self) -> [Stamp; 7] {
         [
             self.link.stamp,
             self.title.stamp,
@@ -135,9 +136,10 @@ impl Shortcut {
             self.removed.stamp,
             self.note.stamp,
         ]
-        .into_iter()
-        .max()
-        .unwrap_or(self.link.stamp)
+    }
+
+    fn latest(&self) -> Stamp {
+        self.stamps().into_iter().max().unwrap_or(self.link.stamp)
     }
 }
 
@@ -154,7 +156,8 @@ impl Folder {
         }
     }
 
-    fn latest(&self) -> Stamp {
+    /// The stamp of every register.
+    const fn stamps(&self) -> [Stamp; 5] {
         [
             self.name.stamp,
             self.mark.stamp,
@@ -162,9 +165,10 @@ impl Folder {
             self.position.stamp,
             self.removed.stamp,
         ]
-        .into_iter()
-        .max()
-        .unwrap_or(self.name.stamp)
+    }
+
+    fn latest(&self) -> Stamp {
+        self.stamps().into_iter().max().unwrap_or(self.name.stamp)
     }
 }
 
@@ -332,6 +336,19 @@ impl State {
         let shortcuts = self.shortcuts.values().map(Shortcut::latest);
         let folders = self.folders.values().map(Folder::latest);
         shortcuts.chain(folders).max()
+    }
+
+    /// The latest stamp of a write by `device` that the state still holds, or `None` when it holds none.
+    ///
+    /// Every new write of the device orders after every stamp the state holds, so a write since a publish carried the state shows as a later stamp here.
+    #[must_use]
+    pub fn latest_of(&self, device: DeviceId) -> Option<Stamp> {
+        let shortcuts = self.shortcuts.values().flat_map(Shortcut::stamps);
+        let folders = self.folders.values().flat_map(Folder::stamps);
+        shortcuts
+            .chain(folders)
+            .filter(|stamp| stamp.device == device)
+            .max()
     }
 
     /// A shortcut that is not removed.
@@ -1079,6 +1096,46 @@ mod tests {
             ),
             Err(EditError::Unknown(Entry::Shortcut(id(9))))
         );
+    }
+
+    #[test]
+    fn the_latest_write_of_a_device_is_the_latest_the_state_still_holds() {
+        let mut state = State::default();
+        assert_eq!(state.latest_of(DEVICE), None);
+        add(&mut state, 1, None, 1);
+        folder(&mut state, 2, None, 2);
+        assert_eq!(
+            state.latest_of(DEVICE),
+            Some(at(2, DEVICE)),
+            "a folder's write counts"
+        );
+        state
+            .apply(
+                Edit::Retitle {
+                    id: id(1),
+                    title: String::from("mine"),
+                },
+                at(3, DEVICE),
+            )
+            .unwrap();
+        assert_eq!(state.latest_of(DEVICE), Some(at(3, DEVICE)));
+        state
+            .apply(
+                Edit::Retitle {
+                    id: id(1),
+                    title: String::from("theirs"),
+                },
+                at(4, OTHER),
+            )
+            .unwrap();
+        assert_eq!(state.latest_of(OTHER), Some(at(4, OTHER)));
+        assert_eq!(
+            state.latest_of(DEVICE),
+            Some(at(2, DEVICE)),
+            "a write that a later one replaced counts no more"
+        );
+        assert_eq!(state.latest(), Some(at(4, OTHER)));
+        assert_eq!(state.latest_of(DeviceId([3; 16])), None);
     }
 
     #[test]

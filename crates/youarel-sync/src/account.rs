@@ -36,6 +36,8 @@ const JOINING: &[u8] = b"youarel/v1/file/joining";
 const LONGEST_OPERATION: u64 = 2 * 1024 * 1024;
 /// The suffix of an operation file.
 const OPERATION_SUFFIX: &str = ".op";
+/// The directory of the account's log, one file to an operation.
+const LOG: &str = "log";
 /// The file that names the account, which only a device of an account holds.
 pub const GENESIS: &str = "genesis";
 
@@ -46,6 +48,36 @@ pub const GENESIS: &str = "genesis";
 /// Returns a [`SyncError`] when the file exists but cannot be read.
 pub fn founded(directory: &Path) -> Result<bool, SyncError> {
     Ok(fs::read_if_present(&directory.join(GENESIS))?.is_some())
+}
+
+/// The operations among the files `names` of the log directory `log` whose bytes digest to the names of their files.
+fn read_log(log: &Path, names: Vec<String>) -> Result<BTreeMap<Digest, Vec<u8>>, SyncError> {
+    let mut operations = BTreeMap::new();
+    for name in names {
+        let Some(digest) = digest_name(&name) else {
+            continue;
+        };
+        let bytes = fs::read_bounded(&log.join(&name), LONGEST_OPERATION)?;
+        if operation_digest(&bytes) == digest {
+            operations.insert(digest, bytes);
+        }
+    }
+    Ok(operations)
+}
+
+/// How many operations the account's log holds, read without creating anything or reaching the credential store, as an open account counts them.
+///
+/// # Errors
+///
+/// Returns a [`SyncError`] when the log exists but cannot be listed or an operation cannot be read.
+pub fn logged(directory: &Path) -> Result<usize, SyncError> {
+    let log = directory.join(LOG);
+    let names = match fs::list(&log) {
+        Ok(names) => names,
+        Err(error) if error.source.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(error) => return Err(error.into()),
+    };
+    Ok(read_log(&log, names)?.len())
 }
 /// The tag of a sealed record that still waits: an invitation without a join, or a join without a welcome.
 const WAITING: u8 = 0;
@@ -217,7 +249,8 @@ impl Account {
     ///
     /// Returns a [`SyncError`] when a file cannot be read or opened, or the key store refuses.
     pub fn open(directory: &Path, store: &KeyStore) -> Result<Self, SyncError> {
-        fs::create_dir_all(&directory.join("log"))?;
+        let log_directory = directory.join(LOG);
+        fs::create_dir_all(&log_directory)?;
         fs::create_dir_all(&directory.join("invitations"))?;
         let sealing = store.key()?;
         let identity_path = directory.join("identity");
@@ -234,16 +267,7 @@ impl Account {
             })?),
             None => None,
         };
-        let mut log = BTreeMap::new();
-        for name in fs::list(&directory.join("log"))? {
-            let Some(digest) = digest_name(&name) else {
-                continue;
-            };
-            let bytes = fs::read_bounded(&directory.join("log").join(&name), LONGEST_OPERATION)?;
-            if operation_digest(&bytes) == digest {
-                log.insert(digest, bytes);
-            }
-        }
+        let log = read_log(&log_directory, fs::list(&log_directory)?)?;
         let mut epochs = BTreeMap::new();
         if let Some(bytes) = sealed::read(&directory.join("epochs"), &sealing, EPOCHS)? {
             let mut reader = Reader::new(&bytes);
@@ -277,6 +301,12 @@ impl Account {
         self.genesis.is_some()
     }
 
+    /// How many operations the account's log holds, which [`logged`] counts the same way without the device's keys.
+    #[must_use]
+    pub fn operations(&self) -> usize {
+        self.log.len()
+    }
+
     fn save_epochs(&self) -> Result<(), SyncError> {
         let mut writer = Writer::new();
         writer.count(self.epochs.len())?;
@@ -297,7 +327,7 @@ impl Account {
             fs::replace(
                 &self
                     .directory
-                    .join("log")
+                    .join(LOG)
                     .join(format!("{}{OPERATION_SUFFIX}", hex(&digest))),
                 &bytes,
             )?;
@@ -1231,7 +1261,50 @@ impl Account {
 
 #[cfg(test)]
 mod tests {
-    use super::{GENESIS, LONGEST_OPERATION, founded};
+    use super::{
+        Account, GENESIS, LOG, LONGEST_OPERATION, OPERATION_SUFFIX, founded, logged,
+        operation_digest,
+    };
+    use crate::hex;
+    use crate::keystore::KeyStore;
+    use youarel_store::fs;
+
+    #[test]
+    fn the_log_counts_each_operation_whose_bytes_match_its_name() {
+        let directory = tempfile::tempdir().unwrap();
+        assert_eq!(logged(&directory.path().join("absent")).unwrap(), 0);
+        let log = directory.path().join(LOG);
+        fs::create_dir_all(&log).unwrap();
+        assert_eq!(logged(directory.path()).unwrap(), 0);
+        for bytes in [b"one".as_slice(), b"two"] {
+            let name = format!("{}{OPERATION_SUFFIX}", hex(&operation_digest(bytes)));
+            fs::replace(&log.join(name), bytes).unwrap();
+        }
+        let forged = format!("{}{OPERATION_SUFFIX}", hex(&operation_digest(b"three")));
+        fs::replace(&log.join(forged), b"not three").unwrap();
+        fs::replace(&log.join("notes.txt"), b"one").unwrap();
+        assert_eq!(logged(directory.path()).unwrap(), 2);
+        let unlisted = tempfile::tempdir().unwrap();
+        fs::replace(&unlisted.path().join(LOG), b"a file").unwrap();
+        logged(unlisted.path()).unwrap_err();
+    }
+
+    #[test]
+    fn an_open_account_counts_its_log_as_its_files_do() {
+        let directory = tempfile::tempdir().unwrap();
+        let keys = KeyStore::File(directory.path().join("sealing.key"));
+        let mut account = Account::open(directory.path(), &keys).unwrap();
+        assert_eq!(account.operations(), 0);
+        account.found(1_700_000_000_000).unwrap();
+        assert_eq!(
+            account.operations(),
+            2,
+            "the genesis and the first rotation"
+        );
+        assert_eq!(logged(directory.path()).unwrap(), 2);
+        let reopened = Account::open(directory.path(), &keys).unwrap();
+        assert_eq!(reopened.operations(), 2);
+    }
 
     #[test]
     fn the_log_reads_every_operation_the_wire_admits() {
@@ -1246,7 +1319,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         assert!(!founded(&directory.path().join("absent")).unwrap());
         assert!(!founded(directory.path()).unwrap());
-        youarel_store::fs::replace(&directory.path().join(GENESIS), b"named").unwrap();
+        fs::replace(&directory.path().join(GENESIS), b"named").unwrap();
         assert!(founded(directory.path()).unwrap());
     }
 }

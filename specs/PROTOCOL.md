@@ -66,6 +66,8 @@ A device importing a bundle MUST:
 
 A bundle can travel as a file through any channel: a USB drive, a messenger, or a shared folder in which each device writes only `<device>.youarel`, named by its identifier in hexadecimal.
 A device syncing through a shared folder imports every other device's file there, reports and skips any it refuses, and then writes its own.
+A device that syncs on its own writes its file only when the folder lacks it, or when the device holds a write of its own or an operation of the log that no file it wrote there carries.
+Each seal draws a fresh nonce, so a file written with nothing new would change for every other device and carry nothing.
 
 ## The relay
 
@@ -83,6 +85,7 @@ It keeps each admitted nonce until the request would be stale anyway.
 
 The relay drops the slot of every device the log stops listing, keeps an account no longer than 400 days after its last admitted request, and bounds what an account holds in all.
 A member hears of a device whose slot the relay has not renewed for 180 days, and ends that membership only when its person says so, since the slot's time is the relay's own claim.
+A device that syncs on its own publishes its bundle again once its slot is 30 days old, even with nothing new, so no member hears of it as gone while it syncs.
 A device that returns after a long absence revives nothing, because the state keeps every tombstone.
 
 The relay keeps a directory that names the account of every recovery member: whenever a member publishes, it notes the members whose `AddRecovery` the account's log holds and still lists.

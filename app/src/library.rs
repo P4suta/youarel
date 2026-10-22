@@ -121,6 +121,20 @@ pub fn fetch(link: &Link) -> Fetched {
     }
 }
 
+/// Whether the store holds a write or an operation of this device that no publish to the sync target carried, for a window that syncs.
+///
+/// A store that cannot tell leaves it to the first merge, which reads the same facts and reports what failed.
+fn unpublished(store: &Store, settings: &Settings) -> bool {
+    let sync = &settings.sync;
+    if !sync.enabled || sync.target.is_empty() {
+        return false;
+    }
+    matches!(
+        clock::now().and_then(|now| youarel_cli::sync::unpublished(store, now, &sync.target)),
+        Ok(true)
+    )
+}
+
 /// The library behind the window: the store, the window's choices, the selection, and the last notice.
 #[derive(Debug)]
 pub struct Library {
@@ -152,6 +166,8 @@ pub struct Library {
 
 impl Library {
     /// The library over a store, opening with the layout and the order its settings name.
+    ///
+    /// When the window syncs, the store says at once whether this device holds what no publish to the target carried, which the first sync then publishes.
     #[must_use]
     pub fn new(store: Store) -> Self {
         let (settings, notice) = match store.settings() {
@@ -164,6 +180,10 @@ impl Library {
                 }),
             ),
         };
+        let mut syncing = Syncing::default();
+        if unpublished(&store, &settings) {
+            syncing.unpublished();
+        }
         Self {
             store,
             scope: Scope::All,
@@ -184,7 +204,7 @@ impl Library {
                 |_unreadable| Vec::new(),
                 |found| found.into_iter().map(BrowserChoice::from).collect(),
             ),
-            syncing: Syncing::default(),
+            syncing,
         }
     }
 
@@ -234,11 +254,11 @@ impl Library {
             .then(|| PathBuf::from(&sync.target))
     }
 
-    /// Records how a sync that began at `began` ended.
-    pub fn end_sync(&mut self, began: u64, outcome: Result<Vec<String>>) {
+    /// Records how a sync that began at `began` ended: whether this device still has something new to say at the target, which a merge reads from the store, or why it failed.
+    pub fn end_sync(&mut self, began: u64, outcome: Result<bool>) {
         let succeeded = self
             .syncing
-            .end(outcome.map(drop).map_err(|error| format!("{error:#}")));
+            .end(outcome.map_err(|error| format!("{error:#}")));
         if succeeded {
             self.settings.sync.last = Some(began);
             if let Err(error) = self.save_settings() {
@@ -401,16 +421,20 @@ impl Library {
     ///
     /// Returns an error when the store cannot be read for the view.
     pub fn act(&mut self, intent: Intent) -> Result<View> {
-        if intent.edits() {
-            self.syncing.edited();
-        }
-        self.notice = match self.carry_out(intent) {
+        let edits = intent.edits();
+        let carried_out = self.carry_out(intent);
+        // Every edit runs in one session, so an edit that failed wrote nothing for a publish to carry.
+        let edited = edits && carried_out.is_ok();
+        self.notice = match carried_out {
             Ok(said) => said.map(|text| Notice { text, error: false }),
             Err(error) => Some(Notice {
                 text: format!("{error:#}"),
                 error: true,
             }),
         };
+        if edited {
+            self.syncing.edited(clock::now()?);
+        }
         self.view()
     }
 
@@ -1148,10 +1172,11 @@ impl Library {
             if let Some(icon) = addition.icon.clone() {
                 icons::keep(session, &addition.link, icon)?;
             }
-            Ok(Ok(id))
+            Ok(Ok((id, session.now())))
         });
         self.notice = Some(match added {
-            Ok(Ok(id)) => {
+            Ok(Ok((id, now))) => {
+                self.syncing.edited(now);
                 self.focus = Some(id);
                 self.selected = BTreeSet::from([id]);
                 if let Ok(snapshot) = self.snapshot() {

@@ -18,6 +18,7 @@ use std::path::{Path, PathBuf};
 use youarel_core::clock_rules::{self, DeviceId, Stamp};
 use youarel_core::rank_rules::Visits;
 use youarel_core::state::{Edit, EditError, ItemId, State};
+use youarel_core::sync_rules::Carried;
 use youarel_core::wire_rules::WireError;
 use youarel_link::Link;
 
@@ -33,6 +34,10 @@ pub const DEVICE_FILE: &str = "device.json";
 pub const VISITS_FILE: &str = "visits.json";
 /// The file whose lock serializes the sessions of every process.
 pub const LOCK_FILE: &str = "lock";
+/// What the device's last publish carried and the target it reached, which stay on the device.
+pub const PUBLISHED_FILE: &str = "published.json";
+/// The file whose lock lets one process at a time publish the device's bundle and record what it carried.
+pub const PUBLISH_LOCK_FILE: &str = "publish.lock";
 
 /// Why a session failed.
 #[derive(Debug)]
@@ -142,6 +147,23 @@ struct VisitDocument {
 #[serde(deny_unknown_fields)]
 struct VisitsDocument {
     visits: Vec<VisitDocument>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct StampDocument {
+    wall: u64,
+    counter: u32,
+    device: String,
+}
+
+/// What the last publish carried, and the target it reached.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct PublishedDocument {
+    target: String,
+    latest: Option<StampDocument>,
+    operations: usize,
 }
 
 /// The directory that holds one device's files.
@@ -343,6 +365,70 @@ impl Store {
         Ok(())
     }
 
+    /// What the last publish carried, when it reached `target`, or `None` when the last publish reached another target or none happened.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`StoreError`] when the lock cannot be taken or the record cannot be read or holds what this youarel would not have written.
+    pub fn published(&self, target: &str) -> Result<Option<Carried>, StoreError> {
+        fs::create_dir_all(&self.directory)?;
+        let _lock = Lock::acquire(&self.directory.join(LOCK_FILE))?;
+        let path = self.directory.join(PUBLISHED_FILE);
+        let Some(text) = fs::read_if_present(&path)? else {
+            return Ok(None);
+        };
+        let document: PublishedDocument = local(&path, &text)?;
+        if document.target != target {
+            return Ok(None);
+        }
+        let latest = match document.latest {
+            Some(stamp) => Some(Stamp {
+                wall: stamp.wall,
+                counter: stamp.counter,
+                device: DeviceId(
+                    codec::unhex(&stamp.device)
+                        .map_err(|error| StoreError::Decode { path, error })?,
+                ),
+            }),
+            None => None,
+        };
+        Ok(Some(Carried {
+            latest,
+            operations: document.operations,
+        }))
+    }
+
+    /// Records that a publish to `target` carried `carried`, in place of the record of the publish before it.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`StoreError`] when the lock cannot be taken or the record cannot be written.
+    pub fn record_published(&self, target: &str, carried: Carried) -> Result<(), StoreError> {
+        fs::create_dir_all(&self.directory)?;
+        let _lock = Lock::acquire(&self.directory.join(LOCK_FILE))?;
+        let document = PublishedDocument {
+            target: target.to_owned(),
+            latest: carried.latest.map(|stamp| StampDocument {
+                wall: stamp.wall,
+                counter: stamp.counter,
+                device: codec::hex(&stamp.device.0),
+            }),
+            operations: carried.operations,
+        };
+        fs::replace(&self.directory.join(PUBLISHED_FILE), &json(&document)?)?;
+        Ok(())
+    }
+
+    /// Holds the device's publishing until the hold drops, so a second process waits until the first wrote its bundle and recorded what it carried.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`StoreError`] when the directory or the lock cannot be made.
+    pub fn publishing(&self) -> Result<Lock, StoreError> {
+        fs::create_dir_all(&self.directory)?;
+        Ok(Lock::acquire(&self.directory.join(PUBLISH_LOCK_FILE))?)
+    }
+
     /// The window's settings, or the defaults when it never saved any.
     ///
     /// # Errors
@@ -528,8 +614,8 @@ impl Session {
 #[cfg(test)]
 mod tests {
     use super::{
-        DEVICE_FILE, LEGACY_STATE_FILE, MIGRATED_STATE_FILE, STATE_FILE, Store, StoreError,
-        VISITS_FILE, icons,
+        DEVICE_FILE, LEGACY_STATE_FILE, MIGRATED_STATE_FILE, PUBLISH_LOCK_FILE, PUBLISHED_FILE,
+        STATE_FILE, Store, StoreError, VISITS_FILE, icons,
     };
     use youarel_core::state::{Edit, Entry, ItemId, State};
 
@@ -963,6 +1049,75 @@ mod tests {
             ),
             (Some(records), Some(b"{".to_vec()), Some(older.into_bytes())),
             "the move happens once, and the records outrank a JSON form an older build wrote again"
+        );
+    }
+
+    #[test]
+    fn the_record_of_a_publish_reads_back_for_its_target_alone() {
+        use youarel_core::clock_rules::{DeviceId, Stamp};
+        use youarel_core::sync_rules::Carried;
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::new(directory.path().join("youarel"));
+        assert_eq!(store.published("/shared").unwrap(), None, "no publish yet");
+        let carried = Carried {
+            latest: Some(Stamp {
+                wall: NOW,
+                counter: 2,
+                device: DeviceId([7; 16]),
+            }),
+            operations: 4,
+        };
+        store.record_published("/shared", carried).unwrap();
+        assert_eq!(store.published("/shared").unwrap(), Some(carried));
+        assert_eq!(
+            store.published("/shared/").unwrap(),
+            None,
+            "a record names its target exactly"
+        );
+        let empty = Carried {
+            latest: None,
+            operations: 0,
+        };
+        store
+            .record_published("https://relay.example", empty)
+            .unwrap();
+        assert_eq!(
+            store.published("https://relay.example").unwrap(),
+            Some(empty)
+        );
+        assert_eq!(
+            store.published("/shared").unwrap(),
+            None,
+            "the record of the publish before is gone"
+        );
+        // Windows refuses to read a file another handle holds locked, so the test looks for the lock's name alone.
+        let held = store.publishing().unwrap();
+        let names = super::fs::list(store.directory()).unwrap();
+        assert!(
+            names.iter().any(|name| name == PUBLISH_LOCK_FILE),
+            "the hold names its file: {names:?}"
+        );
+        drop(held);
+        drop(store.publishing().unwrap());
+    }
+
+    #[test]
+    fn a_damaged_record_of_a_publish_names_its_file() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::new(directory.path().to_path_buf());
+        let path = store.directory().join(PUBLISHED_FILE);
+        super::fs::replace(&path, b"{}").unwrap();
+        let unshaped = store.published("/shared").unwrap_err();
+        assert!(matches!(unshaped, StoreError::Local { .. }));
+        assert!(unshaped.to_string().contains(PUBLISHED_FILE), "{unshaped}");
+        let misnamed =
+            br#"{"target":"/shared","latest":{"wall":1,"counter":0,"device":"zz"},"operations":1}"#;
+        super::fs::replace(&path, misnamed).unwrap();
+        let undecoded = store.published("/shared").unwrap_err();
+        assert!(matches!(undecoded, StoreError::Decode { .. }));
+        assert!(
+            undecoded.to_string().contains(PUBLISHED_FILE),
+            "{undecoded}"
         );
     }
 

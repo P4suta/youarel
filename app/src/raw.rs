@@ -236,7 +236,7 @@ mod commands {
 
 /// Runs the sync the schedule says is due, outside the library's lock, and tells the page before and after.
 ///
-/// A publish writes this device's bundle as `youarel sync` does, and a merge only reads the other devices' bundles.
+/// A publish writes this device's bundle as `youarel sync` does, and a merge only reads the other devices' bundles and says whether this device has something new to publish.
 /// The sync then learns the name of this device's own bundle, whose changes the watch passes over from then on.
 async fn sync_when_due(app: &AppHandle) {
     let Ok(began) = youarel_cli::clock::now() else {
@@ -254,8 +254,13 @@ async fn sync_when_due(app: &AppHandle) {
     drop(app.emit(SYNCED, ()));
     let ran = tauri::async_runtime::spawn_blocking(move || {
         let outcome = match sync {
-            sync_rules::Sync::Publish => youarel_cli::sync::sync(&store, began, &target),
-            sync_rules::Sync::Merge => youarel_cli::sync::merge(&store, began, &target),
+            // A publish carries everything this device held when it read the store.
+            sync_rules::Sync::Publish => {
+                youarel_cli::sync::sync(&store, began, &target).map(|_published| false)
+            }
+            sync_rules::Sync::Merge => {
+                youarel_cli::sync::merge(&store, began, &target).map(|merged| merged.pending)
+            }
         };
         (outcome, youarel_cli::sync::own_bundle(&store))
     })

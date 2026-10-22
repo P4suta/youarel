@@ -5,16 +5,18 @@
 use crate::{clock, web};
 use anyhow::{Context, Result, anyhow, bail};
 use std::path::Path;
+use youarel_core::clock_rules::Stamp;
 use youarel_core::folder_rules::{self, Seen};
 use youarel_core::relay_rules;
+use youarel_core::sync_rules::{self, Carried};
 use youarel_crypto::pairing::Code;
 use youarel_crypto::recovery::RecoveryKey;
 use youarel_protocol::relay::{
     self, Collected, Locate, Mail, Side, Verb, read_located, read_nameplate,
 };
 use youarel_relay::Status;
-use youarel_store::{Store, fs, records};
-use youarel_sync::account::Account;
+use youarel_store::{Store, StoreError, fs, records};
+use youarel_sync::account::{Account, founded, logged};
 use youarel_sync::keystore::KeyStore;
 use youarel_sync::{SyncError, hex};
 
@@ -39,10 +41,68 @@ fn account(store: &Store) -> Result<Account> {
 
 /// The store's state as its records.
 fn state(store: &Store, now: u64) -> Result<Vec<u8>> {
+    Ok(own_state(store, now)?.0)
+}
+
+/// The store's state as its records, with the latest stamp of this device's own writes in it, which a publish of the records carries.
+fn own_state(store: &Store, now: u64) -> Result<(Vec<u8>, Option<Stamp>)> {
     store
         .session(now, |session| {
-            records::encode(session.state()).map_err(youarel_store::StoreError::Records)
+            let state = records::encode(session.state()).map_err(StoreError::Records)?;
+            Ok((state, session.state().latest_of(session.device())))
         })
+        .map_err(|error| anyhow!(error))
+}
+
+/// What a publish would carry now: the latest stamp of this device's own writes, and how many operations the account's log holds, read without the device's keys.
+fn held(store: &Store, now: u64) -> Result<Carried> {
+    let latest = store
+        .session(now, |session| {
+            Ok(session.state().latest_of(session.device()))
+        })
+        .map_err(|error| anyhow!(error))?;
+    let operations = logged(&store.directory().join(ACCOUNT_DIRECTORY)).map_err(sync_error)?;
+    Ok(Carried { latest, operations })
+}
+
+/// Whether this device has something new to say at `target`, where `missing` says the target lacks a bundle of it to keep.
+fn pending_at(store: &Store, now: u64, target: &str, missing: bool) -> Result<bool> {
+    let held = held(store, now)?;
+    let published = store.published(target).map_err(|error| anyhow!(error))?;
+    Ok(sync_rules::pending(held, published, missing))
+}
+
+/// Whether this device holds a write of its own or an operation of its account that no publish to `target` carried, read without the device's keys.
+///
+/// The window asks at its start, so a restart publishes at once what an earlier run left unpublished.
+///
+/// # Errors
+///
+/// Returns an error when the store's state, the record of its last publish, or the account's log cannot be read.
+pub fn unpublished(store: &Store, now: u64, target: &str) -> Result<bool> {
+    pending_at(store, now, target, false)
+}
+
+/// Seals this device's state and log, hands the bundle to `deliver`, and records what it carried for `target`, while no other process publishes for this device.
+///
+/// The record follows only a delivered bundle, so a publish that fails leaves its writes unpublished.
+fn publish(
+    store: &Store,
+    now: u64,
+    target: &str,
+    deliver: impl FnOnce(&Account, Vec<u8>) -> Result<()>,
+) -> Result<()> {
+    let _publishing = store.publishing().map_err(|error| anyhow!(error))?;
+    let (state, latest) = own_state(store, now)?;
+    let mut account = account(store)?;
+    let bundle = account.export(now, &state).map_err(sync_error)?;
+    let carried = Carried {
+        latest,
+        operations: account.operations(),
+    };
+    deliver(&account, bundle)?;
+    store
+        .record_published(target, carried)
         .map_err(|error| anyhow!(error))
 }
 
@@ -238,12 +298,17 @@ pub fn own_bundle(store: &Store) -> Result<String> {
     Ok(format!("{}{BUNDLE_SUFFIX}", hex(&account(store)?.device())))
 }
 
-/// Merges every other device's bundle in a shared folder, which `own` names apart from this device's.
+/// What a merge read: a line for each bundle, and whether the target lacks a bundle of this device to keep.
+type Read = (Vec<String>, bool);
+
+/// Merges every other device's bundle in a shared folder, which `own` names apart from this device's, and says whether the folder lacks this device's own.
 ///
 /// A bundle that cannot be read or opened is reported and skipped, since a cloud drive may still be writing it or hold it locked, so one such file stops nothing.
-fn merge_folder(store: &Store, now: u64, directory: &Path, own: &str) -> Result<Vec<String>> {
+fn merge_folder(store: &Store, now: u64, directory: &Path, own: &str) -> Result<Read> {
+    let names = fs::list(directory)?;
+    let missing = !names.iter().any(|name| name == own);
     let mut lines = Vec::new();
-    for name in fs::list(directory)? {
+    for name in names {
         if !folder_rules::counts(Seen::Touched(&name), Some(own)) {
             continue;
         }
@@ -262,10 +327,10 @@ fn merge_folder(store: &Store, now: u64, directory: &Path, own: &str) -> Result<
             Err(error) => lines.push(format!("skipped {name}: {error}")),
         }
     }
-    Ok(lines)
+    Ok((lines, missing))
 }
 
-/// Syncs through a shared folder: reads every other device's bundle there, then writes this device's own.
+/// Syncs through a shared folder: reads every other device's bundle there, then writes this device's own and records what it carried.
 ///
 /// A bundle that fails is reported and skipped, so one broken file stops nothing.
 ///
@@ -274,33 +339,46 @@ fn merge_folder(store: &Store, now: u64, directory: &Path, own: &str) -> Result<
 /// Returns an error when the folder cannot be listed or this device's bundle cannot be written.
 pub fn folder(store: &Store, now: u64, directory: &Path) -> Result<Vec<String>> {
     let own = own_bundle(store)?;
-    let mut lines = merge_folder(store, now, directory, &own)?;
-    let state = state(store, now)?;
-    let bytes = match account(store)?.export(now, &state) {
-        Ok(bytes) => bytes,
-        Err(error) => {
-            lines.push(format!("wrote no bundle: {error}"));
-            bail!("{}", lines.join("\n"));
-        }
-    };
-    write(&directory.join(&own), &bytes)?;
+    let (mut lines, _) = merge_folder(store, now, directory, &own)?;
+    let target = directory.to_string_lossy();
+    let written = publish(store, now, &target, |_, bundle| {
+        write(&directory.join(&own), &bundle)
+    });
+    if let Err(error) = written {
+        lines.push(format!("wrote no bundle: {error:#}"));
+        bail!("{}", lines.join("\n"));
+    }
     lines.push(format!("wrote {own}"));
     Ok(lines)
 }
 
+/// What a merge read, and whether this device has something new to say at the target, which a publish there then carries.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Merged {
+    /// A line for each bundle the merge read or skipped.
+    pub lines: Vec<String>,
+    /// Whether this device holds a write or an operation that no publish to the target carried, or the target lacks a bundle of it to keep.
+    pub pending: bool,
+}
+
 /// Merges what the other devices left at `target`, a relay's address or a shared folder, and writes nothing there.
 ///
-/// The window merges so when its watch notices another device's bundle, since every bundle it wrote in answer would bring the other devices to answer in turn.
+/// The window merges so on its interval and when its watch notices another device's bundle, since every bundle it wrote in answer would bring the other devices to answer in turn.
+/// The merge then reads from the store whether this device has something new to say there, which the window publishes.
 ///
 /// # Errors
 ///
 /// Returns an error when the relay or the folder cannot be reached, or the device belongs to no account.
-pub fn merge(store: &Store, now: u64, target: &str) -> Result<Vec<String>> {
-    if is_relay(target) {
-        collect(store, now, target)
+pub fn merge(store: &Store, now: u64, target: &str) -> Result<Merged> {
+    let (lines, missing) = if is_relay(target) {
+        collect(store, now, target)?
     } else {
-        merge_folder(store, now, Path::new(target), &own_bundle(store)?)
-    }
+        merge_folder(store, now, Path::new(target), &own_bundle(store)?)?
+    };
+    Ok(Merged {
+        lines,
+        pending: pending_at(store, now, target, missing)?,
+    })
 }
 
 /// Removes the member whose identifier starts with `prefix`.
@@ -343,7 +421,7 @@ pub fn sync(store: &Store, now: u64, target: &str) -> Result<Vec<String>> {
 ///
 /// Returns an error when the account's files exist but cannot be read.
 pub fn has_account(store: &Store) -> Result<bool> {
-    youarel_sync::account::founded(&store.directory().join(ACCOUNT_DIRECTORY)).map_err(sync_error)
+    founded(&store.directory().join(ACCOUNT_DIRECTORY)).map_err(sync_error)
 }
 
 /// Whether `target` names a relay rather than a folder.
@@ -382,18 +460,22 @@ fn reason(body: &[u8]) -> String {
     String::from_utf8_lossy(body).into_owned()
 }
 
-/// Merges every other member's newest bundle at a relay, reporting and skipping a bundle that fails, as a shared folder's are.
-fn collect(store: &Store, now: u64, relay: &str) -> Result<Vec<String>> {
+/// Merges every other member's newest bundle at a relay, reporting and skipping a bundle that fails, as a shared folder's are, and says whether the relay lacks a bundle of this device to keep.
+///
+/// The relay stamps a slot only when its member publishes, so this device's bundle counts as lacking once it grew stale, and the next publish renews it before the other members hear of the device as gone.
+fn collect(store: &Store, now: u64, relay: &str) -> Result<Read> {
     let requests = endpoint(relay, youarel_relay::REQUESTS)?;
     let collect = account(store)?
         .request(now, Verb::Collect, Vec::new())
         .map_err(sync_error)?;
     let (status, body) = web::post(&requests, &collect, longest_answer()?)?;
     let mut lines = Vec::new();
+    let mut missing = true;
     if status == Status::Ok.code() {
         let own = account(store)?.device();
         for slot in Collected::decode(&body)?.slots {
             if slot.device == own {
+                missing = sync_rules::stale(slot.published, now);
                 continue;
             }
             // The relay's clock is its own claim, so a long silence is only reported, and a person decides on the removal.
@@ -420,10 +502,29 @@ fn collect(store: &Store, now: u64, relay: &str) -> Result<Vec<String>> {
             reason(&body)
         );
     }
-    Ok(lines)
+    Ok((lines, missing))
 }
 
-/// Syncs through a relay: merges every other member's newest bundle there, then publishes this device's own.
+/// Publishes this device's bundle at a relay and records what it carried.
+fn publish_to(store: &Store, now: u64, relay: &str) -> Result<()> {
+    let requests = endpoint(relay, youarel_relay::REQUESTS)?;
+    let limit = longest_answer()?;
+    publish(store, now, relay, |account, bundle| {
+        let request = account
+            .request(now, Verb::Publish, bundle)
+            .map_err(sync_error)?;
+        let (published, answer) = web::post(&requests, &request, limit)?;
+        if published != Status::Ok.code() {
+            bail!(
+                "the relay refused this device's bundle: {}",
+                reason(&answer)
+            );
+        }
+        Ok(())
+    })
+}
+
+/// Syncs through a relay: merges every other member's newest bundle there, then publishes this device's own and records what it carried.
 ///
 /// A bundle that fails is reported and skipped, as a shared folder's are.
 ///
@@ -431,21 +532,8 @@ fn collect(store: &Store, now: u64, relay: &str) -> Result<Vec<String>> {
 ///
 /// Returns an error when the relay cannot be reached or refuses this device's requests.
 pub fn relay(store: &Store, now: u64, relay: &str) -> Result<Vec<String>> {
-    let mut lines = collect(store, now, relay)?;
-    let requests = endpoint(relay, youarel_relay::REQUESTS)?;
-    let limit = longest_answer()?;
-    let state = state(store, now)?;
-    let bundle = account(store)?.export(now, &state).map_err(sync_error)?;
-    let publish = account(store)?
-        .request(now, Verb::Publish, bundle)
-        .map_err(sync_error)?;
-    let (published, answer) = web::post(&requests, &publish, limit)?;
-    if published != Status::Ok.code() {
-        bail!(
-            "the relay refused this device's bundle: {}",
-            reason(&answer)
-        );
-    }
+    let (mut lines, _) = collect(store, now, relay)?;
+    publish_to(store, now, relay)?;
     lines.push(String::from("published this device's bundle"));
     Ok(lines)
 }
@@ -536,18 +624,7 @@ fn recover_through(store: &Store, now: u64, key: &RecoveryKey, relay: &str) -> R
         .into_iter()
         .map(|slot| (short(&slot.device), slot.bundle));
     let mut lines = recover_from(store, now, key, bundles)?;
-    let state = state(store, now)?;
-    let bundle = account(store)?.export(now, &state).map_err(sync_error)?;
-    let publish = account(store)?
-        .request(now, Verb::Publish, bundle)
-        .map_err(sync_error)?;
-    let (published, answer) = web::post(&requests, &publish, limit)?;
-    if published != Status::Ok.code() {
-        bail!(
-            "the relay refused this device's bundle: {}",
-            reason(&answer)
-        );
-    }
+    publish_to(store, now, relay)?;
     lines.extend(self::relay(store, now, relay)?);
     Ok(lines)
 }

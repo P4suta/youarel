@@ -8,7 +8,7 @@ use crate::view::View;
 use std::path::PathBuf;
 use youarel_core::folder_rules::Seen;
 use youarel_core::state::{Edit, ItemId};
-use youarel_core::sync_rules::{BACKOFF, QUIET, Sync};
+use youarel_core::sync_rules::{BACKOFF, Carried, INTERVAL, QUIET, SECOND, Sync};
 use youarel_link::Link;
 use youarel_store::Store;
 use youarel_store::icons::IconId;
@@ -1149,10 +1149,7 @@ fn the_window_syncs_only_when_chosen_and_keeps_the_time_of_its_last_success() {
     let account = home.path().join(youarel_cli::sync::ACCOUNT_DIRECTORY);
     youarel_store::fs::create_dir_all(&account).unwrap();
     youarel_store::fs::replace(&account.join(youarel_sync::account::GENESIS), b"named").unwrap();
-    assert_eq!(
-        library.begin_sync(NOW),
-        Some((Sync::Publish, target.clone()))
-    );
+    assert_eq!(library.begin_sync(NOW), Some((Sync::Merge, target.clone())));
     assert_eq!(library.view().unwrap().sync.state, SyncState::Syncing);
     library.end_sync(NOW, Err(anyhow::anyhow!("unreachable")));
     let failed = library.view().unwrap().sync;
@@ -1160,10 +1157,10 @@ fn the_window_syncs_only_when_chosen_and_keeps_the_time_of_its_last_success() {
     act(&mut library, Intent::SyncNow);
     assert_eq!(
         library.begin_sync(NOW + 1),
-        Some((Sync::Publish, target.clone())),
+        Some((Sync::Merge, target.clone())),
         "a request skips the backoff"
     );
-    library.end_sync(NOW + 1, Ok(Vec::new()));
+    library.end_sync(NOW + 1, Ok(false));
     let again = Library::new(Store::new(home.path().to_path_buf()))
         .view()
         .unwrap()
@@ -1184,7 +1181,7 @@ fn the_window_syncs_only_when_chosen_and_keeps_the_time_of_its_last_success() {
     assert_eq!(library.begin_sync(NOW + 2), None, "off, no sync");
 }
 
-/// A library that syncs through `target` for a device that belongs to an account, and whose first sync, a publish, began at `now` and succeeded.
+/// A library that syncs through `target` for a device that belongs to an account, and whose first sync, a merge that found nothing to publish, began at `now` and succeeded.
 fn synced_library(target: &str, now: u64) -> (tempfile::TempDir, Library) {
     let (home, mut library) = library();
     let account = home.path().join(youarel_cli::sync::ACCOUNT_DIRECTORY);
@@ -1199,10 +1196,169 @@ fn synced_library(target: &str, now: u64) -> (tempfile::TempDir, Library) {
     );
     assert_eq!(
         library.begin_sync(now),
-        Some((Sync::Publish, target.to_owned()))
+        Some((Sync::Merge, target.to_owned()))
     );
-    library.end_sync(now, Ok(Vec::new()));
+    library.end_sync(now, Ok(false));
     (home, library)
+}
+
+/// How often the window asks whether a sync is due.
+const TICK: u64 = 5 * SECOND;
+
+/// The syncs that begin at the window's ticks from `from` through `until`, each ending as `found` says for it, with the times they began.
+///
+/// A merge ends with whether the store holds something new to publish, and a publish carries all of it.
+fn ticks(
+    library: &mut Library,
+    (from, until): (u64, u64),
+    mut found: impl FnMut(u64) -> bool,
+) -> Vec<(u64, Sync)> {
+    let mut began = Vec::new();
+    let mut now = from;
+    while now <= until {
+        if let Some((sync, _)) = library.begin_sync(now) {
+            began.push((now, sync));
+            let pending = sync == Sync::Merge && found(now);
+            library.end_sync(now, Ok(pending));
+        }
+        let Some(next) = now.checked_add(TICK) else {
+            break;
+        };
+        now = next;
+    }
+    began
+}
+
+/// The syncs among `began` that published.
+fn publishes(began: &[(u64, Sync)]) -> Vec<u64> {
+    began
+        .iter()
+        .filter(|(_, sync)| *sync == Sync::Publish)
+        .map(|(now, _)| *now)
+        .collect()
+}
+
+/// Twenty minutes, over which an idle window stays quiet.
+const IDLE: u64 = 20 * 60 * SECOND;
+
+#[test]
+fn an_idle_window_only_reads_and_an_edit_publishes_once() {
+    // The window stamps an edit with the clock, so the ticks count from the clock too.
+    let now = youarel_cli::clock::now().unwrap();
+    let (_home, mut library) = synced_library("/shared", now);
+    let idle = ticks(&mut library, (now + TICK, now + IDLE), |_| false);
+    assert_eq!(publishes(&idle), Vec::<u64>::new(), "{idle:?}");
+    assert_eq!(
+        idle.iter().map(|(at, _)| *at).collect::<Vec<_>>(),
+        (1..=4)
+            .map(|step| now + step * INTERVAL)
+            .collect::<Vec<_>>(),
+        "a merge every interval"
+    );
+    add(&mut library, "https://edited.example/", "Edited");
+    let added = now + IDLE + TICK;
+    let after = ticks(&mut library, (added, added + IDLE), |_| false);
+    assert_eq!(publishes(&after), [added], "{after:?}");
+    let edited = id_of(&library.view().unwrap(), "Edited");
+    act(
+        &mut library,
+        Intent::Retitle {
+            id: edited,
+            title: "Retitled".to_owned(),
+        },
+    );
+    let retitled = added + IDLE + TICK;
+    let again = ticks(&mut library, (retitled, retitled + IDLE), |_| false);
+    assert_eq!(
+        publishes(&again),
+        [retitled],
+        "an intent's edit publishes once too"
+    );
+    let refused = act(
+        &mut library,
+        Intent::Retitle {
+            id: "00".repeat(16),
+            title: "Nothing".to_owned(),
+        },
+    );
+    assert!(refused.notice.is_some_and(|notice| notice.error));
+    let after_refusal = retitled + IDLE + TICK;
+    let quiet = ticks(&mut library, (after_refusal, after_refusal + IDLE), |_| {
+        false
+    });
+    assert_eq!(
+        publishes(&quiet),
+        Vec::<u64>::new(),
+        "a refused edit wrote nothing to publish"
+    );
+}
+
+#[test]
+fn a_merge_that_brings_another_device_s_change_publishes_nothing() {
+    const NOW: u64 = 1_700_000_000_000;
+    let (_home, mut library) = synced_library("/shared", NOW);
+    library.learned_own("mine.youarel".to_owned());
+    assert!(library.noticed(Seen::Touched("other.youarel"), NOW + 1));
+    let began = ticks(&mut library, (NOW + TICK, NOW + INTERVAL), |_| false);
+    assert_eq!(began, [(NOW + TICK, Sync::Merge)]);
+}
+
+#[test]
+fn a_missing_bundle_of_its_own_publishes_once() {
+    const NOW: u64 = 1_700_000_000_000;
+    let (_home, mut library) = synced_library("/shared", NOW);
+    let mut missing = true;
+    let began = ticks(&mut library, (NOW + TICK, NOW + 3 * INTERVAL), |_| {
+        core::mem::take(&mut missing)
+    });
+    assert_eq!(
+        began,
+        [
+            (NOW + INTERVAL, Sync::Merge),
+            (NOW + INTERVAL + TICK, Sync::Publish),
+            (NOW + INTERVAL + TICK + INTERVAL, Sync::Merge),
+        ]
+    );
+}
+
+/// What a publish of the store now carries, which `youarel sync` records once it wrote the bundle.
+fn carried(store: &Store) -> Carried {
+    let now = youarel_cli::clock::now().unwrap();
+    let latest = store
+        .session(now, |session| {
+            Ok(session.state().latest_of(session.device()))
+        })
+        .unwrap();
+    Carried {
+        latest,
+        operations: 0,
+    }
+}
+
+#[test]
+fn a_restart_publishes_once_what_an_earlier_run_left_unpublished() {
+    let now = youarel_cli::clock::now().unwrap();
+    let (home, mut library) = synced_library("/shared", now);
+    add(&mut library, "https://unpublished.example/", "Unpublished");
+    drop(library);
+    let store = Store::new(home.path().to_path_buf());
+    let mut restarted = Library::new(store.clone());
+    let began = ticks(&mut restarted, (now + TICK, now + IDLE), |_| false);
+    assert_eq!(publishes(&began), [now + TICK], "{began:?}");
+    store.record_published("/shared", carried(&store)).unwrap();
+    let mut published = Library::new(store.clone());
+    let quiet = ticks(&mut published, (now + TICK, now + IDLE), |_| false);
+    assert_eq!(
+        quiet.first(),
+        Some(&(now + TICK, Sync::Merge)),
+        "a restart publishes nothing published already"
+    );
+    assert_eq!(publishes(&quiet), Vec::<u64>::new());
+    add(&mut published, "https://later.example/", "Later");
+    drop(published);
+    let mut later = Library::new(store);
+    let resumed = ticks(&mut later, (now + IDLE, now + IDLE), |_| false);
+    assert_eq!(resumed, [(now + IDLE, Sync::Publish)], "a later write");
 }
 
 #[test]
@@ -1233,7 +1389,8 @@ fn another_device_s_bundle_brings_a_merge_once_the_folder_rests_and_never_the_de
     );
     assert_eq!(
         library.begin_sync(NOW + 1 + QUIET + BACKOFF),
-        Some((Sync::Publish, "/shared".to_owned()))
+        Some((Sync::Merge, "/shared".to_owned())),
+        "a failed merge tries again as a merge"
     );
 }
 

@@ -63,7 +63,19 @@ jobs:
         with:
           shared-key: youarel-check-v3
           cache-bin: false
+      - id: app-cache
+        if: needs.plan.outputs.app == 'true'
+        run: cargo xtask ci cache app
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: needs.plan.outputs.app == 'true'
+        with:
+          path: ${{ steps.app-cache.outputs.path }}
+          key: ${{ runner.os }}-${{ runner.arch }}-${{ steps.app-cache.outputs.key }}-${{ hashFiles('app/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-${{ runner.arch }}-${{ steps.app-cache.outputs.key }}-
       - run: cargo xtask ci run check
+      - name: Read the completed window cache as the runner
+        if: needs.plan.outputs.app == 'true'
+        run: cargo nextest run --locked --package xtask --run-ignored only -E 'test(app::cache::tests::hosted_compiler_outputs_are_readable_by_the_runner)'
 
   proofs:
     needs: [plan]
@@ -103,12 +115,21 @@ jobs:
           persist-credentials: false
       - uses: jdx/mise-action@9b200bcecbfd6303e69a4a261b2e09e3757440a7 # v5.2.0
         with:
-          install_args: rust node npm:typescript
+          install_args: rust node npm:typescript aqua:nextest-rs/nextest/cargo-nextest
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           shared-key: youarel-ci-v2
           cache-bin: false
+      - id: app-cache
+        run: cargo xtask ci cache app
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ steps.app-cache.outputs.path }}
+          key: ${{ runner.os }}-${{ runner.arch }}-${{ steps.app-cache.outputs.key }}-${{ hashFiles('app/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-${{ runner.arch }}-${{ steps.app-cache.outputs.key }}-
       - run: cargo xtask ci run app
+      - name: Read the completed window cache as the runner
+        run: cargo nextest run --locked --package xtask --run-ignored only -E 'test(app::cache::tests::hosted_compiler_outputs_are_readable_by_the_runner)'
 
   macos:
     needs: [plan]

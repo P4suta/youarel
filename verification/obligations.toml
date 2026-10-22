@@ -281,7 +281,9 @@ harnesses = [
   { name = "proofs::selection_preserves_affected_jobs_and_requires_a_check", covers = 2, contract = "Selection preserves affected jobs, requires the fast check, and uses complete coverage for uncertainty.", input_domain = "Every subset of the ten known jobs.", bound = "Loop-free bit operations over u16." },
   { name = "proofs::a_selected_job_only_accepts_success", covers = 2, contract = "A selected job accepts success and refuses every other outcome.", input_domain = "Each of the ten jobs and all five outcomes.", bound = "Loop-free decisions and an array lookup." },
   { name = "proofs::development_requires_fast_work_without_a_campaign", covers = 1, contract = "Development requires the fast gate and affected window checks while leaving heavy assurance to a candidate.", input_domain = "Every subset of the ten jobs and both inventory confidence states.", bound = "Loop-free bit operations over u16." },
+  { name = "proofs::cache_fields_preserve_line_and_quote_boundaries", covers = 2, contract = "Admitted cache field bytes preserve output lines and quoted mount fields.", input_domain = "Every u8 byte.", bound = "Loop-free byte comparisons." },
 ]
 probes = [
   { harness = "proofs::rejects_a_skipped_required_job", assertion = "NEGATIVE_VERIFICATION_CONTROL" },
+  { harness = "proofs::rejects_a_quoted_cache_field", assertion = "NEGATIVE_CACHE_FIELD_CONTROL" },
 ]

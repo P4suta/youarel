@@ -2,10 +2,11 @@ name: ci
 
 on:
   pull_request:
-    branches: [main]
+  merge_group:
+  workflow_dispatch:
 
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -14,80 +15,164 @@ permissions:
 env:
   MISE_AUTO_INSTALL: "false"
   MISE_TASK_RUN_AUTO_INSTALL: "false"
+  CI_BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || '' }}
+  CI_FULL: ${{ github.event_name == 'workflow_dispatch' }}
 
 jobs:
-  check:
+  plan:
     runs-on: ubuntu-26.04
-    timeout-minutes: 30
+    timeout-minutes: 10
+    outputs:
+      plan: ${{ steps.plan.outputs.plan }}
+      proofs: ${{ steps.plan.outputs.proofs }}
+      app: ${{ steps.plan.outputs.app }}
+      macos: ${{ steps.plan.outputs.macos }}
+      windows: ${{ steps.plan.outputs.windows }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          persist-credentials: false
-      - uses: jdx/mise-action@9b200bcecbfd6303e69a4a261b2e09e3757440a7 # v5.2.0
-        with:
-          install_args: rust taplo typos actionlint zizmor aqua:EmbarkStudios/cargo-deny aqua:rustsec/rustsec/cargo-audit aqua:nextest-rs/nextest/cargo-nextest
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with:
-          shared-key: youarel-ci-v1
-          cache-bin: false
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-      - run: cargo xtask ci check
-
-  test:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-26.04, macos-26, windows-2025]
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: jdx/mise-action@9b200bcecbfd6303e69a4a261b2e09e3757440a7 # v5.2.0
-        with:
-          install_args: rust aqua:nextest-rs/nextest/cargo-nextest
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with:
-          shared-key: youarel-ci-v1
-          cache-bin: false
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-      - run: cargo xtask ci test
-
-  proofs:
-    runs-on: ubuntu-26.04
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: jdx/mise-action@9b200bcecbfd6303e69a4a261b2e09e3757440a7 # v5.2.0
-        with:
-          install_args: rust aqua:nextest-rs/nextest/cargo-nextest cargo:kani-verifier@0.68.0 cargo:cargo-fuzz@0.13.2
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with:
-          shared-key: youarel-proofs-v1
-          cache-bin: false
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-      - name: Install the pinned nightly for Miri and cargo-fuzz
-        run: rustup toolchain install nightly-2026-08-21 --profile minimal --component miri --component rust-src
-      - run: cargo kani setup
-      - run: cargo xtask ci proofs
-
-  ci-success:
-    name: ci-success
-    if: always()
-    needs: [check, test, proofs]
-    runs-on: ubuntu-26.04
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
+          fetch-depth: 0
           persist-credentials: false
       - uses: jdx/mise-action@9b200bcecbfd6303e69a4a261b2e09e3757440a7 # v5.2.0
         with:
           install_args: rust
-      - name: Require every gating job
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: youarel-plan-v3
+          cache-bin: false
+      - id: plan
+        run: cargo xtask ci plan
+
+  check:
+    needs: [plan]
+    runs-on: ubuntu-26.04
+    timeout-minutes: 30
+    env:
+      CI_PLAN: ${{ needs.plan.outputs.plan }}
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+      CARGO_PROFILE_TEST_DEBUG: line-tables-only
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: jdx/mise-action@9b200bcecbfd6303e69a4a261b2e09e3757440a7 # v5.2.0
+        with:
+          install_args: rust node npm:typescript taplo typos actionlint zizmor aqua:EmbarkStudios/cargo-deny aqua:rustsec/rustsec/cargo-audit aqua:nextest-rs/nextest/cargo-nextest
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: youarel-check-v3
+          cache-bin: false
+      - run: cargo xtask ci run check
+
+  proofs:
+    needs: [plan]
+    if: needs.plan.outputs.proofs == 'true'
+    runs-on: ubuntu-26.04
+    timeout-minutes: 60
+    env:
+      CI_PLAN: ${{ needs.plan.outputs.plan }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: jdx/mise-action@9b200bcecbfd6303e69a4a261b2e09e3757440a7 # v5.2.0
+        with:
+          install_args: rust aqua:nextest-rs/nextest/cargo-nextest cargo:kani-verifier@0.68.0 cargo:cargo-fuzz@0.13.2 cargo:cargo-mutants@27.1.0
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: youarel-proofs-v2
+          cache-bin: false
+      - name: Install the pinned verifier toolchain
+        run: rustup toolchain install nightly-2026-08-21 --profile minimal --component miri --component rust-src
+      - run: cargo kani setup
+      - run: cargo xtask ci run proofs
+
+  app:
+    needs: [plan]
+    if: github.event_name == 'workflow_dispatch' && needs.plan.outputs.app == 'true'
+    runs-on: ubuntu-26.04
+    timeout-minutes: 30
+    env:
+      CI_PLAN: ${{ needs.plan.outputs.plan }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: jdx/mise-action@9b200bcecbfd6303e69a4a261b2e09e3757440a7 # v5.2.0
+        with:
+          install_args: rust node npm:typescript
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: youarel-ci-v2
+          cache-bin: false
+      - run: cargo xtask ci run app
+
+  macos:
+    needs: [plan]
+    if: needs.plan.outputs.macos == 'true'
+    runs-on: macos-26
+    timeout-minutes: 30
+    env:
+      CI_PLAN: ${{ needs.plan.outputs.plan }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: jdx/mise-action@9b200bcecbfd6303e69a4a261b2e09e3757440a7 # v5.2.0
+        with:
+          install_args: rust node npm:typescript aqua:nextest-rs/nextest/cargo-nextest
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: youarel-ci-v2
+          cache-bin: false
+      - run: cargo xtask ci run macos
+
+  windows:
+    needs: [plan]
+    if: needs.plan.outputs.windows == 'true'
+    runs-on: windows-2025
+    timeout-minutes: 30
+    env:
+      CI_PLAN: ${{ needs.plan.outputs.plan }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: jdx/mise-action@9b200bcecbfd6303e69a4a261b2e09e3757440a7 # v5.2.0
+        with:
+          install_args: rust node npm:typescript aqua:nextest-rs/nextest/cargo-nextest
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: youarel-ci-v2
+          cache-bin: false
+      - run: cargo xtask ci run windows
+
+  ci-success:
+    name: ci-success
+    if: always()
+    needs: [plan, check, proofs, app, macos, windows]
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    env:
+      CI_PLAN: ${{ needs.plan.outputs.plan }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: jdx/mise-action@9b200bcecbfd6303e69a4a261b2e09e3757440a7 # v5.2.0
+        with:
+          install_args: rust
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: youarel-plan-v3
+          cache-bin: false
+      - name: Require every selected job
         env:
           NEEDS_JSON: ${{ toJSON(needs) }}
         run: cargo xtask ci gate ci

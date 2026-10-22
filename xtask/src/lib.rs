@@ -8,6 +8,7 @@ pub mod app;
 pub mod apple;
 pub mod check;
 pub mod ci;
+pub mod ci_plan;
 pub mod commit_msg;
 pub mod container;
 pub mod fs;

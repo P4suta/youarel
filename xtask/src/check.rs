@@ -12,6 +12,8 @@ use std::path::Path;
 pub enum Scope {
     /// The whole checkout, as the push gate and the hosted runners see it.
     Everything,
+    /// The portable fast gate, with native window checks in their selected job.
+    Hosted,
     /// The staged files alone, as the pre-commit hook sees them.
     Staged,
     /// The checks whose outcome depends on the operating system, for a host that receives the files without their Git history.
@@ -175,6 +177,11 @@ fn worker(root: &Path) -> Result<()> {
 /// Each command names the launcher's manifest relative to the checkout, since the checkout's resolved path is a verbatim `\\?\` path on Windows, which reaches the linker through Cargo and fails it.
 /// The launcher builds into the checkout's own target directory, the one place a remote runner lets a build write.
 fn app(root: &Path) -> Result<()> {
+    app_script(root)?;
+    app_native(root)
+}
+
+fn app_script(root: &Path) -> Result<()> {
     succeed(
         Tool::Tsc.command(root).args(["--project", APP_SCRIPT]),
         "tsc of the window launcher's script",
@@ -185,6 +192,10 @@ fn app(root: &Path) -> Result<()> {
             .args(["fmt", "--check", "--manifest-path", APP_MANIFEST]),
         "cargo fmt --check of the window launcher",
     )?;
+    Ok(())
+}
+
+fn app_native(root: &Path) -> Result<()> {
     succeed(
         Tool::Cargo.command(root).args([
             "clippy",
@@ -334,14 +345,20 @@ fn repository(root: &Path, word: &str) -> Result<()> {
     }
 }
 
-fn everything(root: &Path) -> Result<()> {
+fn everything(root: &Path, native_app: bool) -> Result<()> {
     let mut report = Report::default();
     report.stage("rustfmt", || rustfmt(root, None));
     report.stage("taplo", || taplo(root, None));
     report.stage("typos", || typos(root, None));
     report.stage("clippy", || clippy(root));
     report.stage("worker", || worker(root));
-    report.stage("app", || app(root));
+    report.stage("app", || {
+        if native_app {
+            app(root)
+        } else {
+            app_script(root)
+        }
+    });
     report.stage("icons", || crate::icons::check(root));
     report.stage("structure", || structure::check(root));
     report.stage("bare", || bare(root));
@@ -398,13 +415,15 @@ fn platform(root: &Path) -> Result<()> {
 /// Returns an error naming each failed check.
 pub fn run(root: &Path, scope: Scope) -> Result<()> {
     match scope {
-        Scope::Everything => everything(root),
+        Scope::Everything => everything(root, true),
+        Scope::Hosted => everything(root, false),
         Scope::Staged => staged(root),
         Scope::Platform => platform(root),
     }
 }
 
-/// Every check, the window launcher's Linux check, and then every proof, which a push requires; the Linux check and the proofs run in memory-limited containers.
+/// The explicit full campaign: every check, the Linux window, and every proof.
+/// The Linux check and the proofs run in memory-limited containers.
 ///
 /// # Errors
 ///

@@ -25,16 +25,32 @@ const WORK: &str = "/work";
 /// How many hexadecimal digits of the definition's digest the image name carries.
 const DIGEST_DIGITS: usize = 16;
 
-/// The named volumes the runs share, and where each mounts.
-const VOLUMES: [(&str, &str); 4] = [
+const CACHE_DOMAIN: &[u8] = b"youarel-compiler-cache-v1\0";
+const CACHE_SEPARATOR: &[u8] = b"\0";
+const REGISTRY_VOLUME: &str = "youarel-proofs-registry";
+const REGISTRY_TARGET: &str = "/usr/local/cargo/registry";
+
+const VOLUMES: [(&str, &str); 3] = [
     ("youarel-proofs-target", "/work/target"),
     ("youarel-proofs-fuzz-target", "/work/fuzz/target"),
     (
         "youarel-proofs-fixture-target",
         "/work/xtask/proofs/fuzz-fixture/target",
     ),
-    ("youarel-proofs-registry", "/usr/local/cargo/registry"),
 ];
+
+pub(crate) fn compiler_volume(root: &Path, image: &str, namespace: &str) -> Result<String> {
+    let mut digest = Sha256::new();
+    digest.update(CACHE_DOMAIN);
+    digest.update(root.as_os_str().as_encoded_bytes());
+    digest.update(CACHE_SEPARATOR);
+    digest.update(image.as_bytes());
+    let mut volume = format!("{namespace}-");
+    for byte in digest.finalize() {
+        write!(volume, "{byte:02x}").context("format the compiler cache digest")?;
+    }
+    Ok(volume)
+}
 
 /// The image name for the definition, which changes with it.
 ///
@@ -85,9 +101,31 @@ fn script(words: &[&str]) -> String {
         task.push(' ');
         task.push_str(&shell_quote(word));
     }
-    format!(
-        "set -eu; rsync --archive --delete --exclude=.git --exclude-from={CHECKOUT}/.gitignore --exclude=target {CHECKOUT}/ {WORK}/; cd {WORK}; {task}"
-    )
+    format!("{}; cd {WORK}; {task}", copy_script())
+}
+
+fn copy_arguments(source: &str, target: &str) -> Vec<String> {
+    let mut arguments: Vec<String> = ["--archive", "--delete", "--exclude=.git"]
+        .map(String::from)
+        .into();
+    arguments.extend([
+        "--include=/.mise/".to_owned(),
+        "--include=/.mise/locks/***".to_owned(),
+        format!("--exclude-from={source}/.gitignore"),
+        "--exclude=target".to_owned(),
+        format!("{source}/"),
+        format!("{target}/"),
+    ]);
+    arguments
+}
+
+pub(crate) fn copy_script() -> String {
+    let mut script = String::from("set -eu; rsync");
+    for argument in copy_arguments(CHECKOUT, WORK) {
+        script.push(' ');
+        script.push_str(&shell_quote(&argument));
+    }
+    script
 }
 
 /// One word for a POSIX shell, in single quotes.
@@ -96,8 +134,11 @@ fn shell_quote(word: &str) -> String {
 }
 
 /// The arguments of `docker run` for a task in the image.
-#[must_use]
-pub fn arguments(root: &Path, image: &str, words: &[&str]) -> Vec<OsString> {
+///
+/// # Errors
+///
+/// Returns an error when a compiler cache digest cannot be formatted.
+pub fn arguments(root: &Path, image: &str, words: &[&str]) -> Result<Vec<OsString>> {
     let mut docker: Vec<OsString> = [
         "run",
         "--rm",
@@ -114,12 +155,15 @@ pub fn arguments(root: &Path, image: &str, words: &[&str]) -> Vec<OsString> {
     docker.push("--mount".into());
     docker.push(bind(root));
     for (volume, target) in VOLUMES {
+        let volume = compiler_volume(root, image, volume)?;
         docker.push("--mount".into());
         docker.push(format!("type=volume,source={volume},target={target}").into());
     }
+    docker.push("--mount".into());
+    docker.push(format!("type=volume,source={REGISTRY_VOLUME},target={REGISTRY_TARGET}").into());
     docker.extend(["--workdir", WORK, image, "sh", "-c"].map(OsString::from));
     docker.push(script(words).into());
-    docker
+    Ok(docker)
 }
 
 /// Runs `cargo xtask` with `words` in the proof image.
@@ -130,6 +174,7 @@ pub fn arguments(root: &Path, image: &str, words: &[&str]) -> Vec<OsString> {
 ///
 /// Returns an error when Docker cannot build or run the image, or when the task fails.
 pub fn run(root: &Path, words: &[&str]) -> Result<()> {
+    let root = std::fs::canonicalize(root).context("resolve the checkout")?;
     let mut inner: Vec<&str> = words.to_vec();
     if let Some((&"proofs", rest)) = words.split_first() {
         let options = proofs::Options::from_words(rest)
@@ -140,17 +185,17 @@ pub fn run(root: &Path, words: &[&str]) -> Result<()> {
                 only: Some(*step),
                 ..options
             };
-            proofs::run(root, hosted)?;
+            proofs::run(&root, hosted)?;
         }
         if selected.iter().all(|step| step.contained()) {
             return Ok(());
         }
         inner.push("--inside");
     }
-    let image = image(root)?;
-    build(root, &image)?;
-    let mut docker = Tool::Docker.command(root);
-    docker.args(arguments(root, &image, &inner));
+    let image = image(&root)?;
+    build(&root, &image)?;
+    let mut docker = Tool::Docker.command(&root);
+    docker.args(arguments(&root, &image, &inner)?);
     tool::succeed(&mut docker, "the proof container")
 }
 
@@ -160,12 +205,81 @@ mod tests {
     use std::path::Path;
 
     #[test]
+    fn compiler_outputs_belong_to_the_checkout_and_image() {
+        let mounts = |root: &Path, image: &str| -> Vec<String> {
+            arguments(root, image, &[])
+                .unwrap()
+                .iter()
+                .map(|argument| argument.to_string_lossy().into_owned())
+                .filter(|argument| argument.starts_with("type=volume,"))
+                .collect()
+        };
+        let first = mounts(Path::new("/first"), "image:a");
+        let other_checkout = mounts(Path::new("/second"), "image:a");
+        let other_image = mounts(Path::new("/first"), "image:b");
+        for target in [
+            "/work/target",
+            "/work/fuzz/target",
+            "/work/xtask/proofs/fuzz-fixture/target",
+        ] {
+            let at = |values: &[String]| {
+                values
+                    .iter()
+                    .find(|value| value.ends_with(&format!(",target={target}")))
+                    .unwrap()
+                    .clone()
+            };
+            assert_ne!(at(&first), at(&other_checkout), "{target}");
+            assert_ne!(at(&first), at(&other_image), "{target}");
+        }
+        let registry = |values: &[String]| {
+            values
+                .iter()
+                .find(|value| value.ends_with(",target=/usr/local/cargo/registry"))
+                .unwrap()
+                .clone()
+        };
+        assert_eq!(registry(&first), registry(&other_checkout));
+        assert_eq!(registry(&first), registry(&other_image));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn the_copy_keeps_native_dependency_locks_and_excludes_private_state() {
+        use super::copy_arguments;
+        use crate::fs;
+        use crate::tool::{self, Tool};
+        let fixture = tempfile::tempdir().unwrap();
+        let source = fixture.path().join("source dir's");
+        let target = fixture.path().join("target");
+        fs::write(&source.join(".gitignore"), b"/.mise/*\n!/.mise/locks/\n").unwrap();
+        fs::write(&source.join(".mise/locks/native/lock"), b"locked").unwrap();
+        fs::write(&source.join(".mise/cache/private"), b"private").unwrap();
+        fs::write(&source.join(".git/private"), b"private").unwrap();
+        tool::succeed(
+            Tool::Rsync.command(fixture.path()).args(copy_arguments(
+                source.to_str().unwrap(),
+                target.to_str().unwrap(),
+            )),
+            "the source copy fixture",
+        )
+        .unwrap();
+        assert_eq!(
+            fs::read(&target.join(".mise/locks/native/lock")).unwrap(),
+            b"locked"
+        );
+        assert_eq!(fs::kind(&target.join(".mise/cache/private")).unwrap(), None);
+        assert_eq!(fs::kind(&target.join(".git/private")).unwrap(), None);
+    }
+
+    #[test]
     fn the_run_limits_memory_and_mounts_the_checkout_read_only() {
         let text: Vec<String> = arguments(
             Path::new("/checkout dir"),
             "youarel-proofs:abc",
             &["proofs", "--only", "kani"],
         )
+        .unwrap()
         .iter()
         .map(|argument| argument.to_string_lossy().into_owned())
         .collect();

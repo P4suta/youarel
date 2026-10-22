@@ -454,8 +454,29 @@ fn start(root: &Path, output: &Path) -> Result<String> {
 ///
 /// Returns an error when Docker cannot build or run the image, or any check of an obligation fails.
 pub fn verify(root: &Path) -> Result<()> {
+    verify_selected(root, None)
+}
+
+/// Checks the named obligations, retaining each model's complete exploration and negative control.
+///
+/// # Errors
+///
+/// Returns an error for an empty, unknown, or failing selection.
+pub fn verify_selected(root: &Path, selected: Option<&[String]>) -> Result<()> {
     let root = std::fs::canonicalize(root).context("resolve the checkout")?;
     let manifest = obligations::load(&root)?;
+    let mut found = models(&manifest);
+    if let Some(selected) = selected {
+        found.retain(|(_, model)| selected.contains(&model.spec));
+        ensure!(
+            found.len() == selected.len(),
+            "the Quint selection names unknown or duplicate models"
+        );
+    }
+    ensure!(
+        !found.is_empty(),
+        "the manifest declares no Quint obligation"
+    );
     let output = tempfile::tempdir().context("create the Quint output directory")?;
     let image = start(&root, output.path())?;
     let session = Session {
@@ -463,11 +484,6 @@ pub fn verify(root: &Path) -> Result<()> {
         output: output.path(),
         image: &image,
     };
-    let found = models(&manifest);
-    ensure!(
-        !found.is_empty(),
-        "the manifest declares no Quint obligation"
-    );
     for (model, quint) in &found {
         session.check(model, quint)?;
         session.witness(model, quint)?;

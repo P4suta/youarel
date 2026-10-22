@@ -16,9 +16,13 @@ check *args: trust
 check-staged: trust
     mise x -- cargo xtask check --staged
 
-# Every check and every proof, which the pre-push hook runs.
+# The explicit full campaign: every check, the Linux window, and every proof.
 push-check: trust
     mise x -- cargo xtask push-check
+
+# Show the required verification for a base-to-HEAD range without executing it.
+ci-plan base: trust
+    mise x -- cargo xtask ci plan {{quote(base)}}
 
 # The checks that depend on the operating system, on the Linux host over the current files, uncommitted edits included.
 check-linux:
@@ -43,11 +47,15 @@ structure: trust
 proofs *args: trust
     mise x -- cargo xtask contain proofs {{args}}
 
+# One rule module's Kani harnesses and rejecting probes, in the proof container.
+proof-source source: trust
+    mise x -- cargo xtask contain proof-source {{quote(source)}}
+
 # The same proofs on this host without a container, as a hosted Linux runner runs them.
 proofs-native *args: trust
     mise x -- cargo xtask proofs {{args}}
 
-# The proofs a hosted Linux runner repeats, without mutation testing.
+# The explicit proof-only inventory, without mutation testing.
 proofs-ci: trust
     mise x -- cargo xtask proofs --ci
 

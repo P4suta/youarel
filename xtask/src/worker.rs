@@ -2,10 +2,11 @@
 //!
 //! The container reaches the network to fetch crates and the bundler that worker-build uses, and nothing in it deploys the Worker.
 
-use crate::quint;
 use crate::tool::{self, Tool};
+use crate::{container, quint};
 use anyhow::{Context, Result};
 use std::path::Path;
+use std::process::Command;
 
 /// The directory that defines the image, the files whose bytes name it, and its repository.
 const IMAGE_DIRECTORY: &str = "xtask/proofs/worker";
@@ -20,10 +21,8 @@ const PROCESSORS: &str = "4";
 const TARGET_VOLUME: &str = "youarel-worker-target";
 const REGISTRY_VOLUME: &str = "youarel-worker-registry";
 
-/// What the container runs: copy the checkout, lint, build, and serve the Worker, wait until it answers, and run the relay's test against it.
-const SCRIPT: &str = r#"set -eu
-rsync --archive --delete --exclude=.git --exclude-from=/checkout/.gitignore --exclude=target /checkout/ /work/
-cd /work/server
+/// Lint, build, and serve the Worker, wait until it answers, and run the relay's test against it.
+const TASK: &str = r#"cd /work/server
 CARGO_TARGET_DIR=/work/target/worker cargo clippy --locked --target wasm32-unknown-unknown -- -D warnings
 CARGO_TARGET_DIR=/work/target/worker worker-build --release
 wrangler dev --local --ip 127.0.0.1 --port 8787 --show-interactive-dev-session=false >/tmp/wrangler.log 2>&1 &
@@ -52,7 +51,12 @@ pub fn run(root: &Path) -> Result<()> {
     let root = std::fs::canonicalize(root).context("resolve the checkout")?;
     let image = quint::pinned_image(&root, IMAGE_DIRECTORY, &IMAGE_INPUTS, REPOSITORY)?;
     quint::build_pinned(&root, IMAGE_DIRECTORY, &image)?;
-    let mut docker = Tool::Docker.command(&root);
+    tool::succeed(&mut command(&root, &image)?, "the Worker's end-to-end test")
+}
+
+fn command(root: &Path, image: &str) -> Result<Command> {
+    let target_volume = container::compiler_volume(root, image, TARGET_VOLUME)?;
+    let mut docker = Tool::Docker.command(root);
     docker
         .args([
             "run",
@@ -66,18 +70,39 @@ pub fn run(root: &Path) -> Result<()> {
             PROCESSORS,
             "--mount",
         ])
-        .arg(quint::mount(&root, "/checkout", true))
+        .arg(quint::mount(root, "/checkout", true))
         .args([
             "--mount",
-            &format!("type=volume,source={TARGET_VOLUME},target=/work/target"),
+            &format!("type=volume,source={target_volume},target=/work/target"),
             "--mount",
             &format!("type=volume,source={REGISTRY_VOLUME},target=/usr/local/cargo/registry"),
             "--workdir",
             "/work",
-            &image,
+            image,
             "sh",
             "-c",
-            SCRIPT,
+            &format!("{}\n{TASK}", container::copy_script()),
         ]);
-    tool::succeed(&mut docker, "the Worker's end-to-end test")
+    Ok(docker)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::command;
+    use std::path::Path;
+
+    #[test]
+    fn compiler_outputs_belong_to_the_checkout_and_image() {
+        let volume = |root: &Path, image: &str| {
+            command(root, image)
+                .unwrap()
+                .get_args()
+                .find(|argument| argument.to_string_lossy().ends_with(",target=/work/target"))
+                .unwrap()
+                .to_os_string()
+        };
+        let first = volume(Path::new("/first"), "image:a");
+        assert_ne!(first, volume(Path::new("/second"), "image:a"));
+        assert_ne!(first, volume(Path::new("/first"), "image:b"));
+    }
 }

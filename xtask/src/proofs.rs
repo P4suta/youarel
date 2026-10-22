@@ -6,7 +6,7 @@ use crate::structure::{self, CORE, Harnesses};
 use crate::tool::{self, FUZZ_VERSION, KANI_VERSION, MUTANTS_VERSION, Tool};
 use crate::{fs, portable};
 use anyhow::{Context, Result, bail, ensure};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -53,7 +53,7 @@ const MIRI_TARGET: &str = "target/miri";
 const MIRI_PROFILE: &str = "miri";
 const MUTANTS_OUTPUT: &str = "target/proofs/mutants";
 /// The crates the mutation campaign runs over, each judged by its own tests alone.
-const MUTANT_PACKAGES: [&str; 10] = [
+pub const MUTANT_PACKAGES: [&str; 10] = [
     "youarel-core",
     "youarel-link",
     "youarel-html",
@@ -118,10 +118,55 @@ impl Step {
     }
 }
 
+/// The nonempty inputs required by each selected verifier.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct Scope {
+    pub kani: Vec<String>,
+    pub quint: Vec<String>,
+    pub proverif: Vec<String>,
+    pub miri: Vec<String>,
+    pub fuzz: Vec<String>,
+    pub mutants: Vec<String>,
+}
+
+impl Scope {
+    /// Reads the complete current inventory, without running a verifier.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when an inventory is absent or malformed.
+    pub fn full(root: &Path) -> Result<Self> {
+        let manifest = obligations::load(root)?;
+        let mut scope = Self::default();
+        for obligation in manifest.obligation {
+            match obligation {
+                Obligation::Kani { source, .. } => scope.kani.push(source),
+                Obligation::Quint(model) => scope.quint.push(model.spec),
+                Obligation::Proverif(model) => scope.proverif.push(model.model),
+            }
+        }
+        scope.miri = MIRI_CRATES.iter().map(|name| (*name).to_owned()).collect();
+        scope.fuzz = fuzz_targets(root, FUZZ)?;
+        scope.mutants = MUTANT_PACKAGES
+            .iter()
+            .map(|name| (*name).to_owned())
+            .collect();
+        ensure!(
+            !scope.kani.is_empty()
+                && !scope.quint.is_empty()
+                && !scope.proverif.is_empty()
+                && !scope.fuzz.is_empty(),
+            "the full verification inventory is incomplete"
+        );
+        Ok(scope)
+    }
+}
+
 /// Which verifiers run.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Options {
-    /// A hosted run, which skips the mutation campaign that stays local.
+    /// The explicit proof-only inventory, without mutation testing.
     pub ci: bool,
     pub only: Option<Step>,
     /// A verifier to leave out.
@@ -466,14 +511,21 @@ pub fn qualify(source: &str, name: &str) -> String {
     format!("{stem}::{name}")
 }
 
-fn verify_kani(root: &Path) -> Result<()> {
-    tool::require_version(
-        Tool::Cargo.command(root).arg("kani"),
-        "cargo-kani",
-        KANI_VERSION,
-    )?;
+fn kani_manifest(root: &Path, selected: &[String]) -> Result<Manifest> {
     let discovered = discover(root)?;
     let manifest = obligations::load(root)?;
+    let known: Vec<_> = manifest
+        .obligation
+        .iter()
+        .filter_map(|item| match item {
+            Obligation::Kani { source, .. } => Some(source),
+            Obligation::Quint(_) | Obligation::Proverif(_) => None,
+        })
+        .collect();
+    ensure!(
+        !selected.is_empty() && selected.iter().all(|source| known.contains(&source)),
+        "the Kani selection must name existing rule modules"
+    );
     let sources = |source: &str| fs::read_to_string(&root.join(source));
     let findings = inventory_findings(&discovered, &manifest, &sources);
     ensure!(
@@ -481,6 +533,16 @@ fn verify_kani(root: &Path) -> Result<()> {
         "the proof inventory is stale:\n{}",
         findings.join("\n")
     );
+    Ok(manifest)
+}
+
+fn verify_kani(root: &Path, selected: &[String]) -> Result<()> {
+    let manifest = kani_manifest(root, selected)?;
+    tool::require_version(
+        Tool::Cargo.command(root).arg("kani"),
+        "cargo-kani",
+        KANI_VERSION,
+    )?;
     let scratch = tempfile::tempdir().context("create the proof scratch directory")?;
     let qualified: Vec<Harness> = manifest
         .obligation
@@ -488,14 +550,14 @@ fn verify_kani(root: &Path) -> Result<()> {
         .flat_map(|obligation| match obligation {
             Obligation::Kani {
                 source, harnesses, ..
-            } => harnesses
+            } if selected.contains(source) => harnesses
                 .iter()
                 .map(|harness| Harness {
                     name: qualify(source, &harness.name),
                     ..harness.clone()
                 })
                 .collect(),
-            Obligation::Quint(_) | Obligation::Proverif(_) => Vec::new(),
+            Obligation::Kani { .. } | Obligation::Quint(_) | Obligation::Proverif(_) => Vec::new(),
         })
         .collect();
     ensure!(
@@ -514,6 +576,9 @@ fn verify_kani(root: &Path) -> Result<()> {
         let Obligation::Kani { source, probes, .. } = obligation else {
             continue;
         };
+        if !selected.contains(source) {
+            continue;
+        }
         for probe in probes {
             let probe = Probe {
                 harness: qualify(source, &probe.harness),
@@ -552,7 +617,14 @@ fn miri_command(root: &Path, manifest: Option<&Path>, target: &Path) -> Command 
     command
 }
 
-fn verify_miri(root: &Path) -> Result<()> {
+fn verify_miri(root: &Path, packages: &[String]) -> Result<()> {
+    ensure!(
+        !packages.is_empty()
+            && packages
+                .iter()
+                .all(|package| MIRI_CRATES.contains(&package.as_str())),
+        "the Miri selection must name supported packages"
+    );
     tool::capture(
         Tool::CargoNightly
             .command(root)
@@ -561,7 +633,7 @@ fn verify_miri(root: &Path) -> Result<()> {
         "cargo miri",
     )?;
     let mut command = miri_command(root, None, &root.join(MIRI_TARGET));
-    for krate in MIRI_CRATES {
+    for krate in packages {
         command.args(["--package", krate]);
     }
     tool::succeed(&mut command, "cargo miri test")?;
@@ -636,16 +708,20 @@ fn fuzz_targets(root: &Path, directory: &str) -> Result<Vec<String>> {
     Ok(targets)
 }
 
-fn verify_fuzz(root: &Path) -> Result<()> {
+fn verify_fuzz(root: &Path, targets: &[String]) -> Result<()> {
     tool::require_version(
         Tool::Cargo.command(root).arg("fuzz"),
         "cargo-fuzz",
         FUZZ_VERSION,
     )?;
-    let targets = fuzz_targets(root, FUZZ)?;
+    let known = fuzz_targets(root, FUZZ)?;
+    ensure!(
+        targets.iter().all(|target| known.contains(target)),
+        "the fuzz selection names an unknown target"
+    );
     ensure!(!targets.is_empty(), "the fuzz workspace defines no target");
     for target in targets {
-        let corpus = root.join(FUZZ).join("corpus").join(&target);
+        let corpus = root.join(FUZZ).join("corpus").join(target);
         ensure!(
             !fs::entries(&corpus)?.is_empty(),
             "the fuzz target {target} has no committed corpus under {}",
@@ -653,7 +729,7 @@ fn verify_fuzz(root: &Path) -> Result<()> {
         );
         let product = Target {
             directory: FUZZ,
-            name: &target,
+            name: target,
         };
         tool::succeed(
             &mut fuzz_run(root, product, None, &["-runs=0"]),
@@ -791,14 +867,22 @@ fn package_findings(package: &str, outcomes: &Outcomes) -> Vec<String> {
     findings
 }
 
-fn verify_mutants(root: &Path) -> Result<()> {
+fn verify_mutants(root: &Path, packages: &[String]) -> Result<()> {
+    ensure!(
+        !packages.is_empty(),
+        "the mutation selection must be nonempty"
+    );
     tool::require_version(
         Tool::Cargo.command(root).arg("mutants"),
         "cargo-mutants",
         MUTANTS_VERSION,
     )?;
     let mut findings = Vec::new();
-    for package in MUTANT_PACKAGES {
+    for package in packages {
+        ensure!(
+            MUTANT_PACKAGES.contains(&package.as_str()),
+            "unsupported mutation package {package}"
+        );
         let outcomes = campaign(
             root,
             None,
@@ -829,22 +913,94 @@ fn verify_mutants(root: &Path) -> Result<()> {
     Ok(())
 }
 
-/// The digest of every input a proof result depends on: the sources of the verified crates, the fuzz targets, and the manifest.
+const INPUT_DIRECTORIES: [&str; 11] = [
+    "crates",
+    "fuzz",
+    "specs",
+    "verification",
+    "xtask",
+    ".cargo",
+    ".github",
+    ".config",
+    ".mise/locks",
+    "app",
+    "server",
+];
+const INPUT_FILES: [&str; 9] = [
+    "Cargo.toml",
+    "Cargo.lock",
+    "mise.toml",
+    "mise.lock",
+    "assure.toml",
+    "deny.toml",
+    "clippy.toml",
+    "justfile",
+    "lefthook.yml",
+];
+const GENERATED_PATHS: [&str; 11] = [
+    "fuzz/target/",
+    "fuzz/artifacts/",
+    "fuzz/coverage/",
+    "server/target/",
+    "server/build/",
+    "server/.wrangler/",
+    "app/target/",
+    "app/gen/",
+    "app/ui/main.js",
+    "xtask/target/",
+    "app/node_modules/",
+];
+
+fn proof_files(root: &Path, directory: &Path, paths: &mut Vec<PathBuf>) -> Result<()> {
+    for path in fs::entries(directory)? {
+        let relative = portable(path.strip_prefix(root)?);
+        let qualified = if fs::is_directory(&path)? {
+            format!("{relative}/")
+        } else {
+            relative
+        };
+        let fixture_output = qualified.starts_with("xtask/proofs/")
+            && qualified
+                .split('/')
+                .nth(3)
+                .is_some_and(|name| matches!(name, "target" | "artifacts"));
+        if fixture_output
+            || GENERATED_PATHS.iter().any(|prefix| {
+                qualified == *prefix || (prefix.ends_with('/') && qualified.starts_with(prefix))
+            })
+        {
+            continue;
+        }
+        match fs::kind(&path)? {
+            Some(fs::Kind::File) => paths.push(path),
+            Some(fs::Kind::Directory) => proof_files(root, &path, paths)?,
+            Some(fs::Kind::Other) | None => {}
+        }
+    }
+    Ok(())
+}
+
+/// The source, model, corpus, fixture, and verifier inputs, excluding generated build outputs.
 fn digest(root: &Path) -> Result<String> {
     let mut hasher = Sha256::new();
     let mut paths = Vec::new();
-    for directory in ["crates", FUZZ] {
-        paths.extend(fs::files_with_suffix(&root.join(directory), ".rs")?);
+    for directory in INPUT_DIRECTORIES {
+        proof_files(root, &root.join(directory), &mut paths)?;
     }
-    paths.push(root.join(obligations::MANIFEST));
-    paths.push(root.join("Cargo.lock"));
+    paths.extend(INPUT_FILES.iter().map(|file| root.join(file)));
+    paths.sort();
+    hasher.update(b"youarel-proof-inputs-v2\0");
     for path in paths {
         if fs::is_file(&path)? {
             let relative = path
                 .strip_prefix(root)
                 .with_context(|| format!("{} lies in the checkout", path.display()))?;
-            hasher.update(portable(relative).as_bytes());
-            hasher.update(fs::read(&path)?);
+            let name = portable(relative);
+            let bytes = fs::read(&path)?;
+            hasher.update(u64::try_from(name.len())?.to_le_bytes());
+            hasher.update(name.as_bytes());
+            hasher.update(u64::try_from(bytes.len())?.to_le_bytes());
+            hasher.update(bytes);
         }
     }
     let mut text = String::new();
@@ -854,7 +1010,7 @@ fn digest(root: &Path) -> Result<String> {
     Ok(text)
 }
 
-fn receipt(root: &Path, step: Step) -> Result<()> {
+fn receipt(root: &Path, step: Step, scope: &Scope) -> Result<()> {
     let version = match step {
         Step::Kani => KANI_VERSION,
         Step::Quint => crate::quint::QUINT_VERSION,
@@ -867,22 +1023,25 @@ fn receipt(root: &Path, step: Step) -> Result<()> {
         "step": step.name(),
         "version": version,
         "inputs": digest(root)?,
+        "scope": scope,
+        "os": std::env::consts::OS,
+        "arch": std::env::consts::ARCH,
         "result": "pass",
     });
     let path = root.join(RECEIPTS).join(format!("{}.json", step.name()));
     fs::write(&path, serde_json::to_string_pretty(&receipt)?.as_bytes())
 }
 
-fn verify(root: &Path, step: Step) -> Result<()> {
+fn verify(root: &Path, step: Step, scope: &Scope) -> Result<()> {
     match step {
-        Step::Kani => verify_kani(root)?,
-        Step::Quint => crate::quint::verify(root)?,
-        Step::Proverif => crate::proverif::verify(root)?,
-        Step::Miri => verify_miri(root)?,
-        Step::Fuzz => verify_fuzz(root)?,
-        Step::Mutants => verify_mutants(root)?,
+        Step::Kani => verify_kani(root, &scope.kani)?,
+        Step::Quint => crate::quint::verify_selected(root, Some(&scope.quint))?,
+        Step::Proverif => crate::proverif::verify_selected(root, Some(&scope.proverif))?,
+        Step::Miri => verify_miri(root, &scope.miri)?,
+        Step::Fuzz => verify_fuzz(root, &scope.fuzz)?,
+        Step::Mutants => verify_mutants(root, &scope.mutants)?,
     }
-    receipt(root, step)
+    receipt(root, step, scope)
 }
 
 /// Runs the selected verifiers and reports every failure together.
@@ -891,11 +1050,21 @@ fn verify(root: &Path, step: Step) -> Result<()> {
 ///
 /// Returns an error naming each failed verifier.
 pub fn run(root: &Path, options: Options) -> Result<()> {
+    let scope = Scope::full(root)?;
     let mut report = Report::default();
     for step in options.selected() {
-        report.stage(step.name(), || verify(root, step));
+        report.stage(step.name(), || verify(root, step, &scope));
     }
     report.finish("proofs")
+}
+
+/// Runs one selected verifier with the full gate's verdict checks and negative controls.
+///
+/// # Errors
+///
+/// Returns an error for missing coverage or a verifier failure.
+pub fn scoped(root: &Path, step: Step, scope: &Scope) -> Result<()> {
+    verify(root, step, scope)
 }
 
 /// Fuzzes one product target beyond its corpus for `runs` runs with a fixed seed.
@@ -1161,5 +1330,51 @@ probes = [{ harness = "rejects_x", assertion = "NEGATIVE_LINK_CONTROL" }]
             qualify("crates/youarel-core/src/link_rules.rs", "proofs::admits"),
             "link_rules::proofs::admits"
         );
+    }
+    #[test]
+    fn proof_inputs_include_models_tools_fixtures_and_corpus_bytes() {
+        use super::digest;
+        use crate::fs;
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        let paths = [
+            "crates/a/src/lib.rs",
+            "specs/test.qnt",
+            "xtask/proofs/image/Dockerfile",
+            "xtask/proofs/kani-negative/src/lib.rs",
+            "fuzz/corpus/parse/seed",
+            "mise.lock",
+            "app/ui/main.js.fixture",
+        ];
+        for path in paths {
+            fs::write(&root.join(path), b"first").unwrap();
+        }
+        let original = digest(root).unwrap();
+        for path in paths {
+            fs::write(&root.join(path), b"second").unwrap();
+            assert_ne!(digest(root).unwrap(), original, "{path}");
+            fs::write(&root.join(path), b"first").unwrap();
+        }
+        fs::write(&root.join("target/ignored.rs"), b"output").unwrap();
+        fs::write(&root.join("fuzz/target/ignored.rs"), b"output").unwrap();
+        fs::write(&root.join("app/ui/main.js"), b"output").unwrap();
+        assert_eq!(digest(root).unwrap(), original);
+    }
+
+    #[test]
+    fn proof_inputs_include_native_tool_locks_without_runtime_state() {
+        use super::digest;
+        use crate::fs;
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        let original = digest(root).unwrap();
+        fs::write(&root.join(".mise/cache/state"), b"runtime").unwrap();
+        assert_eq!(digest(root).unwrap(), original);
+        let sidecar = root.join(".mise/locks/npm-typescript/7.0.2/aube-lock.yaml");
+        fs::write(&sidecar, b"first").unwrap();
+        let locked = digest(root).unwrap();
+        assert_ne!(locked, original);
+        fs::write(&sidecar, b"second").unwrap();
+        assert_ne!(digest(root).unwrap(), locked);
     }
 }

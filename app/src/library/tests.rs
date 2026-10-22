@@ -7,10 +7,11 @@ use crate::syncing::SyncState;
 use crate::view::View;
 use std::path::PathBuf;
 use youarel_core::folder_rules::Seen;
-use youarel_core::state::{Edit, IconId, ItemId};
+use youarel_core::state::{Edit, ItemId};
 use youarel_core::sync_rules::{BACKOFF, QUIET, Sync};
 use youarel_link::Link;
 use youarel_store::Store;
+use youarel_store::icons::IconId;
 
 fn library() -> (tempfile::TempDir, Library) {
     let home = tempfile::tempdir().unwrap();
@@ -1377,44 +1378,77 @@ fn an_import_reports_its_counts() {
     );
 }
 
+/// The launcher's own icon, which stands for any site's.
+const PNG: &[u8] = include_bytes!("../../icons/32x32.png");
+
 #[test]
-fn the_window_asks_each_site_for_an_icon_once_and_keeps_what_it_gets() {
-    const PNG: &[u8] = include_bytes!("../../icons/32x32.png");
+fn an_added_link_s_icon_shows_on_every_shortcut_of_its_host() {
+    let (_home, mut library) = library();
+    library
+        .add(Addition {
+            icon: Some((IconId([7; 32]), PNG.to_vec())),
+            ..addition("https://a.example/one", "One", None)
+        })
+        .unwrap();
+    add(&mut library, "https://a.example/two", "Two");
+    let view = add(&mut library, "https://b.example/", "Other");
+    let mut names: Vec<(&str, Option<String>)> = view
+        .items
+        .iter()
+        .map(|item| (item.title.as_str(), item.icon.clone()))
+        .collect();
+    names.sort();
+    let name = IconId([7; 32]).name();
+    assert_eq!(
+        names,
+        [
+            ("One", Some(name.clone())),
+            ("Other", None),
+            ("Two", Some(name))
+        ],
+        "one icon for the host, and a tile for a host without one"
+    );
+}
+
+#[test]
+fn an_opened_link_asks_its_site_for_an_icon_only_while_its_host_shows_none() {
     let (_home, mut library) = library();
     add(&mut library, "https://a.example/", "A");
-    add(&mut library, "https://b.example/", "B");
-    let first = library.wanting_icons(1).unwrap();
-    let second = library.wanting_icons(4).unwrap();
-    assert_eq!(
-        (first.len(), second.len()),
-        (1, 1),
-        "a tick asks no more sites than its limit"
-    );
-    assert!(
-        library.wanting_icons(4).unwrap().is_empty(),
-        "a site asked once is not asked again"
-    );
-    let (id, _) = first.first().unwrap();
+    library.want_icon("https://a.example/page").unwrap();
+    let wanted = library.icons_wanted();
+    assert_eq!(wanted, [Link::parse("https://a.example/page").unwrap()]);
+    assert_eq!(library.icons_wanted(), [], "each link is handed over once");
     library
-        .set_icon(*id, (IconId([7; 32]), PNG.to_vec()))
+        .keep_icon(&wanted[0], (IconId([7; 32]), PNG.to_vec()))
         .unwrap();
+    library.want_icon("https://a.example/other").unwrap();
+    assert_eq!(
+        library.icons_wanted(),
+        [],
+        "a host that shows an icon asks its site nothing"
+    );
     let view = library.view().unwrap();
     assert_eq!(
         view.items.iter().filter(|item| item.icon.is_some()).count(),
         1
     );
+    assert!(library.want_icon("no link").is_err());
 }
 
 #[test]
 fn icons_draw_again_by_name_and_an_image_that_does_not_draw_shows_none() {
-    const PNG: &[u8] = include_bytes!("../../icons/32x32.png");
     let home = tempfile::tempdir().unwrap();
     let store = Store::new(home.path().to_path_buf());
     store
         .session(1, |session| {
-            for (link, image, name) in [
-                ("https://drawn.example/", PNG, 1),
-                ("https://broken.example/", &b"not an image"[..], 2),
+            for (link, host, image, name) in [
+                ("https://drawn.example/", "drawn.example", PNG, 1),
+                (
+                    "https://broken.example/",
+                    "broken.example",
+                    &b"not an image"[..],
+                    2,
+                ),
             ] {
                 let id = session.fresh_id()?;
                 session.edit(Edit::AddShortcut {
@@ -1423,17 +1457,14 @@ fn icons_draw_again_by_name_and_an_image_that_does_not_draw_shows_none() {
                     title: link.to_owned(),
                     folder: None,
                 })?;
-                session.edit(Edit::SetIcon {
-                    id,
-                    icon: Some((IconId([name; 32]), image.to_vec())),
-                })?;
+                session.keep_icon(host, IconId([name; 32]), image.to_vec())?;
             }
             Ok(())
         })
         .unwrap();
     let mut library = Library::new(store);
     let view = library.view().unwrap();
-    let names: Vec<String> = view
+    let mut names: Vec<String> = view
         .items
         .iter()
         .filter_map(|item| item.icon.clone())
@@ -1450,6 +1481,12 @@ fn icons_draw_again_by_name_and_an_image_that_does_not_draw_shows_none() {
         library.icons(&names).unwrap(),
         drawn,
         "a drawn icon stays drawn"
+    );
+    names.push(IconId([3; 32]).name());
+    assert_eq!(
+        library.icons(&names).unwrap(),
+        drawn,
+        "an image the device does not keep draws nothing"
     );
     assert!(library.icons(&["zz".to_owned()]).is_err());
 }

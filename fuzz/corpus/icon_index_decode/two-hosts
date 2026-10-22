@@ -1,0 +1,14 @@
+{
+  "icons": [
+    {
+      "host": "[::1]",
+      "image": "0101010101010101010101010101010101010101010101010101010101010101",
+      "fetched": 0
+    },
+    {
+      "host": "example.com",
+      "image": "abababababababababababababababababababababababababababababababab",
+      "fetched": 1700000000000
+    }
+  ]
+}

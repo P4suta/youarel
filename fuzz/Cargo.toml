@@ -127,5 +127,19 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "icon_index_decode"
+path = "fuzz_targets/icon_index_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "record_decode"
+path = "fuzz_targets/record_decode.rs"
+test = false
+doc = false
+bench = false
+
 [workspace]
 members = ["."]

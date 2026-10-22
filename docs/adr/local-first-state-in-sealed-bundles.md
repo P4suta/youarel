@@ -1,6 +1,7 @@
 ---
-status: accepted
+status: amended
 date: 2026-10-15
+amended-by: icons-stay-on-the-device.md
 ---
 # Local-first state exchanged as sealed bundles
 

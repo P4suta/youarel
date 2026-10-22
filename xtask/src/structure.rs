@@ -32,7 +32,7 @@ pub const EDGES: [(&str, &[&str]); 14] = [
     ("youarel-core", &[]),
     ("youarel-crypto", &[]),
     ("youarel-html", &[]),
-    ("youarel-icon", &["youarel-core"]),
+    ("youarel-icon", &[]),
     ("youarel-import", &["youarel-html"]),
     ("youarel-theme", &["youarel-core"]),
     ("youarel-link", &["youarel-core"]),

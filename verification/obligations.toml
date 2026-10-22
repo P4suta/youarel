@@ -146,9 +146,23 @@ harnesses = [
   { name = "proofs::a_field_never_passes_its_limit_or_the_message", covers = 2, contract = "a length-prefixed field reads exactly the bytes its prefix declares, never more than its limit or the message holds, and moves the reader past it; it fails only as too long, when the declaration exceeds the limit, or as truncated, when the field passes the end", input_domain = "every message of eight bytes and every limit up to eight", bound = "messages of eight bytes; the fuzz target wire_decode reads every message kind at any length" },
   { name = "proofs::every_value_reads_back_as_written", covers = 1, contract = "a byte, a u16, a u32, a u64, and a field written in turn read back as written, with nothing after them", input_domain = "every integer of each width and every field of up to three bytes", bound = "fields of up to three bytes" },
   { name = "proofs::ascending_holds_exactly_for_strictly_increasing_keys", covers = 1, contract = "ascending holds exactly when each key is greater than the one before it", input_domain = "every list of up to three byte keys", bound = "three keys" },
+  { name = "proofs::every_varint_reads_back_canonically", covers = 3, contract = "a varint writes every u64 in one to ten bytes that read back whole, every shorter part of that form reads as truncated, and any bytes that read as a value begin with that value's own form, so a reader refuses every longer form than the shortest and every form beyond sixty-four bits", input_domain = "every u64, every cut of its form, and every ten bytes", bound = "complete; a reader never looks past a varint's tenth byte, so ten bytes stand for every longer input" },
 ]
 probes = [
   { harness = "proofs::rejects_a_field_longer_than_its_limit", assertion = "NEGATIVE_WIRE_CONTROL" },
+  { harness = "proofs::rejects_an_overlong_varint", assertion = "NEGATIVE_WIRE_CONTROL" },
+]
+
+[[obligation]]
+verifier = "kani"
+source = "crates/youarel-core/src/record_rules.rs"
+harnesses = [
+  { name = "proofs::a_stamp_reads_back_beside_its_base", covers = 2, contract = "mode gives a register's stamp the one mode its relation to the base names, own_stamp reads every stamp of its own back from its zigzag difference, counter, and device and refuses the base and the stamp no device wrote as such, and each difference has one zigzag form", input_domain = "every pair of stamps of any wall time, any counter, and any device, and every zigzag form", bound = "complete; the varints that carry each part read back by every_varint_reads_back_canonically" },
+  { name = "proofs::a_byte_of_modes_has_one_form", covers = 2, contract = "unpack_modes refuses a byte exactly when a bit past its last register is set, the modes it reads write the byte again through pack_modes, and every modes of one to four registers read back from the byte they write, so a record's modes have one form", input_domain = "every byte, every count of one to four registers, and every modes of those registers", bound = "complete; a record holds one or two such bytes, and a whole record's round trip and one form are swept by the tests and required by the fuzz target record_decode, since decoding a whole record's texts took the solver past the gate's memory" },
+  { name = "proofs::a_body_refuses_items_out_of_order", covers = 3, contract = "read_list, which decode_body reads its folders and its shortcuts with, reads two items exactly when their identifiers ascend strictly, refuses them as out of order otherwise, and holds them in their order, and DeviceTable::ascending, which builds a body's table, takes two devices exactly when they ascend strictly", input_domain = "every pair of identifiers and every pair of devices", bound = "two items; the reader compares items only by their identifiers, so items of an identifier alone stand for records, and the tests cover whole bodies, longer lists, and repeated identifiers" },
+]
+probes = [
+  { harness = "proofs::rejects_a_record_with_reserved_flag_bits", assertion = "NEGATIVE_RECORD_CONTROL" },
 ]
 
 [[obligation]]

@@ -18,6 +18,21 @@ by = "fuzz/fuzz_targets/settings_decode.rs"
 
 [[owner]]
 shape = "parser"
+path = "crates/youarel-store/src/icons.rs"
+by = "fuzz/fuzz_targets/icon_index_decode.rs"
+
+[[owner]]
+shape = "parser"
+path = "crates/youarel-store/src/records.rs"
+by = "fuzz/fuzz_targets/record_decode.rs"
+
+[[owner]]
+shape = "parser"
+path = "crates/youarel-core/src/record_rules.rs"
+by = "fuzz/fuzz_targets/record_decode.rs"
+
+[[owner]]
+shape = "parser"
 path = "crates/youarel-theme/src/lib.rs"
 by = "fuzz/fuzz_targets/theme_parse.rs"
 

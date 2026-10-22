@@ -1697,7 +1697,6 @@ name = "youarel-icon"
 version = "0.0.0"
 dependencies = [
  "image",
- "youarel-core",
 ]
 
 [[package]]

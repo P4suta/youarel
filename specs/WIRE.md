@@ -8,6 +8,7 @@ A reader MUST reject trailing bytes, an unknown tag, a length beyond the message
 | Value | Form |
 | --- | --- |
 | `u8`, `u16`, `u32`, `u64` | Big-endian, of their fixed width |
+| `varint` | An unsigned integer of up to 64 bits in LEB128: seven bits a byte, the least significant first, and the high bit set on every byte but the last |
 | `bytes` | A `u32` length and the bytes |
 | `text` | `bytes` that hold UTF-8 |
 | `list<T>` | A `u32` count and the items in order |
@@ -15,6 +16,7 @@ A reader MUST reject trailing bytes, an unknown tag, a length beyond the message
 | `digest` | 32 bytes of SHA-512/256 |
 
 A list whose items have keys MUST hold them in strictly ascending order of their bytes.
+A reader MUST reject a `varint` longer than the shortest form of its value, and one beyond 64 bits.
 
 ## Keys and signatures
 
@@ -67,5 +69,40 @@ An operation's digest covers the same bytes and the signature.
 A recovery member's consent is its signature of the account `digest` under `youarel/v1/recovery-consent`.
 A registration travels only between the relay's own parts and never reaches a device.
 
-The plaintext of a bundle is the state in the JSON form of `youarel-store`, and the plaintext of an entry is an admission.
-A shortcut's note and a folder's mark travel in that form like their other fields, and a document without one reads as a state where no device wrote it.
+The plaintext of a bundle is the state's records, and so is the state of an admission; the plaintext of an entry is an admission.
+A device also reads a state in the JSON form of `youarel-store` that builds from before the records send, and drops the icons such a document names.
+
+## The state's records
+
+The records of a state are the magic `YRR1`, a `u16` version of 1, the device table, the folders, and the shortcuts.
+Inside the records, a count, a length, and each part of a stamp are a `varint`, and a text is its length and its UTF-8 bytes.
+
+| Part | Form |
+| --- | --- |
+| Device table | A count and each device identifier of 16 bytes, in strictly ascending order |
+| Folders | A count and each folder's record, in strictly ascending order of identifiers |
+| Shortcuts | A count and each shortcut's record, in strictly ascending order of identifiers |
+| Base stamp | The wall time, the counter, and the device's place in the table |
+| Modes | The two-bit mode of each register after the first, four to a `u8`, the first register in the lowest bits, and every bit past the last register clear |
+| Own stamp | The zigzag form of the wall time minus the base's, wrapping, then the counter and the device's place |
+
+| Record | Fields in order |
+| --- | --- |
+| Shortcut | Identifier (16 bytes), flags `u8`, base stamp (the link's), modes of the title, alias, folder, position, removal, and note (two bytes), each own stamp in the registers' order, link, title, alias when flagged, folder identifier when flagged, position, note when flagged |
+| Folder | Identifier (16 bytes), flags `u8`, base stamp (the name's), modes of the mark, parent, position, and removal (one byte), each own stamp in the registers' order, name, mark when flagged, parent identifier when flagged, position |
+
+A record's flags are bit 0 for a removed item, bit 1 for a shortcut in a folder or a folder under a parent, bit 2 for a shortcut's alias or a folder's mark, and bit 3 for a shortcut's note; a folder never sets bit 3, and no record sets a higher bit.
+Mode 0 takes the base stamp, mode 1 reads an own stamp, mode 2 names the stamp that no device wrote, which is wall time 0, counter 0, and the device of sixteen zero bytes, and mode 3 is reserved.
+
+A reader MUST reject records that the writer would not have written:
+
+- a reserved flag or mode;
+- a flagged text that is empty;
+- an own stamp that equals the base or the stamp that no device wrote;
+- mode 2 when the base is the stamp that no device wrote, since mode 0 names it then;
+- a counter beyond 32 bits, or a place beyond the table;
+- a device in the table that no stamp names;
+- a position that is no position key.
+
+A device admits every link of the records again before it keeps them, as it admits a typed one.
+The store keeps the same records in its file `state.v2`.

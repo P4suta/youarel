@@ -36,7 +36,7 @@ A signed message is the label, a zero byte, and the payload.
 | `youarel/v1/recovery` | The derivation of a recovery member's keys from its recovery key |
 | `youarel/v1/recovery-check` | The checksum of a printed recovery key |
 | `youarel/v1/recovery-consent` | A recovery member's consent to the account it joins |
-| `youarel/v1/icon` | The identifier of an icon, the digest of its image |
+| `youarel/v1/icon` | The identifier of an icon a device keeps, the digest of its image, which names its file and never leaves the device |
 
 ## Constructions
 

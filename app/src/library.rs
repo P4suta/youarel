@@ -27,11 +27,12 @@ use youarel_core::library_rules::{
 };
 use youarel_core::mark_rules;
 use youarel_core::rank_rules::Visits;
-use youarel_core::state::{Edit, EditError, Entry, IconId, ItemId, Slot, State, Tree};
+use youarel_core::state::{Edit, EditError, Entry, ItemId, Slot, State, Tree};
 use youarel_core::sync_rules;
 use youarel_link::Link;
+use youarel_store::icons::{Icon, IconId};
 use youarel_store::settings::{Column, HIDEABLE, Imported, Settings, ThemeChoice};
-use youarel_store::{Store, StoreError, codec};
+use youarel_store::{Store, StoreError};
 
 /// The heading of the scope of every shortcut.
 const ALL: &str = "All";
@@ -67,11 +68,12 @@ enum Root {
     Listing,
 }
 
-/// The state, this device's visits, and the time, as one session read them.
+/// The state, this device's visits and icons, and the time, as one session read them.
 #[derive(Debug)]
 struct Snapshot {
     state: State,
     visits: BTreeMap<ItemId, Visits>,
+    icons: BTreeMap<String, Icon>,
     now: u64,
 }
 
@@ -135,8 +137,8 @@ pub struct Library {
     notice: Option<Notice>,
     /// Each icon the window has asked for, drawn again by youarel's own decoder, or `None` for one that does not draw.
     drawn: BTreeMap<IconId, Option<String>>,
-    /// The shortcuts whose sites the window asked for an icon while it runs.
-    asked: BTreeSet<ItemId>,
+    /// The links a person opened whose hosts show no icon, which the window asks their sites' favicons for.
+    wanted: Vec<Link>,
     /// The folders the list's outline holds open.
     outlined: BTreeSet<ItemId>,
     /// The folders the sidebar's tree holds open.
@@ -173,7 +175,7 @@ impl Library {
             path: Vec::new(),
             notice,
             drawn: BTreeMap::new(),
-            asked: BTreeSet::new(),
+            wanted: Vec::new(),
             outlined: BTreeSet::new(),
             unfolded: BTreeSet::new(),
             revealed: None,
@@ -266,6 +268,7 @@ impl Library {
             Ok(Snapshot {
                 state: session.state().clone(),
                 visits: session.visits().clone(),
+                icons: session.icons().clone(),
                 now,
             })
         })?)
@@ -340,28 +343,28 @@ impl Library {
         Ok(None)
     }
 
-    /// The images of icons the window lacks, drawn again first, so the webview's decoders only ever read an image youarel encoded, whichever member sent it.
+    /// The images of icons the window lacks, by their names, drawn again first, so the webview's decoders only ever read an image youarel encoded.
     ///
     /// # Errors
     ///
-    /// Returns an error when the store cannot be read.
+    /// Returns an error when a name names no image or the store cannot be read.
     pub fn icons(&mut self, wanted: &[String]) -> Result<BTreeMap<String, String>> {
-        let snapshot = self.snapshot()?;
         let mut found = BTreeMap::new();
         for name in wanted {
-            let icon = codec::icon_id(name)?;
-            let Some(image) = snapshot.state.icons.get(&icon) else {
-                continue;
+            let image = IconId::parse(name)?;
+            let drawn = if let Some(drawn) = self.drawn.get(&image) {
+                drawn.clone()
+            } else {
+                // An image the device no longer keeps shows as no icon, and a later view may name it again.
+                let Some(bytes) = self.store.image(image)? else {
+                    continue;
+                };
+                // An image that does not draw shows as no icon, as a shortcut without one does.
+                let drawn = youarel_icon::normalize(&bytes)
+                    .map_or_else(|_undrawable| None, |redrawn| Some(data_address(&redrawn)));
+                self.drawn.insert(image, drawn.clone());
+                drawn
             };
-            let drawn = self
-                .drawn
-                .entry(icon)
-                .or_insert_with(|| {
-                    // An image that does not draw shows as no icon, as a shortcut without one does.
-                    youarel_icon::normalize(image)
-                        .map_or_else(|_undrawable| None, |redrawn| Some(data_address(&redrawn)))
-                })
-                .clone();
             if let Some(address) = drawn {
                 found.insert(name.clone(), address);
             }
@@ -369,47 +372,27 @@ impl Library {
         Ok(found)
     }
 
-    /// Up to `limit` shortcuts that show no icon and whose sites this window has not asked yet, which it counts as asked from now on.
-    ///
-    /// The window asks each site once while it runs, so a site that offers no icon costs one request.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the store cannot be read.
-    pub fn wanting_icons(&mut self, limit: usize) -> Result<Vec<(ItemId, Link)>> {
-        let snapshot = self.snapshot()?;
-        let wanted: Vec<(ItemId, Link)> = snapshot
-            .state
-            .shortcuts
-            .iter()
-            .filter(|(id, shortcut)| {
-                !shortcut.removed.value
-                    && shortcut.icon.value.is_none()
-                    && !self.asked.contains(*id)
-            })
-            .filter_map(|(id, shortcut)| match Link::parse(&shortcut.link.value) {
-                Ok(link) => Some((*id, link)),
-                // A stored link that no longer parses opens nothing, so the window asks no site for it.
-                Err(_unparsed) => None,
-            })
-            .take(limit)
-            .collect();
-        self.asked.extend(wanted.iter().map(|(id, _)| *id));
-        Ok(wanted)
+    /// Asks for the favicon of the site of a link a person opened, when this device keeps no icon for its host, since the browser reaches the site at that moment anyway.
+    fn want_icon(&mut self, link: &str) -> Result<()> {
+        let link = Link::parse(link)?;
+        if icons::lacking(&self.store, clock::now()?, &link)? {
+            self.wanted.push(link);
+        }
+        Ok(())
     }
 
-    /// Gives a shortcut the icon its site offered.
+    /// The links whose sites' favicons the window asks for, each handed over once.
+    pub fn icons_wanted(&mut self) -> Vec<Link> {
+        core::mem::take(&mut self.wanted)
+    }
+
+    /// Keeps the icon a site offered for a link a person opened.
     ///
     /// # Errors
     ///
-    /// Returns an error when the store cannot be written or the shortcut is gone.
-    pub fn set_icon(&self, id: ItemId, icon: (IconId, Vec<u8>)) -> Result<()> {
-        self.session(|session| {
-            session.edit(Edit::SetIcon {
-                id,
-                icon: Some(icon),
-            })
-        })
+    /// Returns an error when the store cannot be written or the image is larger than the device keeps.
+    pub fn keep_icon(&self, link: &Link, icon: (IconId, Vec<u8>)) -> Result<()> {
+        self.session(|session| icons::keep(session, link, icon))
     }
 
     /// Carries out one intent and answers with the view; a failure becomes the notice.
@@ -1097,6 +1080,7 @@ impl Library {
         })?;
         let (link, title) = found.context("the shortcut is gone")?;
         web::open(&link)?;
+        self.want_icon(&link)?;
         Ok(Some(format!("Opened {title}")))
     }
 
@@ -1162,10 +1146,7 @@ impl Library {
                 folder: addition.collection,
             })?;
             if let Some(icon) = addition.icon.clone() {
-                session.edit(Edit::SetIcon {
-                    id,
-                    icon: Some(icon),
-                })?;
+                icons::keep(session, &addition.link, icon)?;
             }
             Ok(Ok(id))
         });
@@ -1475,8 +1456,7 @@ impl Library {
             .iter()
             .enumerate()
             .map(|(depth, column)| {
-                let mut shown =
-                    column_entries((&snapshot.state, tree), column, self.path.get(depth));
+                let mut shown = column_entries((snapshot, tree), column, self.path.get(depth));
                 self.headed((snapshot, tree), column, &mut shown);
                 shown
             })
@@ -1503,9 +1483,10 @@ impl Library {
                 tree: &tree,
                 visits: snapshot.visits.get(id),
             };
-            state
-                .shortcut(*id)
-                .map(|shortcut| Item::new(context, *id, shortcut, icon_of(state, *id)))
+            state.shortcut(*id).map(|shortcut| {
+                let icon = icon_of(&snapshot.icons, &shortcut.link.value);
+                Item::new(context, *id, shortcut, icon)
+            })
         };
         let (columns, previewed) = self.walk_view(&snapshot, &tree);
         let preview = previewed.as_ref().and_then(item);
@@ -1566,10 +1547,11 @@ fn trail(state: &State, path: &[Entry]) -> Vec<Step> {
 
 /// The entries of one column as the window draws them, with the selected one marked.
 fn column_entries(
-    (state, tree): (&State, &Tree),
+    (snapshot, tree): (&Snapshot, &Tree),
     column: &[Entry],
     selected: Option<&Entry>,
 ) -> Vec<ColumnEntry> {
+    let state = &snapshot.state;
     column
         .iter()
         .filter_map(|entry| {
@@ -1592,7 +1574,7 @@ fn column_entries(
                     name: shortcut.title.value.clone(),
                     selected: chosen,
                     opens: false,
-                    icon: icon_of(state, *id),
+                    icon: icon_of(&snapshot.icons, &shortcut.link.value),
                     site: url(&shortcut.link.value).name,
                     mark: String::new(),
                     heading: None,
@@ -1602,13 +1584,13 @@ fn column_entries(
         .collect()
 }
 
-/// The name of a shortcut's icon, which the window asks [`Library::icons`] to draw.
-fn icon_of(state: &State, id: ItemId) -> Option<String> {
-    let icon = state.shortcut(id)?.icon.value?;
-    state
-        .icons
-        .contains_key(&icon)
-        .then(|| codec::icon_name(icon))
+/// The name of the icon a shortcut's host shows on this device, which the window asks [`Library::icons`] to draw.
+fn icon_of(icons: &BTreeMap<String, Icon>, link: &str) -> Option<String> {
+    match Link::parse(link) {
+        Ok(link) => icons.get(link.host()).map(|icon| icon.image.name()),
+        // A stored link that no longer parses names no host, so it shows its tile.
+        Err(_unparsed) => None,
+    }
 }
 
 /// How many shortcuts, in words.

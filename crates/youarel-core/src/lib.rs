@@ -31,6 +31,7 @@ pub mod membership_rules;
 pub mod merge_rules;
 pub mod position_rules;
 pub mod rank_rules;
+pub mod record_rules;
 pub mod relay_rules;
 pub mod state;
 pub mod sync_rules;

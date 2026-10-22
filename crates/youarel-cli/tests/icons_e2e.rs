@@ -1,13 +1,18 @@
-//! `youarel add` reads a page's title and its icon from a site served on this host, and `youarel icons` finds the favicon of a shortcut added without one.
+//! `youarel add` reads a page's title and its icon from a site served on this host and keeps the icon on the device under the site's host, and an opening gathers the favicon of a host that shows none.
 #![cfg(test)]
 
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use youarel_link::Link;
 use youarel_store::Store;
 
 /// The icons the site serves: the launcher's own, from the repository.
 const PNG: &[u8] = include_bytes!("../../../app/icons/32x32.png");
 const ICO: &[u8] = include_bytes!("../../../app/icons/icon.ico");
+/// The eight bytes that begin every PNG image, which the icons a device keeps are.
+const PNG_SIGNATURE: &[u8] = b"\x89PNG\r\n\x1a\n";
 /// A time for the store's session that the test reads under.
 const NOW: u64 = 1_700_000_000_000;
 
@@ -35,11 +40,25 @@ fn run(home: &Path, arguments: &[&str]) -> String {
     String::from_utf8(output.stdout).unwrap()
 }
 
-/// The site: a page that names its icon, a page that names a missing one, and a favicon at the root.
-fn serve() -> (Arc<tiny_http::Server>, String) {
+/// A site on this host and how often it handed out its favicon.
+struct Site {
+    server: Arc<tiny_http::Server>,
+    port: u16,
+    favicons: Arc<AtomicUsize>,
+}
+
+impl Drop for Site {
+    fn drop(&mut self) {
+        self.server.unblock();
+    }
+}
+
+/// The site: a page that names its icon, a page that names a missing one, and a favicon at the root, or nothing at all when it keeps no icons.
+fn serve(icons: bool) -> Site {
     let server = Arc::new(tiny_http::Server::http("127.0.0.1:0").unwrap());
     let port = server.server_addr().to_ip().unwrap().port();
-    let serving = Arc::clone(&server);
+    let favicons = Arc::new(AtomicUsize::new(0));
+    let (serving, counting) = (Arc::clone(&server), Arc::clone(&favicons));
     std::thread::spawn(move || {
         for request in serving.incoming_requests() {
             let (body, kind): (&[u8], &str) = match request.url() {
@@ -51,8 +70,11 @@ fn serve() -> (Arc<tiny_http::Server>, String) {
                     b"<html><head><title>Missing</title><link rel=icon href=/gone.png></head></html>",
                     "text/html",
                 ),
-                "/icon.png" => (PNG, "image/png"),
-                "/favicon.ico" => (ICO, "image/x-icon"),
+                "/icon.png" if icons => (PNG, "image/png"),
+                "/favicon.ico" if icons => {
+                    counting.fetch_add(1, Ordering::SeqCst);
+                    (ICO, "image/x-icon")
+                }
                 _ => {
                     drop(request.respond(tiny_http::Response::empty(404)));
                     continue;
@@ -62,54 +84,106 @@ fn serve() -> (Arc<tiny_http::Server>, String) {
             drop(request.respond(tiny_http::Response::from_data(body).with_header(header)));
         }
     });
-    (server, format!("http://127.0.0.1:{port}"))
+    Site {
+        server,
+        port,
+        favicons,
+    }
 }
 
-/// The icon images of the shortcuts the store holds, by link.
-fn icons(home: &Path) -> Vec<(String, Option<usize>)> {
-    Store::new(home.to_path_buf())
-        .session(NOW, |session| {
-            let state = session.state();
-            Ok(state
-                .shortcuts
-                .iter()
-                .map(|(id, shortcut)| {
-                    (
-                        shortcut.link.value.clone(),
-                        state.icon(*id).map(<[u8]>::len),
-                    )
-                })
-                .collect())
+/// The length of the image each host shows on the device, by host.
+fn icons(home: &Path) -> BTreeMap<String, Option<usize>> {
+    let store = Store::new(home.to_path_buf());
+    let index = store
+        .session(NOW, |session| Ok(session.icons().clone()))
+        .unwrap();
+    index
+        .into_iter()
+        .map(|(host, icon)| {
+            let image = store.image(icon.image).unwrap();
+            (host, image.map(|bytes| bytes.len()))
         })
-        .unwrap()
+        .collect()
 }
 
 #[test]
-fn a_shortcut_takes_its_page_s_icon_or_its_site_s_favicon() {
-    let (server, site) = serve();
+fn an_addition_keeps_its_page_s_icon_or_its_site_s_favicon_under_the_host() {
+    let site = serve(true);
     let home = tempfile::tempdir().unwrap();
-    let added = run(home.path(), &["add", &format!("{site}/named")]);
+    let port = site.port;
+    let added = run(
+        home.path(),
+        &["add", &format!("http://127.0.0.1:{port}/named")],
+    );
     assert!(added.contains("added Named"), "{added}");
-    let missing = run(home.path(), &["add", &format!("{site}/missing")]);
+    let missing = run(
+        home.path(),
+        &["add", &format!("http://localhost:{port}/missing")],
+    );
     assert!(missing.contains("added Missing"), "{missing}");
+    assert_eq!(site.favicons.load(Ordering::SeqCst), 1);
     run(
         home.path(),
-        &["add", &format!("{site}/later"), "--no-fetch"],
+        &[
+            "add",
+            &format!("http://localhost:{port}/later"),
+            "--no-fetch",
+        ],
     );
-    let before = icons(home.path());
+    let held = icons(home.path());
+    assert_eq!(
+        held.keys().map(String::as_str).collect::<Vec<_>>(),
+        ["127.0.0.1", "localhost"],
+        "one icon for each host, whatever its port and path"
+    );
+    assert!(held.values().all(Option::is_some), "{held:?}");
+    let records =
+        youarel_store::fs::read_bytes_if_present(&home.path().join(youarel_store::STATE_FILE))
+            .unwrap()
+            .unwrap();
+    assert_eq!(
+        youarel_store::records::decode(&records)
+            .unwrap()
+            .shortcuts
+            .len(),
+        3
+    );
     assert!(
-        before
-            .iter()
-            .all(|(link, icon)| icon.is_some() != link.ends_with("/later")),
-        "the page's icon or the favicon, and none without a fetch: {before:?}"
+        !records
+            .windows(PNG_SIGNATURE.len())
+            .any(|window| window == PNG_SIGNATURE),
+        "the state's records hold no image"
     );
-    let filled = run(home.path(), &["icons"]);
-    assert!(filled.contains("fetched 1 of 1 missing icons"), "{filled}");
-    assert!(icons(home.path()).iter().all(|(_, icon)| icon.is_some()));
-    let again = run(home.path(), &["icons"]);
-    assert!(
-        again.contains("every shortcut shows an icon already"),
-        "{again}"
+}
+
+#[test]
+fn an_opening_gathers_the_favicon_of_a_host_that_shows_none_and_asks_no_more() {
+    let site = serve(true);
+    let home = tempfile::tempdir().unwrap();
+    let store = Store::new(home.path().to_path_buf());
+    let link = Link::parse(&format!("http://127.0.0.1:{}/later", site.port)).unwrap();
+    assert!(youarel_cli::icons::lacking(&store, NOW, &link).unwrap());
+    youarel_cli::icons::opened(&store, NOW, &link).unwrap();
+    assert_eq!(site.favicons.load(Ordering::SeqCst), 1);
+    assert!(!youarel_cli::icons::lacking(&store, NOW, &link).unwrap());
+    youarel_cli::icons::opened(&store, NOW, &link).unwrap();
+    assert_eq!(
+        site.favicons.load(Ordering::SeqCst),
+        1,
+        "a host that shows an icon asks its site nothing"
     );
-    server.unblock();
+    assert_eq!(
+        icons(home.path()).into_keys().collect::<Vec<_>>(),
+        ["127.0.0.1"]
+    );
+    let bare = serve(false);
+    let empty = tempfile::tempdir().unwrap();
+    let elsewhere = Store::new(empty.path().to_path_buf());
+    let unknown = Link::parse(&format!("http://127.0.0.1:{}/", bare.port)).unwrap();
+    youarel_cli::icons::opened(&elsewhere, NOW, &unknown).unwrap();
+    assert_eq!(
+        icons(empty.path()),
+        BTreeMap::new(),
+        "a site without a favicon keeps its tile"
+    );
 }

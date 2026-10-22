@@ -17,6 +17,10 @@ mod raw {
         std::fs::read_to_string(path)
     }
 
+    pub(super) fn read(path: &Path) -> std::io::Result<Vec<u8>> {
+        std::fs::read(path)
+    }
+
     pub(super) fn create_dir_all(path: &Path) -> std::io::Result<()> {
         std::fs::create_dir_all(path)
     }
@@ -118,6 +122,28 @@ pub fn read_if_present(path: &Path) -> Result<Option<String>, FileError> {
         Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
         Err(error) => Err(failed("read", path)(error)),
     }
+}
+
+/// The bytes of a file, or `None` when the file does not exist.
+///
+/// # Errors
+///
+/// Returns a [`FileError`] when the file exists but cannot be read.
+pub fn read_bytes_if_present(path: &Path) -> Result<Option<Vec<u8>>, FileError> {
+    match raw::read(path) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(failed("read", path)(error)),
+    }
+}
+
+/// Gives a file another name in place of whatever that name held.
+///
+/// # Errors
+///
+/// Returns a [`FileError`] naming the file when it cannot be renamed.
+pub fn rename(from: &Path, to: &Path) -> Result<(), FileError> {
+    raw::rename(from, to).map_err(failed("rename", from))
 }
 
 /// Creates a directory and its parents.
@@ -271,8 +297,8 @@ impl Drop for Lock {
 #[cfg(test)]
 mod tests {
     use super::{
-        Lock, create_dir_all, list, read_bounded, read_bounded_if_present, read_if_present,
-        remove_if_present, replace, replace_executable,
+        Lock, create_dir_all, list, read_bounded, read_bounded_if_present, read_bytes_if_present,
+        read_if_present, remove_if_present, rename, replace, replace_executable,
     };
 
     #[test]
@@ -300,6 +326,33 @@ mod tests {
         assert!(std::error::Error::source(&error).is_some());
         let unreadable = read_if_present(directory.path()).unwrap_err();
         assert_eq!(unreadable.action, "read");
+    }
+
+    #[test]
+    fn bytes_read_back_whole_and_a_file_takes_another_name() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("state.v2");
+        assert_eq!(read_bytes_if_present(&path).unwrap(), None);
+        replace(&path, &[0xff, 0x00, b'Y']).unwrap();
+        assert_eq!(
+            read_bytes_if_present(&path).unwrap(),
+            Some(vec![0xff, 0x00, b'Y'])
+        );
+        assert_eq!(
+            read_bytes_if_present(directory.path()).unwrap_err().action,
+            "read"
+        );
+        let moved = directory.path().join("state.v2.moved");
+        replace(&moved, b"older").unwrap();
+        rename(&path, &moved).unwrap();
+        assert_eq!(read_bytes_if_present(&path).unwrap(), None);
+        assert_eq!(
+            read_bytes_if_present(&moved).unwrap(),
+            Some(vec![0xff, 0x00, b'Y'])
+        );
+        let error = rename(&path, &moved).unwrap_err();
+        assert_eq!(error.action, "rename");
+        assert!(error.to_string().contains("state.v2"), "{error}");
     }
 
     #[test]

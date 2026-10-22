@@ -8,7 +8,7 @@ use crate::{clock, icons, web};
 use anyhow::Result;
 use std::collections::BTreeMap;
 use youarel_core::rank_rules::Visits;
-use youarel_core::state::{Edit, Entry, IconId, ItemId, Slot, State};
+use youarel_core::state::{Edit, Entry, ItemId, Slot, State};
 use youarel_core::ui_rules::{Effect, Field, Mode, Row, Ui};
 use youarel_core::view;
 use youarel_link::Link;
@@ -150,7 +150,7 @@ fn fresh_id(store: &Store) -> Result<ItemId> {
         .map_err(anyhow::Error::from)
 }
 
-/// Counts the visit and opens the shortcut, leaving the launcher once the browser has it.
+/// Counts the visit and opens the shortcut, gathers its site's favicon when this device keeps no icon for its host, and leaves the launcher.
 fn open(store: &Store, id: ItemId) -> Outcome {
     let link = clock::now().and_then(|now| {
         store
@@ -165,7 +165,15 @@ fn open(store: &Store, id: ItemId) -> Outcome {
     });
     match link {
         Ok(Some(link)) => match web::open(&link) {
-            Ok(()) => Outcome::Leave,
+            Ok(()) => {
+                // The browser reaches the site now anyway, and an icon that cannot be kept waits for the next opening, since the launcher leaves.
+                drop(
+                    Link::parse(&link)
+                        .map_err(anyhow::Error::from)
+                        .and_then(|link| icons::opened(store, clock::now()?, &link)),
+                );
+                Outcome::Leave
+            }
             Err(error) => Outcome::Continue(Some(format!("{error:#}"))),
         },
         Ok(None) => Outcome::Continue(Some("the shortcut is gone".to_owned())),
@@ -206,10 +214,7 @@ fn add(store: &Store, folder: Option<ItemId>, text: &str) -> Outcome {
                     folder,
                 })?;
                 if let Some(icon) = icon {
-                    session.edit(Edit::SetIcon {
-                        id,
-                        icon: Some(icon),
-                    })?;
+                    icons::keep(session, &link, icon)?;
                 }
                 Ok(())
             })
@@ -278,18 +283,6 @@ pub fn row_text(state: &State, row: &Row) -> RowText {
                 )
             },
         ),
-    }
-}
-
-/// The icon of a row and its image, for a launcher that draws pictures.
-#[must_use]
-pub fn row_icon<'a>(state: &'a State, row: &Row) -> Option<(IconId, &'a [u8])> {
-    match row {
-        Row::Entry(Entry::Shortcut(id)) => {
-            let icon = state.shortcut(*id)?.icon.value?;
-            state.icon(*id).map(|image| (icon, image))
-        }
-        Row::Entry(Entry::Folder(_)) | Row::Parent(_) | Row::Add(_) => None,
     }
 }
 

@@ -1,6 +1,7 @@
 ---
-status: proposed
+status: superseded
 date: 2026-10-16
+superseded-by: icons-stay-on-the-device.md
 ---
 # Icons travel inside the sealed state
 

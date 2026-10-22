@@ -1,9 +1,11 @@
 //! The commands of the `youarel` binary, each one locked session of the store.
 
 use crate::resolve::{self, describe};
-use crate::{icons, web};
+use crate::{browsers, icons, web};
 use anyhow::{Context, Result, anyhow};
 use std::io::Write as _;
+use youarel_core::browser_rules::Browser;
+use youarel_core::mark_rules;
 use youarel_core::state::{Edit, Entry, IconId, ItemId, Slot, State, Tree};
 use youarel_core::ui_rules::{Row, Ui};
 use youarel_core::view;
@@ -86,15 +88,24 @@ fn fetched(link: &Link, addition: &Addition) -> Fetched {
 ///
 /// # Errors
 ///
-/// Returns an error when the link is not one a shortcut may hold, or the store fails.
+/// Returns an error when the link is not one a shortcut may hold, its folder holds it already, or the store fails.
 pub fn add(store: &Store, now: u64, link: &str, addition: &Addition) -> Result<String> {
     let link = Link::parse(link).with_context(|| format!("cannot add `{link}`"))?;
     let Fetched { title, icon, notes } = fetched(&link, addition);
-    let message = session(store, now, |session| {
+    // The session answers with the shortcut that already holds the link, which refuses the addition.
+    let outcome = session(store, now, |session| {
         let folder = match &addition.folder {
             Some(path) => folder_path(session, path)?,
             None => None,
         };
+        let before = session.state().tree();
+        if let Some(held) = session.state().holding(&before, folder, link.as_str()) {
+            return Ok(Err(describe(
+                session.state(),
+                &before,
+                Entry::Shortcut(held),
+            )));
+        }
         let id = session.fresh_id()?;
         session.edit(Edit::AddShortcut {
             id,
@@ -115,11 +126,12 @@ pub fn add(store: &Store, now: u64, link: &str, addition: &Addition) -> Result<S
             })?;
         }
         let tree = session.state().tree();
-        Ok(format!(
+        Ok(Ok(format!(
             "added {}",
             describe(session.state(), &tree, Entry::Shortcut(id))
-        ))
+        )))
     })?;
+    let message = outcome.map_err(|held| anyhow!("its folder holds it already: {held}"))?;
     Ok(notes
         .iter()
         .fold(message, |message, note| format!("{message}\n({note})")))
@@ -362,6 +374,57 @@ pub fn alias(store: &Store, now: u64, reference: &str, alias: &str) -> Result<St
     })
 }
 
+/// The shortcut a reference names, refusing a folder for what only shortcuts have.
+fn shortcut_named(store: &Store, now: u64, reference: &str, what: &str) -> Result<ItemId> {
+    match resolved(store, now, reference)? {
+        Entry::Shortcut(id) => Ok(id),
+        Entry::Folder(_) => anyhow::bail!("only shortcuts have {what}"),
+    }
+}
+
+/// Writes a shortcut's note, or clears it with an empty one.
+///
+/// # Errors
+///
+/// Returns an error when the name resolves to nothing or to a folder, or the store fails.
+pub fn note(store: &Store, now: u64, reference: &str, note: &str) -> Result<String> {
+    let id = shortcut_named(store, now, reference, "notes")?;
+    session(store, now, |session| {
+        session.edit(Edit::SetNote {
+            id,
+            note: note.to_owned(),
+        })?;
+        let tree = session.state().tree();
+        Ok(format!(
+            "noted {}",
+            describe(session.state(), &tree, Entry::Shortcut(id))
+        ))
+    })
+}
+
+/// Gives a folder a mark to show in place of its glyph, such as one emoji, or clears it with an empty one.
+///
+/// # Errors
+///
+/// Returns an error when the name resolves to nothing or to a shortcut, the mark is refused, or the store fails.
+pub fn mark(store: &Store, now: u64, reference: &str, mark: &str) -> Result<String> {
+    let Entry::Folder(id) = resolved(store, now, reference)? else {
+        anyhow::bail!("only folders have marks");
+    };
+    let mark = mark_rules::admit(mark).map_err(|refused| anyhow::anyhow!("{refused}"))?;
+    session(store, now, |session| {
+        session.edit(Edit::MarkFolder {
+            id,
+            mark: mark.to_owned(),
+        })?;
+        let tree = session.state().tree();
+        Ok(format!(
+            "marked {}",
+            describe(session.state(), &tree, Entry::Folder(id))
+        ))
+    })
+}
+
 /// Removes a shortcut, or a folder with everything it holds.
 ///
 /// # Errors
@@ -388,6 +451,16 @@ pub struct Imported {
     pub refused: usize,
 }
 
+impl core::fmt::Display for Imported {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(
+            formatter,
+            "imported {} shortcuts and {} folders; {} were already here, and {} were no web links",
+            self.shortcuts, self.folders, self.duplicates, self.refused
+        )
+    }
+}
+
 /// An import in progress: the links the store holds, and what the import did so far.
 #[derive(Debug)]
 struct Importing {
@@ -395,20 +468,26 @@ struct Importing {
     counts: Imported,
 }
 
-fn import_items(
-    session: &mut Session,
-    items: &[Item],
-    parent: Option<ItemId>,
-    importing: &mut Importing,
-) -> Result<(), StoreError> {
+/// What an import adds: a folder that holds something new, or a web link the store holds nowhere yet.
+#[derive(Debug)]
+enum Fresh {
+    Folder { name: String, items: Vec<Self> },
+    Link { link: Link, title: String },
+}
+
+/// The items an import adds, counting what falls away: links already held, links that are no web links, and every folder left holding nothing.
+fn fresh(items: &[Item], importing: &mut Importing) -> Vec<Fresh> {
+    let mut kept = Vec::new();
     for item in items {
         match item {
             Item::Folder { name, items: inner } => {
-                let folder = folder_named(session, parent, name)?;
-                if folder.created {
-                    importing.counts.folders = importing.counts.folders.saturating_add(1);
+                let held = fresh(inner, importing);
+                if !held.is_empty() {
+                    kept.push(Fresh::Folder {
+                        name: name.clone(),
+                        items: held,
+                    });
                 }
-                import_items(session, inner, Some(folder.id), importing)?;
             }
             Item::Link { href, title } => {
                 let counts = &mut importing.counts;
@@ -416,10 +495,36 @@ fn import_items(
                     counts.refused = counts.refused.saturating_add(1);
                     continue;
                 };
-                if !importing.held.insert(link.as_str().to_owned()) {
+                if importing.held.insert(link.as_str().to_owned()) {
+                    kept.push(Fresh::Link {
+                        link,
+                        title: title.clone(),
+                    });
+                } else {
                     counts.duplicates = counts.duplicates.saturating_add(1);
-                    continue;
                 }
+            }
+        }
+    }
+    kept
+}
+
+fn import_items(
+    session: &mut Session,
+    items: &[Fresh],
+    parent: Option<ItemId>,
+    counts: &mut Imported,
+) -> Result<(), StoreError> {
+    for item in items {
+        match item {
+            Fresh::Folder { name, items: inner } => {
+                let folder = folder_named(session, parent, name)?;
+                if folder.created {
+                    counts.folders = counts.folders.saturating_add(1);
+                }
+                import_items(session, inner, Some(folder.id), counts)?;
+            }
+            Fresh::Link { link, title } => {
                 let id = session.fresh_id()?;
                 let title = if title.is_empty() {
                     link.as_str().to_owned()
@@ -432,20 +537,59 @@ fn import_items(
                     title,
                     folder: parent,
                 })?;
-                importing.counts.shortcuts = importing.counts.shortcuts.saturating_add(1);
+                counts.shortcuts = counts.shortcuts.saturating_add(1);
             }
         }
     }
     Ok(())
 }
 
-/// Imports a bookmark file: its folders merge into folders of the same name, and links already held stay single.
+/// Imports a file of bookmarks that a browser exported or keeps, read as its first bytes name it.
+///
+/// The file lands under the folder path `folder` such as `Work/Infra`, or at the top.
+/// Its folders merge into folders of the same name, and links already held stay single.
+///
+/// # Errors
+///
+/// Returns an error when the file is not the kind its first bytes name, or the store fails.
+pub fn import(store: &Store, now: u64, bytes: &[u8], folder: Option<&str>) -> Result<Imported> {
+    import_tree(store, now, &nested(folder, browsers::read_file(bytes)?))
+}
+
+/// Imports the bookmarks a browser keeps on this device, in a folder named after the browser, under the folder path `folder` or at the top.
+///
+/// # Errors
+///
+/// Returns an error when the browser's bookmarks cannot be found or read, or the store fails.
+pub fn import_browser(
+    store: &Store,
+    now: u64,
+    browser: Browser,
+    folder: Option<&str>,
+) -> Result<Imported> {
+    import_tree(store, now, &nested(folder, vec![browsers::read(browser)?]))
+}
+
+/// Items inside the folders of a path such as `Work/Infra`, the outermost first, which the import merges like any folder.
+fn nested(path: Option<&str>, items: Vec<Item>) -> Vec<Item> {
+    path.unwrap_or_default()
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .rev()
+        .fold(items, |inner, name| {
+            vec![Item::Folder {
+                name: name.to_owned(),
+                items: inner,
+            }]
+        })
+}
+
+/// Imports folders and links: folders merge into folders of the same name, links already held stay single, and a folder with nothing new stays away.
 ///
 /// # Errors
 ///
 /// Returns an error when the store fails.
-pub fn import(store: &Store, now: u64, text: &str) -> Result<Imported> {
-    let items = bookmarks::parse(text);
+pub fn import_tree(store: &Store, now: u64, items: &[Item]) -> Result<Imported> {
     session(store, now, |session| {
         let held = session
             .state()
@@ -458,7 +602,8 @@ pub fn import(store: &Store, now: u64, text: &str) -> Result<Imported> {
             held,
             counts: Imported::default(),
         };
-        import_items(session, &items, None, &mut importing)?;
+        let adding = fresh(items, &mut importing);
+        import_items(session, &adding, None, &mut importing.counts)?;
         Ok(importing.counts)
     })
 }
@@ -523,4 +668,194 @@ pub fn print(lines: &[String]) -> Result<()> {
         writeln!(out, "{text}")?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Addition, Imported, Item, add, find, import, list, make_folder, mark, note, read};
+    use youarel_html::bookmarks;
+    use youarel_import::{chrome, firefox};
+    use youarel_store::Store;
+
+    /// A time for every session of the tests.
+    const NOW: u64 = 1_700_000_000_000;
+    /// A page the import tests file.
+    const MDN: &str = "https://developer.mozilla.org/";
+    /// Another page the import tests file.
+    const HTML_STANDARD: &str = "https://html.spec.whatwg.org/";
+
+    #[test]
+    fn a_note_goes_on_a_shortcut_and_a_search_finds_it() {
+        let home = tempfile::tempdir().unwrap();
+        let store = Store::new(home.path().to_path_buf());
+        let addition = Addition {
+            title: Some("URL Standard".to_owned()),
+            alias: Some("url".to_owned()),
+            ..Addition::default()
+        };
+        add(&store, NOW, "https://url.spec.whatwg.org/", &addition).unwrap();
+        assert_eq!(
+            list(&store, NOW, None).unwrap(),
+            ["URL Standard  https://url.spec.whatwg.org/  [url]"]
+        );
+        let noted = note(&store, NOW, "url", "the parser of record").unwrap();
+        assert!(noted.starts_with("noted URL Standard"), "{noted}");
+        assert_eq!(find(&store, NOW, "record").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_folder_holds_a_link_once_and_another_folder_may_hold_it_too() {
+        let home = tempfile::tempdir().unwrap();
+        let store = Store::new(home.path().to_path_buf());
+        let link = "https://developer.mozilla.org/";
+        add(&store, NOW, link, &Addition::default()).unwrap();
+        let again = add(&store, NOW, link, &Addition::default());
+        assert!(
+            again
+                .unwrap_err()
+                .to_string()
+                .contains("its folder holds it already"),
+        );
+        let elsewhere = Addition {
+            folder: Some("MDN".to_owned()),
+            ..Addition::default()
+        };
+        add(&store, NOW, link, &elsewhere).unwrap();
+        assert_eq!(find(&store, NOW, "mozilla").unwrap().len(), 2);
+    }
+
+    #[test]
+    fn a_folder_takes_no_note() {
+        let home = tempfile::tempdir().unwrap();
+        let store = Store::new(home.path().to_path_buf());
+        make_folder(&store, NOW, "Work").unwrap();
+        let noted = note(&store, NOW, "Work/", "x");
+        assert!(
+            noted
+                .unwrap_err()
+                .to_string()
+                .contains("only shortcuts have notes")
+        );
+    }
+
+    #[test]
+    fn a_folder_takes_a_mark_and_a_shortcut_or_a_spaced_mark_is_refused() {
+        let home = tempfile::tempdir().unwrap();
+        let store = Store::new(home.path().to_path_buf());
+        make_folder(&store, NOW, "Work").unwrap();
+        let marked = mark(&store, NOW, "Work/", " 📚 ").unwrap();
+        assert!(marked.starts_with("marked"), "{marked}");
+        let state = read(&store, NOW).unwrap();
+        assert!(
+            state
+                .folders
+                .values()
+                .any(|folder| folder.mark.value == "📚")
+        );
+        let spaced = mark(&store, NOW, "Work/", "a b").unwrap_err();
+        assert!(spaced.to_string().contains("no space"), "{spaced}");
+        let named = Addition {
+            title: Some("MDN".to_owned()),
+            alias: Some("mdn".to_owned()),
+            ..Addition::default()
+        };
+        add(&store, NOW, MDN, &named).unwrap();
+        let shortcut = mark(&store, NOW, "mdn", "📚").unwrap_err();
+        assert!(shortcut.to_string().contains("only folders"), "{shortcut}");
+    }
+
+    #[test]
+    fn a_file_of_any_browser_lands_in_the_folder_named_and_its_links_stay_single() {
+        let home = tempfile::tempdir().unwrap();
+        let store = Store::new(home.path().to_path_buf());
+        let tree = [Item::Folder {
+            name: "Docs".to_owned(),
+            items: vec![
+                Item::Link {
+                    href: "https://developer.mozilla.org/".to_owned(),
+                    title: "MDN".to_owned(),
+                },
+                Item::Link {
+                    href: "javascript:void(0)".to_owned(),
+                    title: "A bookmarklet".to_owned(),
+                },
+            ],
+        }];
+        let chromium = chrome::write(&tree);
+        let imported = import(&store, NOW, chromium.as_bytes(), Some("/Edge//Study/")).unwrap();
+        assert_eq!(
+            (imported.shortcuts, imported.folders, imported.refused),
+            (1, 3, 1),
+            "Edge, Study, and Docs, which the file keeps as its bookmarks bar"
+        );
+        assert_eq!(
+            list(&store, NOW, Some("Edge/Study/Docs")).unwrap(),
+            ["MDN  https://developer.mozilla.org/"]
+        );
+        let again = import(&store, NOW, &firefox::encode(&tree).unwrap(), Some("Edge")).unwrap();
+        assert_eq!((again.shortcuts, again.duplicates), (0, 1));
+        import(&store, NOW, b"mozLz40\0", None).unwrap_err();
+    }
+
+    #[test]
+    fn an_import_makes_no_folder_whose_links_the_library_holds_already() {
+        let home = tempfile::tempdir().unwrap();
+        let store = Store::new(home.path().to_path_buf());
+        let docs = |links: &[&str]| {
+            [Item::Folder {
+                name: "Docs".to_owned(),
+                items: links
+                    .iter()
+                    .map(|href| Item::Link {
+                        href: (*href).to_owned(),
+                        title: String::new(),
+                    })
+                    .collect(),
+            }]
+        };
+        let first = bookmarks::write(&docs(&[MDN]));
+        import(&store, NOW, first.as_bytes(), Some("Brave")).unwrap();
+        let held = import(
+            &store,
+            NOW,
+            chrome::write(&docs(&[MDN])).as_bytes(),
+            Some("Edge"),
+        )
+        .unwrap();
+        assert_eq!(
+            (held.shortcuts, held.folders, held.duplicates),
+            (0, 0, 1),
+            "neither Edge nor its Docs holds anything new"
+        );
+        list(&store, NOW, Some("Edge")).unwrap_err();
+        let both = chrome::write(&docs(&[MDN, HTML_STANDARD]));
+        let added = import(&store, NOW, both.as_bytes(), Some("Brave")).unwrap();
+        assert_eq!(
+            (added.shortcuts, added.folders, added.duplicates),
+            (1, 0, 1),
+            "a folder of the same name takes the new link"
+        );
+        assert_eq!(
+            list(&store, NOW, Some("Brave/Docs")).unwrap(),
+            [
+                format!("{MDN}  {MDN}"),
+                format!("{HTML_STANDARD}  {HTML_STANDARD}")
+            ],
+            "a link without a title takes the link"
+        );
+    }
+
+    #[test]
+    fn an_import_reports_what_it_added_and_skipped() {
+        let counts = Imported {
+            folders: 1,
+            shortcuts: 2,
+            duplicates: 3,
+            refused: 4,
+        };
+        assert_eq!(
+            counts.to_string(),
+            "imported 2 shortcuts and 1 folders; 3 were already here, and 4 were no web links"
+        );
+    }
 }

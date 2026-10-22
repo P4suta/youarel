@@ -1,6 +1,7 @@
 ---
-status: proposed
+status: superseded
 date: 2026-10-16
+superseded-by: window-is-a-library-of-shortcuts.md
 ---
 # The window launcher renders the terminal launcher's machine
 

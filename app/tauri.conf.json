@@ -10,17 +10,20 @@
     "withGlobalTauri": true,
     "windows": [
       {
-        "label": "launcher",
+        "label": "library",
         "title": "youarel",
-        "width": 680,
-        "height": 440,
+        "width": 1180,
+        "height": 760,
+        "minWidth": 760,
+        "minHeight": 480,
         "center": true,
-        "resizable": false,
-        "decorations": false,
-        "alwaysOnTop": true,
+        "resizable": true,
         "visible": false,
-        "skipTaskbar": true,
-        "focus": true
+        "focus": true,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
+        "trafficLightPosition": { "x": 18, "y": 22 },
+        "dragDropEnabled": false
       }
     ],
     "security": {

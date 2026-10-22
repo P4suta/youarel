@@ -36,6 +36,17 @@ const JOINING: &[u8] = b"youarel/v1/file/joining";
 const LONGEST_OPERATION: u64 = 2 * 1024 * 1024;
 /// The suffix of an operation file.
 const OPERATION_SUFFIX: &str = ".op";
+/// The file that names the account, which only a device of an account holds.
+pub const GENESIS: &str = "genesis";
+
+/// Whether the account directory belongs to an account, read without creating anything or reaching the credential store.
+///
+/// # Errors
+///
+/// Returns a [`SyncError`] when the file exists but cannot be read.
+pub fn founded(directory: &Path) -> Result<bool, SyncError> {
+    Ok(fs::read_if_present(&directory.join(GENESIS))?.is_some())
+}
 /// The tag of a sealed record that still waits: an invitation without a join, or a join without a welcome.
 const WAITING: u8 = 0;
 /// The tag of a sealed record that moved on.
@@ -217,7 +228,7 @@ impl Account {
             sealed::write(&identity_path, &sealing, IDENTITY, &identity.encode())?;
             identity
         };
-        let genesis = match fs::read_if_present(&directory.join("genesis"))? {
+        let genesis = match fs::read_if_present(&directory.join(GENESIS))? {
             Some(text) => Some(unhex::<DIGEST>(text.trim()).ok_or_else(|| {
                 SyncError::Refused(String::from("the genesis file holds no digest"))
             })?),
@@ -388,7 +399,7 @@ impl Account {
         let genesis =
             self.write_operation(&empty, now, Action::Genesis(self.identity.public.clone()))?;
         fs::replace(
-            &self.directory.join("genesis"),
+            &self.directory.join(GENESIS),
             format!("{}\n", hex(&genesis)).as_bytes(),
         )?;
         self.genesis = Some(genesis);
@@ -1014,7 +1025,7 @@ impl Account {
             self.keep_operation(operation)?;
         }
         fs::replace(
-            &self.directory.join("genesis"),
+            &self.directory.join(GENESIS),
             format!("{}\n", hex(&genesis)).as_bytes(),
         )?;
         self.genesis = Some(genesis);
@@ -1199,7 +1210,7 @@ impl Account {
             self.keep_operation(operation)?;
         }
         fs::replace(
-            &self.directory.join("genesis"),
+            &self.directory.join(GENESIS),
             format!("{}\n", hex(&genesis)).as_bytes(),
         )?;
         self.genesis = Some(genesis);
@@ -1220,7 +1231,7 @@ impl Account {
 
 #[cfg(test)]
 mod tests {
-    use super::LONGEST_OPERATION;
+    use super::{GENESIS, LONGEST_OPERATION, founded};
 
     #[test]
     fn the_log_reads_every_operation_the_wire_admits() {
@@ -1228,5 +1239,14 @@ mod tests {
             usize::try_from(LONGEST_OPERATION).unwrap(),
             youarel_protocol::message::LONGEST_OPERATION
         );
+    }
+
+    #[test]
+    fn a_directory_belongs_to_an_account_once_it_names_one() {
+        let directory = tempfile::tempdir().unwrap();
+        assert!(!founded(&directory.path().join("absent")).unwrap());
+        assert!(!founded(directory.path()).unwrap());
+        youarel_store::fs::replace(&directory.path().join(GENESIS), b"named").unwrap();
+        assert!(founded(directory.path()).unwrap());
     }
 }

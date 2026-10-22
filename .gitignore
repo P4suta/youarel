@@ -11,6 +11,6 @@
 /server/.wrangler/
 /app/target/
 /app/gen/
-/app/ui/main.js
+/app/ui/*.js
 /.mise/*
 !/.mise/locks/

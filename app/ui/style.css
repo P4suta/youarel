@@ -1,22 +1,71 @@
+/* The library window: a sidebar of scopes, a toolbar, and the shortcuts as cards, a list, or columns. */
+/* Every color is a custom property, which a theme sets on the root. */
+
 :root {
-  color-scheme: light dark;
-  --background: #f8fafc;
-  --text: #0f172a;
-  --dim: #64748b;
-  --selected: #dbeafe;
-  --accent: #1d4ed8;
-  font-family: system-ui, sans-serif;
-  font-size: 15px;
+  color-scheme: light;
+  --background: #ffffff;
+  --sidebar: #f6f8fa;
+  --surface: #f6f8fa;
+  --raised: #ffffff;
+  --border: #d1d9e0;
+  --text: #1f2328;
+  --muted: #59636e;
+  --accent: #0969da;
+  --accent-text: #ffffff;
+  --selection: #ddf4ff;
+  --go: #1f883d;
+  --go-text: #ffffff;
+  --danger: #cf222e;
+  --url-scheme: #59636e;
+  --url-sub: #59636e;
+  --url-name: #8250df;
+  --url-suffix: #cf222e;
+  --url-port: #0550ae;
+  --url-rest: #0a3069;
+  --thumbnail: #f6f8fa;
+  --shadow: rgb(31 35 40 / 12%);
+  --font: -apple-system, BlinkMacSystemFont, "Segoe UI", "Hiragino Sans", "Noto Sans", system-ui, sans-serif;
+  --mono: ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, monospace;
+  --radius: 8px;
+  --sidebar-width: 220px;
+  --titlebar: 52px;
+  font-family: var(--font);
+  font-size: 13px;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --background: #0f172a;
-    --text: #e2e8f0;
-    --dim: #94a3b8;
-    --selected: #1e3a8a;
-    --accent: #93c5fd;
+    color-scheme: dark;
+    --background: #0d1117;
+    --sidebar: #010409;
+    --surface: #151b23;
+    --raised: #151b23;
+    --border: #3d444d;
+    --text: #f0f6fc;
+    --muted: #9198a1;
+    --accent: #4493f8;
+    --accent-text: #ffffff;
+    --selection: #1f2d3d;
+    --go: #238636;
+    --go-text: #ffffff;
+    --danger: #f85149;
+    --url-scheme: #9198a1;
+    --url-sub: #9198a1;
+    --url-name: #d2a8ff;
+    --url-suffix: #ff7b72;
+    --url-port: #79c0ff;
+    --url-rest: #a5d6ff;
+    --thumbnail: #151b23;
+    --shadow: rgb(1 4 9 / 60%);
   }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+[hidden] {
+  display: none !important;
 }
 
 html,
@@ -27,94 +76,1482 @@ body {
 
 body {
   display: flex;
-  flex-direction: column;
+  overflow: hidden;
   background: var(--background);
   color: var(--text);
-  overflow: hidden;
+  user-select: none;
+  -webkit-user-select: none;
+  cursor: default;
 }
 
-#header {
-  padding: 10px 16px 0;
+.sprite {
+  display: none;
+}
+
+/* A picture never leaves the window as a picture of its own; a drag moves what it belongs to. */
+img {
+  -webkit-user-drag: none;
+}
+
+.glyph {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  fill: none;
+  stroke: currentcolor;
+  stroke-width: 1.3;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.glyph .filled {
+  fill: currentcolor;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+button {
+  border: none;
+  background: none;
+  cursor: default;
+}
+
+input,
+select,
+textarea {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+kbd {
+  font-family: var(--font);
+  font-size: 11px;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0 4px;
+}
+
+.mono {
+  font-family: var(--mono);
+}
+
+/* The sidebar. */
+
+#sidebar {
+  width: var(--sidebar-width);
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  background: var(--sidebar);
+  border-right: 1px solid var(--border);
+}
+
+.titlebar {
+  height: var(--titlebar);
+  flex: none;
+}
+
+#scopes {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0 10px 10px;
+}
+
+.section {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: 16px 6px 4px;
+  font-size: 11px;
   font-weight: 600;
-  color: var(--dim);
+  color: var(--muted);
 }
 
-#line {
+.scope {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 5px 8px;
+  border-radius: 6px;
+  text-align: left;
+  color: var(--text);
+}
+
+.scope .label {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* A collection of the tree sets in by its depth, behind a triangle that points down while it shows the folders inside. */
+.scope:has(> .disclosure) {
+  gap: 4px;
+  padding-left: calc(2px + var(--depth, 0) * 14px);
+}
+
+.scope .disclosure {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  flex: none;
+  padding: 0;
+  color: var(--muted);
+}
+
+.scope .disclosure .glyph {
+  width: 11px;
+  height: 11px;
+  transition: transform 120ms ease;
+}
+
+.scope .disclosure[aria-expanded="true"] .glyph {
+  transform: rotate(90deg);
+}
+
+.scope .disclosure + .glyph {
+  margin-right: 4px;
+}
+
+.scope .count {
+  font-size: 11px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.scope .glyph {
+  color: var(--muted);
+}
+
+.scope:hover {
+  background: color-mix(in srgb, var(--text) 6%, transparent);
+}
+
+.scope[aria-current="true"] {
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+}
+
+.scope[aria-current="true"] .glyph {
+  color: var(--accent);
+}
+
+.scope.target {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.scope .drop-label {
+  font-size: 11px;
+  color: var(--accent-text);
+  background: var(--accent);
+  border-radius: 4px;
+  padding: 1px 6px;
+}
+
+.icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  color: var(--muted);
+}
+
+.icon-button:hover {
+  background: color-mix(in srgb, var(--text) 8%, transparent);
+  color: var(--text);
+}
+
+.sidebar-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  border-top: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.sync-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 6px;
+  margin-left: -6px;
+  border-radius: 6px;
+}
+
+.sync-state:hover {
+  background: color-mix(in srgb, var(--text) 8%, transparent);
+  color: var(--text);
+}
+
+.sync-state.failed {
+  color: var(--danger);
+}
+
+.wide-input {
+  flex: 1;
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--raised);
+  outline: none;
+}
+
+.wide-input:focus {
+  border-color: var(--accent);
+}
+
+.hint.error-line {
+  color: var(--danger);
+}
+
+/* The toolbar. */
+
+#main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+}
+
+#toolbar {
+  height: var(--titlebar);
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 16px;
+}
+
+.heading {
+  flex: 1;
+  min-width: 0;
   display: flex;
   align-items: baseline;
-  padding: 8px 16px;
-  font-size: 20px;
-  border-bottom: 1px solid var(--selected);
+  gap: 8px;
 }
 
-#prompt {
-  white-space: pre;
+#title {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-#field {
+.count {
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.segmented {
+  display: inline-flex;
+  padding: 2px;
+  gap: 2px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--surface);
+}
+
+.segmented button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  border-radius: 5px;
+  color: var(--muted);
+}
+
+.segmented button[aria-checked="true"] {
+  background: var(--raised);
+  color: var(--text);
+  box-shadow: 0 1px 2px var(--shadow);
+}
+
+.search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 240px;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--raised);
+  color: var(--muted);
+}
+
+.search:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 25%, transparent);
+}
+
+.search input {
   flex: 1;
-  min-width: 2ch;
+  min-width: 0;
   border: none;
   outline: none;
   background: transparent;
   color: var(--text);
-  font: inherit;
-  caret-color: var(--accent);
 }
 
-#rows {
-  flex: 1;
-  margin: 0;
-  padding: 4px 0;
-  list-style: none;
-  overflow-y: auto;
+.search input::-webkit-search-cancel-button {
+  display: none;
 }
 
-#rows li {
+.primary,
+.go,
+.secondary,
+.danger {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  border-radius: 7px;
+  font-weight: 600;
+}
+
+.primary {
+  background: var(--accent);
+  color: var(--accent-text);
+}
+
+.go {
+  background: var(--go);
+  color: var(--go-text);
+}
+
+.secondary {
+  border: 1px solid var(--border);
+  background: var(--raised);
+}
+
+.danger {
+  color: var(--danger);
+  border: 1px solid color-mix(in srgb, var(--danger) 45%, transparent);
+}
+
+.primary:hover,
+.go:hover {
+  filter: brightness(1.08);
+}
+
+.secondary:hover {
+  background: var(--surface);
+}
+
+.subbar {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 6px 16px;
+  gap: 8px;
+  padding: 0 16px 8px;
+}
+
+/* The folders the columns open, which a click selects again. */
+.trail {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  align-items: center;
+  overflow-x: auto;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.trail button {
+  padding: 2px 6px;
+  border-radius: 5px;
+  color: inherit;
+}
+
+.trail button:hover {
+  background: color-mix(in srgb, var(--text) 8%, transparent);
+  color: var(--text);
+}
+
+.trail button:last-child {
+  color: var(--text);
+}
+
+.trail .separator {
+  padding: 0 2px;
+}
+
+/* The folder the cards and the list stand in, at the end of the trail. */
+.trail .here {
+  padding: 2px 6px;
+  color: var(--text);
+  font-weight: 600;
+}
+
+.sort {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.sort select {
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+#content {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  outline: none;
+}
+
+.empty {
+  margin: 80px auto;
+  text-align: center;
+  color: var(--muted);
+}
+
+/* The cards. */
+
+.cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(216px, 1fr));
+  gap: 16px;
+  padding: 4px 16px 24px;
+}
+
+/* A heading the cards or the rows after it fall under, across the whole grid. */
+.group-heading {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 12px 0 0;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.group-heading .count {
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+}
+
+/* A heading the shortcuts after it in a column fall under. */
+.column-heading {
+  margin: 10px 8px 2px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-#rows li[aria-selected="true"] {
-  background: var(--selected);
+.group-row td {
+  padding-top: 8px;
+  border-bottom: none;
 }
 
-#rows .icon {
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  padding: 8px;
+  border-radius: 10px;
+  border: 1px solid transparent;
+}
+
+.card:hover {
+  background: color-mix(in srgb, var(--text) 3%, transparent);
+}
+
+.card[aria-selected="true"] {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+}
+
+.thumbnail {
+  position: relative;
+  aspect-ratio: 16 / 10;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--thumbnail);
+  overflow: hidden;
+}
+
+.thumbnail .favicon {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 16px;
+  height: 16px;
+  border-radius: 3px;
+}
+
+.type {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  padding: 10px 12px;
+  font-family: var(--mono);
+  min-width: 0;
+}
+
+.type .scheme {
+  position: absolute;
+  top: 8px;
+  left: 12px;
+  font-size: 11px;
+  color: var(--url-scheme);
+}
+
+.type .host {
+  min-width: 0;
+}
+
+.type .sub {
+  display: block;
+  font-size: 11px;
+  color: var(--url-sub);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.type .line {
+  display: flex;
+  align-items: baseline;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.type .name {
+  font-weight: 700;
+  color: var(--url-name);
+  letter-spacing: -0.02em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.thumbnail {
+  container-type: inline-size;
+}
+
+/* Every card's name takes one size, from the card's width alone, so a row of cards reads evenly; a name too long for it ends in an ellipsis. */
+.type .name {
+  font-size: clamp(15px, 10cqw, 26px);
+}
+
+/* The subdomains and the path keep their lines when empty, so the name sits at one height on every card. */
+.type .sub,
+.type .rest {
+  min-height: 1.4em;
+}
+
+.type .suffix {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--url-suffix);
   flex: none;
-  width: 20px;
-  height: 20px;
 }
 
-#rows .name {
+.type .port {
+  font-size: 13px;
+  color: var(--url-port);
+  flex: none;
+}
+
+.type .rest {
+  margin-top: 2px;
+  font-size: 10px;
+  color: var(--url-rest);
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-#rows .detail,
-#rows .alias {
-  color: var(--dim);
+.card .title {
+  font-weight: 600;
+  line-height: 1.3;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+
+.card .meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.card .meta .collection {
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-#rows .folder .name::after {
-  content: "/";
-  color: var(--dim);
+.card .meta time {
+  flex: none;
 }
 
-#rows .add .name::before {
-  content: "+ ";
+/* A folder's mark sits where its glyph would, at the glyph's size. */
+.mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  flex: none;
+  font-size: 14px;
+  line-height: 1;
+}
+
+.folder-card .thumbnail .mark {
+  width: auto;
+  height: auto;
+  font-size: 44px;
+}
+
+/* A folder among the cards: a large folder in place of the link set as type. */
+.folder-card .thumbnail {
+  display: flex;
+  align-items: center;
+  justify-content: center;
   color: var(--accent);
 }
 
-#footer {
-  padding: 6px 16px 10px;
-  font-size: 12px;
-  color: var(--dim);
+.folder-card .thumbnail .glyph {
+  width: 30%;
+  height: 30%;
+}
+
+.folder-row .name-cell .glyph {
+  color: var(--accent);
+}
+
+/* The list. */
+
+/* The name takes what the other columns leave, and each other column grows with the window between a least and a most width. */
+.list {
+  width: 100%;
+  min-width: 520px;
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+
+.list col.link {
+  width: clamp(180px, 34%, 560px);
+}
+
+.list col.collection {
+  width: clamp(120px, 20%, 280px);
+}
+
+.list col.added {
+  width: 96px;
+}
+
+.list th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--background);
+  border-bottom: 1px solid var(--border);
+  padding: 0;
+  text-align: left;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+/* A heading that sorts takes a click anywhere on it. */
+.list th button {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  padding: 6px 12px;
+  color: inherit;
+  font-weight: inherit;
+  text-align: left;
+}
+
+.list th button:hover {
+  background: color-mix(in srgb, var(--text) 5%, transparent);
+}
+
+.list th:first-child button {
+  padding-left: 16px;
+}
+
+.list td:first-child {
+  padding-left: 16px;
+}
+
+.list th[aria-sort] button {
+  color: var(--text);
+}
+
+.list td {
+  padding: 6px 12px;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 50%, transparent);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.list tr[aria-selected="true"] td {
+  background: var(--selection);
+}
+
+/* A row of the outline sets in by its depth, as an explorer's list does. */
+.list .name-cell {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  overflow: hidden;
+  padding-left: calc(var(--depth, 0) * 20px);
+}
+
+.list .name-cell .title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.list .name-cell .count {
+  flex: none;
+  color: var(--muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* A folder's triangle, which points down while the folder shows its rows; a shortcut keeps its room so the names line up. */
+.list .disclosure {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  flex: none;
+  margin-right: -4px;
+  padding: 0;
+  color: var(--muted);
+}
+
+.list .disclosure .glyph {
+  width: 12px;
+  height: 12px;
+  transition: transform 120ms ease;
+}
+
+.list .disclosure[aria-expanded="true"] .glyph {
+  transform: rotate(90deg);
+}
+
+.favicon {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  border-radius: 3px;
+}
+
+.favicon.blank {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+}
+
+/* A shortcut without an icon: its site's first letter on its site's own color, which reads in a light and a dark theme alike. */
+.favicon.tile {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: hsl(var(--tile-hue, 0) 55% 45%);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.url {
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.url .host {
+  color: var(--text);
+}
+
+.url .rest {
+  color: var(--muted);
+}
+
+.list .muted,
+.list time {
+  color: var(--muted);
+}
+
+/* The columns. */
+
+.columns {
+  display: flex;
+  height: 100%;
+  border-top: 1px solid var(--border);
+}
+
+.column {
+  width: 230px;
+  flex: none;
+  overflow-y: auto;
+  padding: 6px;
+  border-right: 1px solid var(--border);
+}
+
+/* The sidebar's and the columns' entries act as buttons without being them, so a field can open inside. */
+.scope,
+.entry {
+  cursor: default;
+  user-select: none;
+}
+
+/* A name, a title, or a note typed over in place. */
+.in-place {
+  width: 100%;
+  min-width: 0;
+  padding: 1px 4px;
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  background: var(--background);
+  color: var(--text);
+  font: inherit;
+  outline: none;
+  user-select: text;
+}
+
+textarea.in-place {
+  min-height: 4.5em;
+  resize: vertical;
+}
+
+.column .entry {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 4px 8px;
+  border-radius: 6px;
+  text-align: left;
+}
+
+.column .entry .label {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.column .entry[aria-selected="true"] {
+  background: var(--accent);
+  color: var(--accent-text);
+}
+
+.column .entry[aria-selected="true"] .glyph {
+  color: var(--accent-text);
+}
+
+.column .entry.trail[aria-selected="true"] {
+  background: color-mix(in srgb, var(--text) 12%, transparent);
+  color: var(--text);
+}
+
+.column .entry.trail[aria-selected="true"] .glyph {
+  color: var(--muted);
+}
+
+.column .entry .glyph {
+  color: var(--muted);
+}
+
+.column .none {
+  padding: 8px;
+  color: var(--muted);
+}
+
+.preview {
+  flex: 1;
+  min-width: 280px;
+  overflow-y: auto;
+  padding: 20px 24px;
+}
+
+.preview .thumbnail {
+  max-width: 560px;
+  aspect-ratio: 2 / 1;
+}
+
+.preview .type {
+  padding: 16px 20px;
+}
+
+.preview .type .name {
+  font-size: clamp(16px, calc((100cqw - 40px - var(--tail-chars, 0) * 11px) / (var(--name-chars, 6) * 0.61)), 60px);
+}
+
+.preview .type .suffix,
+.preview .type .port {
+  font-size: 18px;
+}
+
+.preview .type .scheme {
+  top: 14px;
+  left: 20px;
+  font-size: 13px;
+}
+
+.preview .type .sub {
+  font-size: 14px;
+}
+
+.preview .type .rest {
+  font-size: 12px;
+}
+
+.preview h2 {
+  margin: 16px 0 4px;
+  font-size: 17px;
+}
+
+.preview .link {
+  display: block;
+  margin-bottom: 12px;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.preview .buttons {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.facts {
+  display: grid;
+  grid-template-columns: 110px 1fr;
+  gap: 8px 12px;
+  margin: 0;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.facts dt {
+  color: var(--muted);
+}
+
+.facts dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+/* The notice, the drop hint, and the menu. */
+
+.notice {
+  position: absolute;
+  left: 50%;
+  bottom: 16px;
+  transform: translateX(-50%);
+  max-width: 70%;
+  padding: 8px 14px;
+  border-radius: 8px;
+  background: var(--text);
+  color: var(--background);
+  box-shadow: 0 4px 16px var(--shadow);
+}
+
+.notice.error {
+  background: var(--danger);
+  color: #ffffff;
+}
+
+.drop-hint {
+  position: absolute;
+  inset: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px dashed var(--accent);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--accent) 10%, var(--background));
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--accent);
+  pointer-events: none;
+}
+
+.menu {
+  position: fixed;
+  z-index: 10;
+  min-width: 180px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--raised);
+  box-shadow: 0 8px 24px var(--shadow);
+}
+
+.menu button {
+  display: flex;
+  width: 100%;
+  padding: 5px 10px;
+  border-radius: 5px;
+  text-align: left;
+}
+
+.menu button:hover {
+  background: var(--accent);
+  color: var(--accent-text);
+}
+
+.menu button.danger-item {
+  color: var(--danger);
+}
+
+/* A choice that stands for something on or off keeps room for its check, as a Mac menu does. */
+.menu button[role="menuitemcheckbox"]::before {
+  content: "";
+  width: 18px;
+  flex: none;
+}
+
+.menu button[aria-checked="true"]::before {
+  content: "✓";
+}
+
+.menu button.danger-item:hover {
+  background: var(--danger);
+  color: #ffffff;
+}
+
+.menu hr {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 4px 0;
+}
+
+/* The sheets. */
+
+.sheet {
+  width: 440px;
+  padding: 20px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--raised);
+  color: var(--text);
+  box-shadow: 0 16px 48px var(--shadow);
+}
+
+.sheet.small {
+  width: 360px;
+}
+
+.sheet.wide {
+  width: 640px;
+}
+
+.sheet::backdrop {
+  background: rgb(0 0 0 / 25%);
+}
+
+.sheet h2 {
+  margin: 0 0 16px;
+  font-size: 15px;
+}
+
+.sheet form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1;
+}
+
+.field-row {
+  display: flex;
+  gap: 12px;
+}
+
+.field-label {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.field input,
+.field select,
+.field textarea,
+#ask-input {
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--background);
+  outline: none;
+}
+
+.field input:focus,
+.field select:focus,
+.field textarea:focus,
+#ask-input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 25%, transparent);
+}
+
+.field textarea {
+  resize: vertical;
+}
+
+.hint {
+  margin: 0;
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 400;
+  color: var(--muted);
+}
+
+.actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.actions .spacer {
+  flex: 1;
+}
+
+/* The mark picker: the mark as it will show beside the search, then the emoji under their headings. */
+.mark-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.mark-head input {
+  flex: 1;
+}
+
+.mark-preview {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  flex: none;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  font-size: 28px;
+  color: var(--accent);
+}
+
+.mark-preview .glyph {
+  width: 24px;
+  height: 24px;
+}
+
+.mark-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(36px, 1fr));
+  gap: 2px;
+  max-height: 300px;
+  overflow-y: auto;
+  padding: 2px;
+}
+
+.mark-heading {
+  grid-column: 1 / -1;
+  margin: 8px 0 2px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.mark-grid .hint {
+  grid-column: 1 / -1;
+}
+
+.mark-choice {
+  height: 36px;
+  border-radius: 6px;
+  font-size: 22px;
+  line-height: 1;
+}
+
+.mark-choice:hover,
+.mark-choice:focus-visible {
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+.tabs {
+  display: flex;
+  justify-content: center;
+  gap: 4px;
+  margin-bottom: 16px;
+}
+
+.tab {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 6px 14px;
+  border-radius: 8px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.tab[aria-selected="true"] {
+  background: var(--surface);
+  color: var(--text);
+}
+
+.pane h3 {
+  margin: 12px 0 6px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--background);
+}
+
+.setting {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.sheet form.setting {
+  flex-direction: row;
+  gap: 8px;
+}
+
+.setting .buttons {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+/* The theme pane. */
+
+.toggle input {
+  appearance: none;
+  -webkit-appearance: none;
+  position: relative;
+  width: 34px;
+  height: 20px;
+  flex: none;
+  border-radius: 10px;
+  background: var(--border);
+  transition: background 0.15s;
+}
+
+.toggle input::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #ffffff;
+  box-shadow: 0 1px 2px var(--shadow);
+  transition: transform 0.15s;
+}
+
+.toggle input:checked {
+  background: var(--accent);
+}
+
+.toggle input:checked::after {
+  transform: translateX(14px);
+}
+
+.pickers {
+  display: flex;
+  gap: 16px;
+}
+
+.theme-picker {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.theme-picker select {
+  padding: 3px 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--raised);
+}
+
+.theme-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 10px;
+}
+
+.theme-tile {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 0;
+  text-align: left;
+}
+
+.theme-tile[aria-pressed="true"] .theme-preview {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.theme-caption {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+}
+
+.theme-caption .glyph {
+  width: 12px;
+  height: 12px;
+  color: var(--accent);
+}
+
+.theme-preview {
+  display: flex;
+  height: 64px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  overflow: hidden;
+  background: var(--background);
+}
+
+.mini-side {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 22%;
+  padding: 8px 5px;
+  background: var(--sidebar);
+}
+
+.mini-side i {
+  height: 3px;
+  border-radius: 2px;
+  background: var(--muted);
+  opacity: 0.6;
+}
+
+.mini-page {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 7px;
+}
+
+.mini-type {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 1px;
+  padding: 4px 5px;
+  border-radius: 4px;
+  background: var(--thumbnail);
+  font-family: var(--mono);
+}
+
+.mini-scheme {
+  width: 100%;
+  font-size: 6px;
+  color: var(--url-scheme);
+}
+
+.mini-name {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--url-name);
+}
+
+.mini-suffix {
+  font-size: 7px;
+  color: var(--url-suffix);
+}
+
+.mini-line {
+  height: 3px;
+  width: 70%;
+  border-radius: 2px;
+  background: var(--text);
+  opacity: 0.5;
+}
+
+.mini-button {
+  width: 22px;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--go);
+}
+
+.theme-footer {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 12px;
 }

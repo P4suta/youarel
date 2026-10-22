@@ -18,9 +18,13 @@
 
 extern crate alloc;
 
+pub mod browser_rules;
 pub mod clock_rules;
 pub mod home_rules;
+pub mod host_rules;
+pub mod library_rules;
 pub mod link_rules;
+pub mod mark_rules;
 pub mod match_rules;
 pub mod membership_rules;
 pub mod merge_rules;
@@ -28,6 +32,8 @@ pub mod position_rules;
 pub mod rank_rules;
 pub mod relay_rules;
 pub mod state;
+pub mod sync_rules;
+pub mod theme_rules;
 pub mod tree_rules;
 pub mod ui_rules;
 pub mod update_rules;

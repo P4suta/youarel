@@ -103,6 +103,8 @@ youarel-release = { path = "crates/youarel-release" }
 youarel-store = { path = "crates/youarel-store" }
 youarel-sync = { path = "crates/youarel-sync" }
 youarel-relay = { path = "crates/youarel-relay" }
+youarel-theme = { path = "crates/youarel-theme" }
+youarel-import = { path = "crates/youarel-import" }
 
 anyhow = "1.0"
 base64 = "0.22"
@@ -123,6 +125,14 @@ libcrux-ed25519 = "0.0.10"
 libcrux-hkdf = "0.0.9"
 libcrux-hmac = "0.0.9"
 libcrux-kem = "0.0.10"
+# Firefox compresses its backups of bookmarks as LZ4 blocks, which the safe decoder reads without unsafe code.
+lz4_flex = { version = "0.14", default-features = false, features = [
+  "safe-decode",
+  "safe-encode",
+  "std",
+] }
+# Safari keeps its bookmarks as a property list, binary or XML, which this pure Rust reader reads.
+plist = { version = "1.10", default-features = false }
 libcrux-ml-dsa = { version = "0.0.11", default-features = false, features = ["mldsa65", "std"] }
 minisign = "0.7"
 minisign-verify = "0.2"

@@ -27,6 +27,7 @@ ureq.workspace = true
 webbrowser.workspace = true
 youarel-core.workspace = true
 youarel-html.workspace = true
+youarel-import.workspace = true
 youarel-icon.workspace = true
 youarel-link.workspace = true
 youarel-release.workspace = true

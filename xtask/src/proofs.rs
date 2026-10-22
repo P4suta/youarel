@@ -53,11 +53,13 @@ const MIRI_TARGET: &str = "target/miri";
 const MIRI_PROFILE: &str = "miri";
 const MUTANTS_OUTPUT: &str = "target/proofs/mutants";
 /// The crates the mutation campaign runs over, each judged by its own tests alone.
-pub const MUTANT_PACKAGES: [&str; 10] = [
+pub const MUTANT_PACKAGES: [&str; 12] = [
     "youarel-core",
     "youarel-link",
     "youarel-html",
     "youarel-icon",
+    "youarel-import",
+    "youarel-theme",
     "youarel-release",
     "youarel-store",
     "youarel-crypto",
@@ -937,7 +939,9 @@ const INPUT_FILES: [&str; 9] = [
     "justfile",
     "lefthook.yml",
 ];
-const GENERATED_PATHS: [&str; 11] = [
+const COMPILED_SCRIPT_DIRECTORY: &str = "app/ui/";
+const COMPILED_SCRIPT_SUFFIX: &str = ".js";
+const GENERATED_PATHS: [&str; 10] = [
     "fuzz/target/",
     "fuzz/artifacts/",
     "fuzz/coverage/",
@@ -946,7 +950,6 @@ const GENERATED_PATHS: [&str; 11] = [
     "server/.wrangler/",
     "app/target/",
     "app/gen/",
-    "app/ui/main.js",
     "xtask/target/",
     "app/node_modules/",
 ];
@@ -964,7 +967,11 @@ fn proof_files(root: &Path, directory: &Path, paths: &mut Vec<PathBuf>) -> Resul
                 .split('/')
                 .nth(3)
                 .is_some_and(|name| matches!(name, "target" | "artifacts"));
+        let compiled_script = qualified
+            .strip_prefix(COMPILED_SCRIPT_DIRECTORY)
+            .is_some_and(|name| !name.contains('/') && name.ends_with(COMPILED_SCRIPT_SUFFIX));
         if fixture_output
+            || compiled_script
             || GENERATED_PATHS.iter().any(|prefix| {
                 qualified == *prefix || (prefix.ends_with('/') && qualified.starts_with(prefix))
             })
@@ -1345,6 +1352,7 @@ probes = [{ harness = "rejects_x", assertion = "NEGATIVE_LINK_CONTROL" }]
             "fuzz/corpus/parse/seed",
             "mise.lock",
             "app/ui/main.js.fixture",
+            "app/ui/nested/source.js",
         ];
         for path in paths {
             fs::write(&root.join(path), b"first").unwrap();
@@ -1358,6 +1366,7 @@ probes = [{ harness = "rejects_x", assertion = "NEGATIVE_LINK_CONTROL" }]
         fs::write(&root.join("target/ignored.rs"), b"output").unwrap();
         fs::write(&root.join("fuzz/target/ignored.rs"), b"output").unwrap();
         fs::write(&root.join("app/ui/main.js"), b"output").unwrap();
+        fs::write(&root.join("app/ui/draw.js"), b"output").unwrap();
         assert_eq!(digest(root).unwrap(), original);
     }
 

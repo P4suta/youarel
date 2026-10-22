@@ -50,6 +50,16 @@ impl ItemId {
             r9,
         ])
     }
+
+    /// The time in milliseconds since the Unix epoch that a version 7 identifier starts with, or `None` for an identifier without the version and variant marks.
+    #[must_use]
+    pub const fn time(self) -> Option<u64> {
+        let [t0, t1, t2, t3, t4, t5, version, _, variant, ..] = self.0;
+        if version & !BELOW_VERSION != VERSION_7 || variant & !BELOW_VARIANT != VARIANT {
+            return None;
+        }
+        Some(u64::from_be_bytes([0, 0, t0, t1, t2, t3, t4, t5]))
+    }
 }
 
 /// The most bytes an icon's image holds, which a small square image fits many times over.
@@ -74,12 +84,16 @@ pub struct Shortcut {
     pub removed: Register<bool>,
     /// The icon the shortcut shows, or `None` for none.
     pub icon: Register<Option<IconId>>,
+    /// The note a person keeps on the shortcut, empty when there is none.
+    pub note: Register<String>,
 }
 
 /// A folder of shortcuts and folders.
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub struct Folder {
     pub name: Register<String>,
+    /// What the folder shows in place of its glyph, such as one emoji, or empty for the glyph.
+    pub mark: Register<String>,
     /// The folder it declares as its parent, or `None` for the top.
     pub parent: Register<Option<ItemId>>,
     /// Its place among the parent's entries.
@@ -88,6 +102,25 @@ pub struct Folder {
 }
 
 impl Shortcut {
+    /// A shortcut that one write at `stamp` adds, with its link and title, and no alias, icon, or note.
+    fn new(
+        [link, title]: [String; 2],
+        folder: Option<ItemId>,
+        position: Key,
+        stamp: Stamp,
+    ) -> Self {
+        Self {
+            link: register(link, stamp),
+            title: register(title, stamp),
+            alias: register(String::new(), stamp),
+            folder: register(folder, stamp),
+            position: register(position, stamp),
+            removed: register(false, stamp),
+            icon: register(None, stamp),
+            note: register(String::new(), stamp),
+        }
+    }
+
     /// The shortcut after both replicas' writes.
     #[must_use]
     pub fn merge(&self, other: &Self) -> Self {
@@ -99,6 +132,7 @@ impl Shortcut {
             position: self.position.merge(&other.position),
             removed: self.removed.merge(&other.removed),
             icon: self.icon.merge(&other.icon),
+            note: self.note.merge(&other.note),
         }
     }
 
@@ -111,6 +145,7 @@ impl Shortcut {
             self.position.stamp,
             self.removed.stamp,
             self.icon.stamp,
+            self.note.stamp,
         ]
         .into_iter()
         .max()
@@ -124,6 +159,7 @@ impl Folder {
     pub fn merge(&self, other: &Self) -> Self {
         Self {
             name: self.name.merge(&other.name),
+            mark: self.mark.merge(&other.mark),
             parent: self.parent.merge(&other.parent),
             position: self.position.merge(&other.position),
             removed: self.removed.merge(&other.removed),
@@ -133,6 +169,7 @@ impl Folder {
     fn latest(&self) -> Stamp {
         [
             self.name.stamp,
+            self.mark.stamp,
             self.parent.stamp,
             self.position.stamp,
             self.removed.stamp,
@@ -196,6 +233,11 @@ pub enum Edit {
         id: ItemId,
         name: String,
     },
+    /// Gives a folder a mark to show in place of its glyph, or clears it with an empty one.
+    MarkFolder {
+        id: ItemId,
+        mark: String,
+    },
     /// Moves an entry into a folder, or the top, at a slot among its entries.
     Move {
         entry: Entry,
@@ -210,6 +252,11 @@ pub enum Edit {
     SetIcon {
         id: ItemId,
         icon: Option<(IconId, Vec<u8>)>,
+    },
+    /// Writes a shortcut's note, or clears it with an empty one.
+    SetNote {
+        id: ItemId,
+        note: String,
     },
 }
 
@@ -467,18 +514,8 @@ impl State {
                 }
                 self.require_folder(folder)?;
                 let position = self.place(&tree, at_end(folder), None)?;
-                self.shortcuts.insert(
-                    id,
-                    Shortcut {
-                        link: register(link, stamp),
-                        title: register(title, stamp),
-                        alias: register(String::new(), stamp),
-                        folder: register(folder, stamp),
-                        position: register(position, stamp),
-                        removed: register(false, stamp),
-                        icon: register(None, stamp),
-                    },
-                );
+                let added = Shortcut::new([link, title], folder, position, stamp);
+                self.shortcuts.insert(id, added);
             }
             Edit::AddFolder { id, name, parent } => {
                 if self.folders.contains_key(&id) {
@@ -490,6 +527,7 @@ impl State {
                     id,
                     Folder {
                         name: register(name, stamp),
+                        mark: register(String::new(), stamp),
                         parent: register(parent, stamp),
                         position: register(position, stamp),
                         removed: register(false, stamp),
@@ -497,21 +535,21 @@ impl State {
                 );
             }
             Edit::Retitle { id, title } => {
-                self.require(Entry::Shortcut(id))?;
-                if let Some(shortcut) = self.shortcuts.get_mut(&id) {
-                    write(&mut shortcut.title, title, stamp);
-                }
+                self.change(id, |shortcut| write(&mut shortcut.title, title, stamp))?;
             }
             Edit::Realias { id, alias } => {
-                self.require(Entry::Shortcut(id))?;
-                if let Some(shortcut) = self.shortcuts.get_mut(&id) {
-                    write(&mut shortcut.alias, alias, stamp);
-                }
+                self.change(id, |shortcut| write(&mut shortcut.alias, alias, stamp))?;
             }
             Edit::RenameFolder { id, name } => {
                 self.require(Entry::Folder(id))?;
                 if let Some(folder) = self.folders.get_mut(&id) {
                     write(&mut folder.name, name, stamp);
+                }
+            }
+            Edit::MarkFolder { id, mark } => {
+                self.require(Entry::Folder(id))?;
+                if let Some(folder) = self.folders.get_mut(&id) {
+                    write(&mut folder.mark, mark, stamp);
                 }
             }
             Edit::Move {
@@ -524,6 +562,18 @@ impl State {
             }
             Edit::Remove { entry } => self.remove(&tree, entry, stamp)?,
             Edit::SetIcon { id, icon } => self.set_icon(id, icon, stamp)?,
+            Edit::SetNote { id, note } => {
+                self.change(id, |shortcut| write(&mut shortcut.note, note, stamp))?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Changes a live shortcut, or refuses a shortcut that is gone.
+    fn change(&mut self, id: ItemId, change: impl FnOnce(&mut Shortcut)) -> Result<(), EditError> {
+        self.require(Entry::Shortcut(id))?;
+        if let Some(shortcut) = self.shortcuts.get_mut(&id) {
+            change(shortcut);
         }
         Ok(())
     }
@@ -630,6 +680,19 @@ impl State {
     pub fn folder_of(&self, tree: &Tree, id: ItemId) -> Option<ItemId> {
         self.shortcut(id).and_then(|shortcut| home(tree, shortcut))
     }
+
+    /// The live shortcut that holds `link` in `folder`, or the top for `None`, which a folder holds at most once.
+    #[must_use]
+    pub fn holding(&self, tree: &Tree, folder: Option<ItemId>, link: &str) -> Option<ItemId> {
+        self.shortcuts
+            .iter()
+            .find(|(_, shortcut)| {
+                !shortcut.removed.value
+                    && shortcut.link.value == link
+                    && home(tree, shortcut) == folder
+            })
+            .map(|(id, _)| *id)
+    }
 }
 
 /// Where an entry goes: a folder, or the top, and a slot among its entries.
@@ -714,6 +777,25 @@ mod tests {
         assert_eq!(zero[6] & 0xf0, 0x70);
         assert_eq!(zero[8] & 0xc0, 0x80);
         assert!(ItemId::v7(1, [0; 10]) < ItemId::v7(2, [0; 10]));
+    }
+
+    #[test]
+    fn a_version_7_identifier_gives_its_time_back() {
+        for now in [0, 1, 0x0123_4567_89ab, (1 << 48) - 1] {
+            for random in [[0; 10], [0xff; 10], [0x5a; 10]] {
+                assert_eq!(ItemId::v7(now, random).time(), Some(now));
+            }
+        }
+        assert_eq!(id(2).time(), None, "no version mark");
+        let mut unmarked = ItemId::v7(5, [0; 10]);
+        unmarked.0[8] = 0x3f;
+        assert_eq!(unmarked.time(), None, "no variant mark");
+        let mut other_version = ItemId::v7(5, [0; 10]);
+        other_version.0[6] = 0x40;
+        assert_eq!(other_version.time(), None, "version 4");
+        let mut high_variant = ItemId::v7(5, [0; 10]);
+        high_variant.0[8] = 0xc0;
+        assert_eq!(high_variant.time(), None, "another variant");
     }
 
     #[test]
@@ -1041,6 +1123,112 @@ mod tests {
             Some(&b"b"[..]),
             "an edit keeps the greater image too"
         );
+    }
+
+    #[test]
+    fn a_folder_holds_a_link_once_and_another_folder_may_hold_it_too() {
+        let mut state = State::default();
+        folder(&mut state, 10, None, 1);
+        add(&mut state, 1, None, 2);
+        add(&mut state, 2, Some(id(10)), 3);
+        let tree = state.tree();
+        assert_eq!(
+            state.holding(&tree, None, "https://example.com/1"),
+            Some(id(1))
+        );
+        assert_eq!(
+            state.holding(&tree, Some(id(10)), "https://example.com/1"),
+            None
+        );
+        assert_eq!(
+            state.holding(&tree, Some(id(10)), "https://example.com/2"),
+            Some(id(2))
+        );
+        state
+            .apply(
+                Edit::Remove {
+                    entry: Entry::Shortcut(id(1)),
+                },
+                at(4, DEVICE),
+            )
+            .unwrap();
+        assert_eq!(
+            state.holding(&state.tree(), None, "https://example.com/1"),
+            None,
+            "a removed shortcut holds nothing"
+        );
+    }
+
+    #[test]
+    fn a_note_is_written_cleared_and_counted_in_the_latest_stamp() {
+        let mut state = State::default();
+        add(&mut state, 1, None, 1);
+        assert_eq!(state.shortcut(id(1)).unwrap().note.value, "");
+        state
+            .apply(
+                Edit::SetNote {
+                    id: id(1),
+                    note: String::from("read the errata first"),
+                },
+                at(2, DEVICE),
+            )
+            .unwrap();
+        assert_eq!(
+            state.shortcut(id(1)).unwrap().note.value,
+            "read the errata first"
+        );
+        assert_eq!(state.latest(), Some(at(2, DEVICE)));
+        state
+            .apply(
+                Edit::SetNote {
+                    id: id(1),
+                    note: String::new(),
+                },
+                at(3, DEVICE),
+            )
+            .unwrap();
+        assert_eq!(state.shortcut(id(1)).unwrap().note.value, "");
+        assert_eq!(
+            state.apply(
+                Edit::SetNote {
+                    id: id(9),
+                    note: String::from("x"),
+                },
+                at(4, DEVICE),
+            ),
+            Err(EditError::Unknown(Entry::Shortcut(id(9))))
+        );
+    }
+
+    #[test]
+    fn concurrent_notes_merge_to_the_same_state_in_either_order() {
+        let mut base = State::default();
+        add(&mut base, 1, None, 1);
+        let mut left = base.clone();
+        let mut right = base;
+        left.apply(
+            Edit::SetNote {
+                id: id(1),
+                note: String::from("left"),
+            },
+            at(5, DEVICE),
+        )
+        .unwrap();
+        right
+            .apply(
+                Edit::SetNote {
+                    id: id(1),
+                    note: String::from("right"),
+                },
+                at(6, OTHER),
+            )
+            .unwrap();
+        let merged = left.merge(&right);
+        assert_eq!(merged, right.merge(&left));
+        assert_eq!(merged.merge(&merged), merged);
+        assert_eq!(merged.merge(&left), merged);
+        assert_eq!(merged.shortcut(id(1)).unwrap().note.value, "right");
+        assert_eq!(merged.latest(), Some(at(6, OTHER)));
     }
 
     #[test]

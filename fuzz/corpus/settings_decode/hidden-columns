@@ -1,0 +1,9 @@
+{
+  "format": 1,
+  "layout": "list",
+  "sort": "link",
+  "hidden": [
+    "collection",
+    "added"
+  ]
+}

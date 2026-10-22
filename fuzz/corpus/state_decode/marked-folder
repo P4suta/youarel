@@ -1,0 +1,14 @@
+{
+  "format": 1,
+  "shortcuts": [],
+  "folders": [
+    {
+      "id": "01010101010101010101010101010101",
+      "name": { "value": "仕事", "stamp": { "wall": 1, "counter": 0, "device": "07070707070707070707070707070707" } },
+      "mark": { "value": "📚", "stamp": { "wall": 2, "counter": 0, "device": "07070707070707070707070707070707" } },
+      "parent": { "value": null, "stamp": { "wall": 1, "counter": 0, "device": "07070707070707070707070707070707" } },
+      "position": { "value": "V", "stamp": { "wall": 1, "counter": 0, "device": "07070707070707070707070707070707" } },
+      "removed": { "value": false, "stamp": { "wall": 1, "counter": 0, "device": "07070707070707070707070707070707" } }
+    }
+  ]
+}

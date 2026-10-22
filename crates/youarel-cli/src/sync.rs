@@ -19,6 +19,8 @@ use youarel_sync::{SyncError, hex};
 
 /// The suffix of a bundle file in a shared folder.
 pub const BUNDLE_SUFFIX: &str = ".youarel";
+/// The directory beside the store that holds the account's files.
+pub const ACCOUNT_DIRECTORY: &str = "account";
 /// The longest bundle, join, or welcome file a command reads.
 const LONGEST_MESSAGE: u64 = 64 * 1024 * 1024;
 /// The characters of a device identifier a command shows.
@@ -30,7 +32,7 @@ fn sync_error(error: SyncError) -> anyhow::Error {
 
 /// The account beside the store.
 fn account(store: &Store) -> Result<Account> {
-    let directory = store.directory().join("account");
+    let directory = store.directory().join(ACCOUNT_DIRECTORY);
     let keys = KeyStore::for_directory(&directory).map_err(sync_error)?;
     Account::open(&directory, &keys).map_err(sync_error)
 }
@@ -284,6 +286,28 @@ pub fn remove(store: &Store, now: u64, prefix: &str) -> Result<Vec<String>> {
         "removed {}; the next bundle carries a key it never sees",
         hex(device)
     )])
+}
+
+/// Syncs through a relay when `target` is an address, and through a shared folder otherwise.
+///
+/// # Errors
+///
+/// Returns an error when the relay or the folder cannot be reached, or the device belongs to no account.
+pub fn sync(store: &Store, now: u64, target: &str) -> Result<Vec<String>> {
+    if is_relay(target) {
+        relay(store, now, target)
+    } else {
+        folder(store, now, Path::new(target))
+    }
+}
+
+/// Whether this device belongs to an account, read without creating anything.
+///
+/// # Errors
+///
+/// Returns an error when the account's files exist but cannot be read.
+pub fn has_account(store: &Store) -> Result<bool> {
+    youarel_sync::account::founded(&store.directory().join(ACCOUNT_DIRECTORY)).map_err(sync_error)
 }
 
 /// Whether `target` names a relay rather than a folder.

@@ -1,40 +1,62 @@
-//! The Tauri bindings: the window, the tray, the global shortcut, a second start that toggles the window, and the commands the window calls.
+//! The Tauri bindings: the window, the tray, the global shortcut, a second start that brings the window forward, and the commands the window calls.
 
-use crate::launcher::{After, Launcher, Press, View};
+use crate::intent::{Intent, item};
+use crate::library::Library;
+use crate::themes::ThemeOption;
+use crate::view::View;
+use std::collections::BTreeMap;
 use std::process::ExitCode;
 use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::time::Duration;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
-use tauri::{AppHandle, Manager, State, WebviewWindow, WindowEvent};
+use tauri::{AppHandle, Emitter, Manager, RunEvent, WebviewWindow, WindowEvent};
+use tauri_plugin_clipboard_manager::ClipboardExt;
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
+use youarel_link::Link;
 use youarel_store::Store;
 
-/// The label of the launcher's one window in `tauri.conf.json`.
-const WINDOW: &str = "launcher";
-/// The global shortcut that shows or hides the window.
+/// The label of the library's one window in `tauri.conf.json`.
+const WINDOW: &str = "library";
+/// The global shortcut that brings the window forward with the search focused, or hides it.
 const SHORTCUT: &str = "Alt+Space";
-/// The argument that toggles the window of the running launcher, for a desktop whose shortcuts the launcher cannot hold.
+/// The argument that toggles the window of the running library, for a desktop whose shortcuts it cannot hold.
 const TOGGLE: &str = "--toggle";
 /// The tray menu's items.
 const SHOW: &str = "show";
 const QUIT: &str = "quit";
+/// The event that tells the page the person summoned the window, so it focuses the search.
+const SUMMONED: &str = "summoned";
+/// The event that tells the page a sync began or ended, so it draws the view again.
+const SYNCED: &str = "synced";
+/// How often the window asks whether a sync is due.
+const TICK: Duration = Duration::from_secs(5);
+/// The event that tells the page shortcuts got their icons, so it draws the view again.
+const ICONED: &str = "iconed";
+/// How many sites a tick asks for an icon, one after another, which keeps a tick short.
+const ICONS_PER_TICK: usize = 4;
 
-type Shared = Mutex<Launcher>;
+type Shared = Mutex<Library>;
 
-fn locked(shared: &Shared) -> MutexGuard<'_, Launcher> {
+fn locked(shared: &Shared) -> MutexGuard<'_, Library> {
     shared.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// Shows the window afresh, in front and with the keyboard.
-fn show(app: &AppHandle) {
+/// Brings the window forward with the keyboard.
+fn bring_forward(app: &AppHandle) {
     let Some(window) = app.get_webview_window(WINDOW) else {
         return;
     };
-    locked(&app.state::<Shared>()).reset();
-    // A window that fails to center, show, or take the focus stays as it was, and the next toggle tries again.
-    drop(window.center());
+    // A window that fails to show or take the focus stays as it was, and the next summons try again.
+    drop(window.unminimize());
     drop(window.show());
     drop(window.set_focus());
+}
+
+/// Brings the window forward and tells the page to focus the search.
+fn show(app: &AppHandle) {
+    bring_forward(app);
+    drop(app.emit(SUMMONED, ()));
 }
 
 fn hide(window: &WebviewWindow) {
@@ -42,30 +64,21 @@ fn hide(window: &WebviewWindow) {
     drop(window.hide());
 }
 
-/// Shows the window when it is hidden, and hides it otherwise.
+/// Hides the window when it is in front, and brings it forward otherwise.
 fn toggle(app: &AppHandle) {
-    let visible = app
-        .get_webview_window(WINDOW)
-        .is_some_and(|window| window.is_visible().is_ok_and(|shown| shown));
-    if visible {
-        if let Some(window) = app.get_webview_window(WINDOW) {
-            hide(&window);
-        }
-    } else {
-        show(app);
+    let front = app.get_webview_window(WINDOW).filter(|window| {
+        window.is_visible().is_ok_and(|shown| shown)
+            && window.is_focused().is_ok_and(|focused| focused)
+    });
+    match front {
+        Some(window) => hide(&window),
+        None => show(app),
     }
 }
 
-/// The view the window draws, or none once it hides.
-fn answer(window: &WebviewWindow, after: anyhow::Result<After>) -> Result<Option<View>, String> {
-    match after {
-        Ok(After::Draw(view)) => Ok(Some(view)),
-        Ok(After::Hide) => {
-            hide(window);
-            Ok(None)
-        }
-        Err(error) => Err(format!("{error:#}")),
-    }
+/// A failure as the page reads it.
+fn reported(error: &anyhow::Error) -> String {
+    format!("{error:#}")
 }
 
 mod commands {
@@ -74,45 +87,350 @@ mod commands {
         reason = "Tauri hands each command its arguments and its state by value"
     )]
 
-    use super::{Press, Shared, State, View, WebviewWindow, answer, locked};
+    use super::{
+        AppHandle, BTreeMap, ClipboardExt, Intent, Link, Shared, ThemeOption, View, item, locked,
+        reported,
+    };
+    use crate::library::{Addition, fetch};
+    use tauri::State;
 
-    /// The view of the interface as the store holds it now.
+    /// Carries out what the window asks for and answers with the view.
+    #[tauri::command(async)]
+    pub(super) fn act(shared: State<'_, Shared>, intent: Intent) -> Result<View, String> {
+        locked(&shared)
+            .act(intent)
+            .map_err(|error| reported(&error))
+    }
+
+    /// Answers with the view as it stands, keeping its notice, as after a sync began or ended.
     #[tauri::command(async)]
     pub(super) fn view(shared: State<'_, Shared>) -> Result<View, String> {
-        locked(&shared).view().map_err(|error| format!("{error:#}"))
+        locked(&shared).view().map_err(|error| reported(&error))
     }
 
-    /// A key press that the window does not leave to its input field.
+    /// Adds a link to a collection, reading its page for a missing title and for its icon before the store is locked.
+    ///
+    /// A link the collection holds already reads no page, and its shortcut is selected instead.
     #[tauri::command(async)]
-    pub(super) fn press(
-        window: WebviewWindow,
+    pub(super) fn add(
         shared: State<'_, Shared>,
-        press: Press,
-    ) -> Result<Option<View>, String> {
-        let after = locked(&shared).press(&press);
-        answer(&window, after)
+        link: String,
+        title: String,
+        collection: Option<String>,
+    ) -> Result<View, String> {
+        let link =
+            Link::parse(link.trim()).map_err(|error| format!("cannot add `{link}`: {error}"))?;
+        let collection = collection
+            .as_deref()
+            .map(item)
+            .transpose()
+            .map_err(|error| reported(&error))?;
+        let held = locked(&shared)
+            .holder(&link, collection)
+            .map_err(|error| reported(&error))?;
+        if let Some(holder) = held {
+            return locked(&shared)
+                .reveal(holder)
+                .map_err(|error| reported(&error));
+        }
+        let fetched = fetch(&link);
+        let title = Some(title.trim().to_owned())
+            .filter(|title| !title.is_empty())
+            .or(fetched.title)
+            .unwrap_or_else(|| link.as_str().to_owned());
+        let addition = Addition {
+            link,
+            title,
+            collection,
+            icon: fetched.icon,
+            missing: fetched.missing,
+        };
+        locked(&shared)
+            .add(addition)
+            .map_err(|error| reported(&error))
     }
 
-    /// Text the person typed or an input method composed.
+    /// The title of a link's page, which the add sheet offers before the person types one.
     #[tauri::command(async)]
-    pub(super) fn typed(
-        window: WebviewWindow,
-        shared: State<'_, Shared>,
-        text: String,
-    ) -> Result<Option<View>, String> {
-        let after = locked(&shared).typed(&text);
-        answer(&window, after)
+    pub(super) fn title(link: String) -> Result<Option<String>, String> {
+        let link = Link::parse(link.trim()).map_err(|error| error.to_string())?;
+        youarel_cli::web::fetch_page(&link)
+            .map(|page| page.title)
+            .map_err(|error| reported(&error))
     }
 
-    /// Text the person pasted.
+    /// The link on the clipboard, normalized, or none when the clipboard holds no link.
     #[tauri::command(async)]
-    pub(super) fn paste(
-        window: WebviewWindow,
+    pub(super) fn clipboard(app: AppHandle) -> Option<String> {
+        // A clipboard that holds no text, or text that is no link, offers nothing to add.
+        let text = match app.clipboard().read_text() {
+            Ok(text) => text,
+            Err(_no_text) => return None,
+        };
+        match Link::parse(text.trim()) {
+            Ok(link) => Some(link.as_str().to_owned()),
+            Err(_no_link) => None,
+        }
+    }
+
+    /// Puts text on the clipboard.
+    #[tauri::command(async)]
+    pub(super) fn copy(app: AppHandle, text: String) -> Result<(), String> {
+        app.clipboard()
+            .write_text(text)
+            .map_err(|error| error.to_string())
+    }
+
+    /// Every theme the window can wear, for the settings to draw.
+    #[tauri::command(async)]
+    pub(super) fn themes(shared: State<'_, Shared>) -> Vec<ThemeOption> {
+        locked(&shared).themes()
+    }
+
+    /// What the mark picker shows for a search: every category for an empty one, or the emoji whose names hold it.
+    #[tauri::command(async)]
+    pub(super) fn emoji(query: String) -> Vec<crate::emoji::EmojiGroup> {
+        crate::emoji::pick(&query)
+    }
+
+    /// The `data:` addresses of the icons the page lacks.
+    #[tauri::command(async)]
+    pub(super) fn icons(
         shared: State<'_, Shared>,
-        text: String,
-    ) -> Result<Option<View>, String> {
-        let after = locked(&shared).paste(&text);
-        answer(&window, after)
+        names: Vec<String>,
+    ) -> Result<BTreeMap<String, String>, String> {
+        locked(&shared)
+            .icons(&names)
+            .map_err(|error| reported(&error))
+    }
+}
+
+/// Runs one sync when the schedule says it is due, outside the library's lock, and tells the page before and after.
+async fn sync_when_due(app: &AppHandle) {
+    let Ok(began) = youarel_cli::clock::now() else {
+        // A clock that cannot be read leaves the sync to the next tick.
+        return;
+    };
+    let shared = app.state::<Shared>();
+    let (target, store) = {
+        let mut library = locked(&shared);
+        (library.begin_sync(began), library.store())
+    };
+    let Some(target) = target else {
+        return;
+    };
+    drop(app.emit(SYNCED, ()));
+    let ran = tauri::async_runtime::spawn_blocking(move || {
+        youarel_cli::sync::sync(&store, began, &target)
+    })
+    .await;
+    let outcome = ran.unwrap_or_else(|stopped| Err(anyhow::anyhow!("the sync stopped: {stopped}")));
+    locked(&shared).end_sync(began, outcome);
+    drop(app.emit(SYNCED, ()));
+}
+
+/// Fetches the icons of a few shortcuts that show none, outside the library's lock, as an import leaves its links without them.
+async fn fill_icons(app: &AppHandle) {
+    let shared = app.state::<Shared>();
+    // A store that cannot be read now leaves the icons to the next tick.
+    let Ok(wanted) = locked(&shared).wanting_icons(ICONS_PER_TICK) else {
+        return;
+    };
+    if wanted.is_empty() {
+        return;
+    }
+    let fetched = tauri::async_runtime::spawn_blocking(move || {
+        wanted
+            .into_iter()
+            .filter_map(|(id, link)| {
+                // A page that cannot be read still leaves its site's favicon to try.
+                let page = youarel_cli::web::fetch_page(&link)
+                    .unwrap_or_else(|_unread| youarel_cli::web::Page::default());
+                match youarel_cli::icons::fetch(&link, &page) {
+                    Ok(icon) => Some((id, icon)),
+                    // A site without an icon keeps its tile, and the window asks it no more.
+                    Err(_no_icon) => None,
+                }
+            })
+            .collect::<Vec<_>>()
+    })
+    .await
+    .unwrap_or_else(|_stopped| Vec::new());
+    if fetched.is_empty() {
+        return;
+    }
+    {
+        let library = locked(&shared);
+        for (id, icon) in fetched {
+            // A shortcut removed meanwhile takes no icon, and the others still do.
+            drop(library.set_icon(id, icon));
+        }
+    }
+    drop(app.emit(ICONED, ()));
+}
+
+/// Asks at every tick whether a sync is due and fetches a few missing icons, for as long as the library runs.
+fn ticker(app: &AppHandle) {
+    let handle = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let mut ticks = tokio::time::interval(TICK);
+        loop {
+            ticks.tick().await;
+            sync_when_due(&handle).await;
+            fill_icons(&handle).await;
+        }
+    });
+}
+
+/// The event that hands the page a command a person chose from the app's menu, by its identifier.
+const COMMAND: &str = "command";
+/// The commands of the app's menu that the page carries out, as its keys do.
+const COMMANDS: [&str; 7] = [
+    "settings",
+    "new-link",
+    "new-collection",
+    "import",
+    "cards",
+    "list",
+    "columns",
+];
+
+/// The app's menu on macOS: the app with its settings, the file commands, editing, the layouts, and the window.
+#[cfg(target_os = "macos")]
+mod app_menu {
+    use super::{AppHandle, Menu, MenuItem};
+    use tauri::Wry;
+    use tauri::menu::{PredefinedMenuItem as Item, Submenu};
+
+    fn command(
+        app: &AppHandle,
+        id: &str,
+        label: &str,
+        keys: Option<&str>,
+    ) -> tauri::Result<MenuItem<Wry>> {
+        MenuItem::with_id(app, id, label, true, keys)
+    }
+
+    fn application(app: &AppHandle) -> tauri::Result<Submenu<Wry>> {
+        Submenu::with_items(
+            app,
+            app.package_info().name.clone(),
+            true,
+            &[
+                &Item::about(app, None, None)?,
+                &Item::separator(app)?,
+                &command(app, "settings", "Settings…", Some("CmdOrCtrl+,"))?,
+                &Item::separator(app)?,
+                &Item::services(app, None)?,
+                &Item::separator(app)?,
+                &Item::hide(app, None)?,
+                &Item::hide_others(app, None)?,
+                &Item::show_all(app, None)?,
+                &Item::separator(app)?,
+                &Item::quit(app, None)?,
+            ],
+        )
+    }
+
+    fn file(app: &AppHandle) -> tauri::Result<Submenu<Wry>> {
+        Submenu::with_items(
+            app,
+            "File",
+            true,
+            &[
+                &command(app, "new-link", "New Link…", Some("CmdOrCtrl+N"))?,
+                &command(
+                    app,
+                    "new-collection",
+                    "New Collection…",
+                    Some("Shift+CmdOrCtrl+N"),
+                )?,
+                &Item::separator(app)?,
+                &command(app, "import", "Import Bookmark File…", None)?,
+                &Item::separator(app)?,
+                &Item::close_window(app, None)?,
+            ],
+        )
+    }
+
+    fn edit(app: &AppHandle) -> tauri::Result<Submenu<Wry>> {
+        Submenu::with_items(
+            app,
+            "Edit",
+            true,
+            &[
+                &Item::undo(app, None)?,
+                &Item::redo(app, None)?,
+                &Item::separator(app)?,
+                &Item::cut(app, None)?,
+                &Item::copy(app, None)?,
+                &Item::paste(app, None)?,
+                &Item::select_all(app, None)?,
+            ],
+        )
+    }
+
+    fn view(app: &AppHandle) -> tauri::Result<Submenu<Wry>> {
+        Submenu::with_items(
+            app,
+            "View",
+            true,
+            &[
+                &command(app, "cards", "as Cards", Some("CmdOrCtrl+1"))?,
+                &command(app, "list", "as List", Some("CmdOrCtrl+2"))?,
+                &command(app, "columns", "as Columns", Some("CmdOrCtrl+3"))?,
+                &Item::separator(app)?,
+                &Item::fullscreen(app, None)?,
+            ],
+        )
+    }
+
+    fn window(app: &AppHandle) -> tauri::Result<Submenu<Wry>> {
+        Submenu::with_items(
+            app,
+            "Window",
+            true,
+            &[
+                &Item::minimize(app, None)?,
+                &Item::maximize(app, None)?,
+                &Item::separator(app)?,
+                &Item::close_window(app, None)?,
+            ],
+        )
+    }
+
+    /// The whole menu bar, in the order a Mac app keeps it.
+    pub(super) fn menu(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
+        Menu::with_items(
+            app,
+            &[
+                &application(app)?,
+                &file(app)?,
+                &edit(app)?,
+                &view(app)?,
+                &window(app)?,
+            ],
+        )
+    }
+}
+
+/// The builder with the app's menu, which only macOS shows in a bar of its own.
+#[cfg(target_os = "macos")]
+fn with_menu(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::Wry> {
+    builder.menu(app_menu::menu)
+}
+
+/// The builder as it is, since a menu bar would sit inside the window off macOS.
+#[cfg(not(target_os = "macos"))]
+const fn with_menu(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::Wry> {
+    builder
+}
+
+/// Hands the page a command of the app's menu; the tray's items carry their own handler.
+fn menu_command(app: &AppHandle, id: &str) {
+    if COMMANDS.contains(&id) {
+        bring_forward(app);
+        drop(app.emit(COMMAND, id));
     }
 }
 
@@ -139,13 +457,13 @@ fn tray(app: &tauri::App) -> tauri::Result<()> {
 /// The configuration, the interface, and the icons that `tauri.conf.json` names, embedded at build time.
 #[expect(
     clippy::disallowed_methods,
-    reason = "the context Tauri generates ends the process itself when an embedded asset cannot be read, which the launcher cannot reach"
+    reason = "the context Tauri generates ends the process itself when an embedded asset cannot be read, which the library cannot reach"
 )]
 fn context() -> tauri::Context {
     tauri::generate_context!()
 }
 
-/// Runs the launcher until the person quits it from the tray.
+/// Runs the library until the person quits it from the tray or the menu.
 #[must_use]
 pub fn run() -> ExitCode {
     let store = match youarel_cli::home::data_directory() {
@@ -155,7 +473,6 @@ pub fn run() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let toggled = std::env::args().any(|argument| argument == TOGGLE);
     let shortcuts = tauri_plugin_global_shortcut::Builder::new()
         .with_handler(|app, _shortcut, event| {
             if event.state() == ShortcutState::Pressed {
@@ -163,7 +480,8 @@ pub fn run() -> ExitCode {
             }
         })
         .build();
-    let ran = tauri::Builder::default()
+    let built = with_menu(tauri::Builder::default())
+        .on_menu_event(|app, event| menu_command(app, event.id().as_ref()))
         .plugin(tauri_plugin_single_instance::init(|app, arguments, _directory| {
             if arguments.iter().any(|argument| argument == TOGGLE) {
                 toggle(app);
@@ -172,41 +490,60 @@ pub fn run() -> ExitCode {
             }
         }))
         .plugin(shortcuts)
-        .manage(Mutex::new(Launcher::new(store)))
+        .plugin(tauri_plugin_clipboard_manager::init())
+        .manage(Mutex::new(Library::new(store)))
         .invoke_handler(tauri::generate_handler![
+            commands::act,
             commands::view,
-            commands::press,
-            commands::typed,
-            commands::paste
+            commands::add,
+            commands::title,
+            commands::clipboard,
+            commands::copy,
+            commands::themes,
+            commands::emoji,
+            commands::icons
         ])
-        .setup(move |app| {
-            #[cfg(target_os = "macos")]
-            app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+        .setup(|app| {
             tray(app)?;
             // A desktop that keeps global shortcuts to itself, such as Wayland's, still toggles the window through `--toggle`.
             if let Err(error) = app.global_shortcut().register(SHORTCUT) {
                 eprintln!("youarel-launcher: {SHORTCUT} stays unbound ({error}); bind `youarel-launcher {TOGGLE}` to a shortcut of the desktop instead");
             }
-            if toggled {
-                show(app.handle());
-            }
+            show(app.handle());
+            ticker(app.handle());
             Ok(())
         })
         .on_window_event(|window, event| {
-            // The window hides rather than closes, and hides when the person turns to another, as a launcher does.
+            // Closing the window hides it, and the tray, the shortcut, or the Dock brings it back.
             if let WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
                 drop(window.hide());
-            } else if matches!(event, WindowEvent::Focused(false)) {
-                drop(window.hide());
             }
         })
-        .run(context());
-    match ran {
-        Ok(()) => ExitCode::SUCCESS,
+        .build(context());
+    match built {
+        Ok(app) => {
+            app.run(|handle, event| {
+                if reopened(&event) {
+                    show(handle);
+                }
+            });
+            ExitCode::SUCCESS
+        }
         Err(error) => {
             eprintln!("youarel-launcher: {error}");
             ExitCode::FAILURE
         }
     }
+}
+
+/// Whether the person asked for the window again from the Dock, which only macOS reports.
+#[cfg(target_os = "macos")]
+const fn reopened(event: &RunEvent) -> bool {
+    matches!(event, RunEvent::Reopen { .. })
+}
+
+#[cfg(not(target_os = "macos"))]
+const fn reopened(_event: &RunEvent) -> bool {
+    false
 }

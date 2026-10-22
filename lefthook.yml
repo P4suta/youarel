@@ -11,5 +11,5 @@ commit-msg:
       run: mise x -- cargo xtask commit-msg {1}
 pre-push:
   commands:
-    push-check:
-      run: mise x -- just push-check
+    check:
+      run: mise x -- just check

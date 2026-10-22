@@ -126,6 +126,37 @@ pub fn built(root: &Path, program: &Path) -> Command {
     command
 }
 
+const REPOSITORY_VARIABLES: [&str; 15] = [
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_CONFIG",
+    "GIT_CONFIG_PARAMETERS",
+    "GIT_CONFIG_COUNT",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_IMPLICIT_WORK_TREE",
+    "GIT_GRAFT_FILE",
+    "GIT_INDEX_FILE",
+    "GIT_NO_REPLACE_OBJECTS",
+    "GIT_REPLACE_REF_BASE",
+    "GIT_PREFIX",
+    "GIT_SHALLOW_FILE",
+    "GIT_COMMON_DIR",
+];
+
+fn repository_context(mut command: Command) -> Command {
+    for name in REPOSITORY_VARIABLES {
+        command.env_remove(name);
+    }
+    command
+}
+
+/// Git for an explicitly selected repository, independent of the invoking hook's context.
+#[must_use]
+pub fn repository_git(root: &Path) -> Command {
+    repository_context(Tool::Git.command(root))
+}
+
 /// Runs a command with inherited streams and requires success.
 ///
 /// # Errors
@@ -198,4 +229,70 @@ where
 {
     command.args(arguments);
     command
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeSet;
+
+    #[test]
+    fn selected_repositories_ignore_the_parent_hooks_git_context() {
+        let parent = tempfile::tempdir().unwrap();
+        let selected = tempfile::tempdir().unwrap();
+        for root in [parent.path(), selected.path()] {
+            succeed(
+                repository_git(root).args(["init", "--quiet"]),
+                "fixture init",
+            )
+            .unwrap();
+        }
+        let mut inherited = raw::command(Tool::Git.program());
+        inherited
+            .current_dir(selected.path())
+            .env("GIT_DIR", parent.path().join(".git"))
+            .env("GIT_WORK_TREE", parent.path());
+        let actual = capture(
+            repository_context(inherited).args(["rev-parse", "--show-toplevel"]),
+            "selected fixture repository",
+        )
+        .unwrap();
+        assert_eq!(
+            std::fs::canonicalize(actual.trim()).unwrap(),
+            std::fs::canonicalize(selected.path()).unwrap()
+        );
+    }
+
+    #[test]
+    fn repository_variables_match_gits_local_environment_contract() {
+        let root = tempfile::tempdir().unwrap();
+        let actual = capture(
+            repository_git(root.path()).args(["rev-parse", "--local-env-vars"]),
+            "Git's repository variables",
+        )
+        .unwrap();
+        assert_eq!(
+            actual.lines().collect::<BTreeSet<_>>(),
+            REPOSITORY_VARIABLES.into_iter().collect::<BTreeSet<_>>()
+        );
+    }
+
+    #[test]
+    fn the_current_hooks_git_keeps_its_index_context() {
+        let selected = repository_git(Path::new("."));
+        for name in REPOSITORY_VARIABLES {
+            assert!(
+                selected
+                    .get_envs()
+                    .any(|(key, value)| key == name && value.is_none())
+            );
+        }
+        assert!(
+            Tool::Git
+                .command(Path::new("."))
+                .get_envs()
+                .next()
+                .is_none()
+        );
+    }
 }

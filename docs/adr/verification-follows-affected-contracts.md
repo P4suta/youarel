@@ -31,6 +31,9 @@ The release prohibition still controls signing and publication.
 `cargo xtask ci plan BASE` exposes the selected work without executing it.
 The plan records the resolved base, merge base, head, changed paths, and current verification inputs.
 Git reports renames as a deletion and an addition.
+Explicit source queries and temporary repositories clear the invoking hook's repository environment as [Git requires for foreign repositories](https://git-scm.com/docs/githooks#_description).
+The ordinary staged-file and commit-message gates retain their hook index context.
+Native tests compare the cleared variable inventory with `git rev-parse --local-env-vars` and query a real repository under an injected foreign context.
 Missing bases, empty ranges, deleted inputs, unknown paths, dependency settings, and verifier changes keep the full input inventory.
 Development selects only fast checks from that inventory; candidate verification selects its complete assurance work.
 Each executor and the summary recompute the plan from the clean checkout and the event's base before accepting it.

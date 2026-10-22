@@ -94,10 +94,7 @@ impl Plan {
 }
 
 fn git(root: &Path, words: &[&str]) -> Result<String> {
-    tool::capture(
-        tool::Tool::Git.command(root).args(words),
-        "git source range",
-    )
+    tool::capture(tool::repository_git(root).args(words), "git source range")
 }
 
 fn commit(root: &Path, reference: &str) -> Result<Option<String>> {
@@ -105,7 +102,7 @@ fn commit(root: &Path, reference: &str) -> Result<Option<String>> {
         return Ok(None);
     }
     let result = tool::output(
-        tool::Tool::Git.command(root).args([
+        tool::repository_git(root).args([
             "rev-parse",
             "--verify",
             "--end-of-options",
@@ -130,9 +127,7 @@ fn source(root: &Path, requested_base: &str) -> Result<(Source, Vec<String>)> {
     let merge_base = match base.as_deref() {
         Some(base) => {
             let result = tool::output(
-                tool::Tool::Git
-                    .command(root)
-                    .args(["merge-base", base, &head]),
+                tool::repository_git(root).args(["merge-base", base, &head]),
                 "git merge-base",
             )?;
             if result.status.success() {
@@ -259,7 +254,7 @@ mod tests {
         git(root, &["add", "--all"]).unwrap();
         let tree = git(root, &["write-tree"]).unwrap();
         let parent = commit(root, "HEAD").unwrap();
-        let mut command = tool::Tool::Git.command(root);
+        let mut command = tool::repository_git(root);
         command.args([
             "-c",
             "commit.gpgsign=false",

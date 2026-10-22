@@ -1,0 +1,17 @@
+2<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict>
+  <key>WebBookmarkType</key><string>WebBookmarkTypeList</string>
+  <key>Children</key><array>
+    <dict><key>WebBookmarkType</key><string>WebBookmarkTypeProxy</string><key>Title</key><string>History</string></dict>
+    <dict><key>WebBookmarkType</key><string>WebBookmarkTypeList</string><key>Title</key><string>BookmarksBar</string>
+      <key>Children</key><array>
+        <dict><key>WebBookmarkType</key><string>WebBookmarkTypeLeaf</string>
+          <key>URLString</key><string>https://url.spec.whatwg.org/</string>
+          <key>URIDictionary</key><dict><key>title</key><string>URL Standard</string></dict></dict>
+      </array></dict>
+    <dict><key>WebBookmarkType</key><string>WebBookmarkTypeList</string><key>Title</key><string>com.apple.ReadingList</string>
+      <key>Children</key><array>
+        <dict><key>WebBookmarkType</key><string>WebBookmarkTypeLeaf</string><key>URLString</key><string>https://example.com/</string></dict>
+      </array></dict>
+  </array>
+</dict></plist>

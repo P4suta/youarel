@@ -4,6 +4,7 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use std::process::ExitCode;
+use youarel_cli::browsers::BrowserName;
 use youarel_cli::commands::{self, Addition, Format};
 use youarel_cli::{clock, home, sync, tui, update};
 use youarel_core::update_rules::Consent;
@@ -53,10 +54,14 @@ enum Command {
     Rename { entry: String, name: String },
     /// Give a shortcut an alias that finds it first, or remove it with an empty one.
     Alias { entry: String, alias: String },
+    /// Write a shortcut's note, or clear it with an empty one.
+    Note { entry: String, note: String },
+    /// Give a folder a mark to show in place of its glyph, such as one emoji, or clear it with an empty one.
+    Mark { folder: String, mark: String },
     /// Remove a shortcut, or a folder with everything in it.
     Rm { entry: String },
-    /// Import a bookmark file a browser exported.
-    Import { file: PathBuf },
+    /// Import a bookmark file a browser exported or keeps, such as Chrome's, Edge's, or Brave's `Bookmarks` copied from another device, or the bookmarks a browser keeps on this device.
+    Import(Import),
     /// Export every folder and shortcut.
     Export {
         #[arg(long, value_enum, default_value = "html")]
@@ -254,15 +259,10 @@ fn run(cli: Cli) -> Result<()> {
         Some(Command::Alias { entry, alias }) => {
             vec![commands::alias(&store, now, &entry, &alias)?]
         }
+        Some(Command::Note { entry, note }) => vec![commands::note(&store, now, &entry, &note)?],
+        Some(Command::Mark { folder, mark }) => vec![commands::mark(&store, now, &folder, &mark)?],
         Some(Command::Rm { entry }) => vec![commands::remove(&store, now, &entry)?],
-        Some(Command::Import { file }) => {
-            let text = read_file(&file)?;
-            let counts = commands::import(&store, now, &text)?;
-            vec![format!(
-                "imported {} shortcuts and {} folders; {} were already here, and {} were no web links",
-                counts.shortcuts, counts.folders, counts.duplicates, counts.refused
-            )]
-        }
+        Some(Command::Import(what)) => vec![import(&store, now, what)?.to_string()],
         Some(Command::Export { format }) => {
             let text = commands::export(&store, now, format)?;
             vec![text.trim_end().to_owned()]
@@ -277,10 +277,7 @@ fn run(cli: Cli) -> Result<()> {
             BundleCommand::Export { out } => sync::export(&store, now, &out)?,
             BundleCommand::Import { file } => sync::import(&store, now, &file)?,
         },
-        Some(Command::Sync { target }) if sync::is_relay(&target) => {
-            sync::relay(&store, now, &target)?
-        }
-        Some(Command::Sync { target }) => sync::folder(&store, now, std::path::Path::new(&target))?,
+        Some(Command::Sync { target }) => sync::sync(&store, now, &target)?,
         Some(Command::Remove { device }) => sync::remove(&store, now, &device)?,
         Some(Command::Recovery {
             command: RecoveryCommand::Create,
@@ -291,15 +288,42 @@ fn run(cli: Cli) -> Result<()> {
         Some(Command::Toggle) => vec![youarel_cli::window::toggle()?],
         Some(Command::Icons) => youarel_cli::icons::fill(&store, now)?,
         Some(Command::SelfUpdate { allow_downgrade }) => {
-            let consent = if allow_downgrade {
-                Consent::Downgrade
-            } else {
-                Consent::Forward
-            };
-            vec![update::run(store.directory(), consent)?]
+            vec![update::run(store.directory(), consent(allow_downgrade))?]
         }
     };
     commands::print(&lines)
+}
+
+/// What to import, and where it lands.
+#[derive(Debug, clap::Args)]
+struct Import {
+    #[arg(required_unless_present = "from", conflicts_with = "from")]
+    file: Option<PathBuf>,
+    /// The browser whose bookmarks to read where it keeps them.
+    #[arg(long, value_enum)]
+    from: Option<BrowserName>,
+    /// The folder path to import into, such as `Edge/University`, made when it does not exist.
+    #[arg(long)]
+    folder: Option<String>,
+}
+
+/// Imports a bookmark file, or the bookmarks a browser keeps on this device.
+fn import(store: &Store, now: u64, what: Import) -> Result<commands::Imported> {
+    let folder = what.folder.as_deref();
+    match (what.file, what.from) {
+        (_, Some(browser)) => commands::import_browser(store, now, browser.into(), folder),
+        (Some(file), None) => commands::import(store, now, &read_file(&file)?, folder),
+        (None, None) => anyhow::bail!("give a bookmark file or `--from` a browser"),
+    }
+}
+
+/// What a person allows an update to do.
+const fn consent(allow_downgrade: bool) -> Consent {
+    if allow_downgrade {
+        Consent::Downgrade
+    } else {
+        Consent::Forward
+    }
 }
 
 /// The recovery key on standard input, which keeps it out of the shell's history, asked for when a person types it.
@@ -315,15 +339,10 @@ fn read_key() -> Result<String> {
     Ok(line)
 }
 
-/// The text of a file the person named.
-fn read_file(path: &std::path::Path) -> Result<String> {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "the binary reads the one file a person names for import here, and nowhere else"
-    )]
-    let bytes = std::fs::read(path);
-    let bytes = bytes.with_context(|| format!("cannot read {}", path.display()))?;
-    Ok(String::from_utf8_lossy(&bytes).into_owned())
+/// The bytes of a file the person named, up to the longest file an import reads.
+fn read_file(path: &std::path::Path) -> Result<Vec<u8>> {
+    youarel_store::fs::read_bounded(path, youarel_import::LONGEST_FILE)
+        .with_context(|| format!("cannot read {}", path.display()))
 }
 
 fn main() -> ExitCode {

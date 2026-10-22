@@ -1,0 +1,10 @@
+{
+  "format": 1,
+  "layout": "cards",
+  "sort": "newest",
+  "sync": {
+    "enabled": true,
+    "target": "https://relay.example",
+    "last": 1792305797158
+  }
+}

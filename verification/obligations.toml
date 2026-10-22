@@ -165,6 +165,75 @@ probes = [
 ]
 
 [[obligation]]
+verifier = "kani"
+source = "crates/youarel-core/src/host_rules.rs"
+harnesses = [
+  { name = "proofs::a_split_host_joins_back_and_keeps_a_name", covers = 3, contract = "split returns three runs that join back into the host: subdomains ending with a dot, a name without a dot, and a suffix starting with a dot that is the last label or a known two-label suffix; an address, a single label, or a host ending with a dot stands whole as the name", input_domain = "every host of up to five bytes over a letter, a digit, a dot, and a bracket, with one known two-label suffix", bound = "five bytes and one known suffix; the thirty-two known suffixes and longer hosts are covered by the tests" },
+]
+probes = [
+  { harness = "proofs::rejects_a_name_with_its_suffix", assertion = "NEGATIVE_HOST_CONTROL" },
+]
+
+[[obligation]]
+verifier = "kani"
+source = "crates/youarel-core/src/library_rules.rs"
+harnesses = [
+  { name = "proofs::a_grid_move_lands_on_an_item", covers = 3, contract = "moved selects nothing exactly when there is no item, otherwise an item, moving up or down at most a row unless it lands on the last item, and left or right at most one item", input_domain = "every count and row width up to four, every selection up to four or none, and every key", bound = "four items and four to a row; the moves compare places only through their order and a row's width" },
+  { name = "proofs::a_column_step_keeps_the_selection_in_its_column_and_opens_or_closes_only_as_asked", covers = 3, contract = "column_step, the decision column_moved applies to the deepest column, keeps the selection within the column, moves it at most one place up or down, sends first and last to the column's ends, keeps it for right and opens a new column only when right may open one, and closes the column for left unless it is the first", input_domain = "every standing of any place up to any last place, first or not, opening or not, and every key", bound = "complete" },
+  { name = "proofs::a_walk_keeps_the_leading_places_whose_columns_hold_entries", covers = 1, contract = "kept_columns keeps no more places than the path and the columns hold, keeps only places whose columns hold entries, and cuts the walk only at its end or at an empty column", input_domain = "every path and every list of column lengths of up to three each", bound = "three places and three columns; column_moved composes this keeping with the step, which the tests draw over a small domain" },
+  { name = "proofs::an_identifier_gives_back_its_time_and_recency_follows_the_age", covers = 2, contract = "a version 7 identifier gives back the time it was made from, and recent holds exactly when the shortcut is at most thirty days old or newer than the clock", input_domain = "every time below 2^48, every ten random bytes, and every pair of times", bound = "complete" },
+  { name = "proofs::a_grouped_grid_moves_a_row_across_the_headings", covers = 2, contract = "grouped_moved over one group moves as moved, moves left, right, first, and last as moved over all the items, moves up and down to the next row toward the key across the headings or stays at the edge, and lands on an item exactly when there is one", input_domain = "every grid of two groups of up to three items each, where an empty group stands for a missing one, up to three to a row, every selection up to six or none, and every key", bound = "two groups of three items, three to a row" },
+  { name = "proofs::a_time_falls_in_the_period_of_its_age_and_a_later_one_never_in_an_older", covers = 2, contract = "period names the past week up to seven days of age, the past month after it up to thirty days, and earlier beyond, and a later time never falls in an older period", input_domain = "every pair of times and every clock reading", bound = "complete" },
+  { name = "proofs::a_grouping_keeps_every_shortcut_once_under_its_key_in_order", covers = 2, contract = "gather orders its groups strictly by their keys, sizes each group by the items that follow under it, keeps each item under its own key and each group in the listing's order, and holds every item of the listing once", input_domain = "the listing of three distinct items under every key up to three for each; gather reads its items only through the key, so small items stand for shortcuts, and the tests draw the shorter listings", bound = "three items of three keys" },
+]
+probes = [
+  { harness = "proofs::rejects_a_move_past_the_last_item", assertion = "NEGATIVE_LIBRARY_CONTROL" },
+]
+
+[[obligation]]
+verifier = "kani"
+source = "crates/youarel-core/src/theme_rules.rs"
+harnesses = [
+  { name = "proofs::every_color_reads_back_from_its_hexadecimal", covers = 1, contract = "a color written as #rrggbbaa reads back as itself", input_domain = "every color of four eight-bit channels", bound = "complete" },
+  { name = "proofs::only_hexadecimal_colors_of_four_lengths_are_read", covers = 3, contract = "from_hex reads a color exactly from the mark followed by three, four, six, or eight hexadecimal digits of either case, and a long color writes back as it was read up to case", input_domain = "every text of up to nine bytes, each any byte", bound = "nine bytes; a longer text is no color by its length alone" },
+  { name = "proofs::every_slot_resolves_to_its_declared_color_or_its_fallback", covers = 1, contract = "the fallbacks of the slots reach a slot without one within the slots' count, and resolve gives each slot its declared color, else the color its fallbacks lead to, else the default of the kind", input_domain = "both kinds and every set of declared colors drawn from none and two colors", bound = "two colors; the resolution compares colors only for presence" },
+]
+probes = [
+  { harness = "proofs::rejects_a_color_of_two_digits", assertion = "NEGATIVE_THEME_CONTROL" },
+]
+
+[[obligation]]
+verifier = "kani"
+source = "crates/youarel-core/src/browser_rules.rs"
+harnesses = [
+  { name = "proofs::each_browser_stands_on_the_first_usable_variable_its_host_names", covers = 3, contract = "place puts Safari's file under HOME on macOS and nowhere else, Chrome's file under HOME on macOS, LOCALAPPDATA on Windows, and XDG_CONFIG_HOME else HOME on Unix, and Firefox's profiles under HOME on macOS and Unix and APPDATA on Windows; an empty variable names nothing, and a place's root is its base's own value with a tail beneath it", input_domain = "every browser on every kind of host, with each of the four variables unset, empty, or set", bound = "the three browsers, the three hosts, and the three states of each variable, with drawn names of two bytes" },
+  { name = "proofs::a_file_s_first_bytes_name_its_reader", covers = 4, contract = "kind names a Firefox backup by its magic number, Safari's property list by the binary magic number or an opening plist element in text that opens no JSON object, Chromium's file by a JSON object after an optional byte order mark and blanks, and HTML otherwise", input_domain = "every file of up to eight arbitrary bytes, which holds each magic number and the opening of a property list; tests draw longer files from those pieces and show that only the first 512 bytes count", bound = "eight bytes" },
+]
+probes = [
+  { harness = "proofs::rejects_a_place_under_an_empty_home", assertion = "NEGATIVE_BROWSER_CONTROL" },
+]
+
+[[obligation]]
+verifier = "kani"
+source = "crates/youarel-core/src/mark_rules.rs"
+harnesses = [
+  { name = "proofs::a_mark_is_the_trimmed_text_without_space_inside", covers = 3, contract = "admit answers the text trimmed of the whitespace around it when it holds no whitespace or control character inside and fits in eight characters and thirty-two bytes, refuses a longer one as long and a fitting one with whitespace or a control character inside as spaced, and clears the mark for text of whitespace alone", input_domain = "every text joined of three pieces, each nothing, an ASCII space, a tab, a letter, a letter beyond ASCII, an emoji, a joiner, or a wide space; tests draw the same pieces and show a joined emoji fits and longer texts are refused", bound = "three pieces of eight" },
+]
+probes = [
+  { harness = "proofs::rejects_a_mark_with_a_tab_inside", assertion = "NEGATIVE_MARK_CONTROL" },
+]
+
+[[obligation]]
+verifier = "kani"
+source = "crates/youarel-core/src/sync_rules.rs"
+harnesses = [
+  { name = "proofs::a_sync_waits_its_turn_and_stays_due_once_due", covers = 2, contract = "the backoff lies between its first wait and the longest and never shrinks with another failure, a wait lies between the settling and the longer of the longest backoff and the interval, the first sync is due at once, a sync is due only once its wait has passed since its last attempt, and a due sync stays due as the clock moves on", input_domain = "every schedule of any last attempt, any count of failures, and either edit state, and every pair of clock readings", bound = "complete" },
+]
+probes = [
+  { harness = "proofs::rejects_a_retry_without_a_backoff", assertion = "NEGATIVE_SYNC_CONTROL" },
+]
+
+[[obligation]]
 verifier = "quint"
 spec = "specs/membership.qnt"
 main = "membership"

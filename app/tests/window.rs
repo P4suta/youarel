@@ -1,4 +1,4 @@
-//! The launcher's window under a real webview: keys typed into it reach the machine through the script, the machine's effect reaches the store, and leaving hides the window.
+//! The library's window under a real webview: keys typed into its add sheet reach the library through the script, the shortcut reaches the store, and a second toggle hides the window.
 //!
 //! It takes the keyboard of whatever display it runs on, so it stays ignored except under the virtual display of `just app-linux`.
 #![cfg(test)]
@@ -15,8 +15,10 @@ const POLL: Duration = Duration::from_millis(250);
 const SETTLE: Duration = Duration::from_secs(3);
 /// The window's title in `tauri.conf.json`, which `xdotool` finds it by.
 const TITLE: &str = "^youarel$";
-/// The folder the test names through the window.
-const FOLDER: &str = "Home";
+/// The link the test adds through the window, on a port where nothing answers, so reading its page fails at once.
+const LINK: &str = "http://127.0.0.1:9/";
+/// How long the add sheet takes to open and read the clipboard before keys reach its field.
+const SHEET: Duration = Duration::from_secs(1);
 /// A time for the store's session that the test reads under.
 const NOW: u64 = 1_700_000_000_000;
 
@@ -61,16 +63,26 @@ fn eventually(holds: impl Fn() -> bool) -> bool {
     holds()
 }
 
-/// Whether the store under `home` holds a folder of that name.
-fn holds_folder(home: &Path, name: &str) -> bool {
+/// Whether the store under `home` holds a shortcut of that link.
+fn holds_shortcut(home: &Path, link: &str) -> bool {
     Store::new(home.to_path_buf())
         .session(NOW, |session| {
             Ok(session
                 .state()
-                .folders
+                .shortcuts
                 .values()
-                .any(|folder| !folder.removed.value && folder.name.value == name))
+                .any(|shortcut| !shortcut.removed.value && shortcut.link.value == link))
         })
+        .unwrap()
+}
+
+/// Starts the library on the display, with its files under `home`.
+fn launch(home: &Path) -> Child {
+    command(env!("CARGO_BIN_EXE_youarel-launcher"))
+        .arg("--toggle")
+        .env("YOUAREL_HOME", home)
+        .env("YOUAREL_KEY_STORE", "file")
+        .spawn()
         .unwrap()
 }
 
@@ -86,25 +98,23 @@ impl Drop for Running {
 
 #[test]
 #[ignore = "drives a real window; `just app-linux` runs it under a virtual display"]
-fn keys_typed_into_the_window_name_a_folder_and_escape_hides_it() {
+fn a_link_typed_into_the_add_sheet_reaches_the_store_and_a_second_toggle_hides_the_window() {
     let home = tempfile::tempdir().unwrap();
-    let _launcher = Running(
-        command(env!("CARGO_BIN_EXE_youarel-launcher"))
-            .arg("--toggle")
-            .env("YOUAREL_HOME", home.path())
-            .env("YOUAREL_KEY_STORE", "file")
-            .spawn()
-            .unwrap(),
-    );
+    let _library = Running(launch(home.path()));
     assert!(eventually(visible), "the window never showed");
     pause(SETTLE);
-    xdotool(&["key", "--clearmodifiers", "ctrl+o"]);
-    xdotool(&["type", "--delay", "50", FOLDER]);
+    xdotool(&["key", "--clearmodifiers", "ctrl+n"]);
+    pause(SHEET);
+    xdotool(&["type", "--delay", "50", LINK]);
     xdotool(&["key", "Return"]);
     assert!(
-        eventually(|| holds_folder(home.path(), FOLDER)),
-        "the window's keys never named the folder"
+        eventually(|| holds_shortcut(home.path(), LINK)),
+        "the add sheet never added the link"
     );
-    xdotool(&["key", "Escape"]);
-    assert!(eventually(|| !visible()), "escape left the window showing");
+    let mut toggle = launch(home.path());
+    assert!(toggle.wait().unwrap().success(), "the second start failed");
+    assert!(
+        eventually(|| !visible()),
+        "the second toggle left the window showing"
+    );
 }

@@ -1,7 +1,7 @@
-//! The launcher's shell around the core's interface machine, which the terminal launcher and the window launcher both drive.
+//! The launcher's shell around the core's interface machine, which the terminal launcher drives.
 //!
-//! A launcher reads its own input, asks [`step`](youarel_core::ui_rules::step) what it means, and hands the effect to [`carry_out`], which acts through the store and the browser.
-//! The texts here are what either launcher shows for the interface; each draws them its own way and decides nothing the machine decides.
+//! The launcher reads its own input, asks [`step`](youarel_core::ui_rules::step) what it means, and hands the effect to [`carry_out`], which acts through the store and the browser.
+//! The texts here are what the launcher shows for the interface; it draws them and decides nothing the machine decides.
 
 use crate::web::Page;
 use crate::{clock, icons, web};
@@ -31,7 +31,7 @@ pub struct Screen {
 pub enum Outcome {
     /// It stays, with a notice for the person or none.
     Continue(Option<String>),
-    /// It leaves: the terminal launcher ends, and the window launcher hides.
+    /// It leaves, and the terminal launcher ends.
     Leave,
 }
 

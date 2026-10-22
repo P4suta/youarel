@@ -1,0 +1,39 @@
+{
+  "format": 1,
+  "layout": "columns",
+  "sort": "manual",
+  "theme": {
+    "follow": false,
+    "light": "imported-midnight",
+    "dark": "dracula"
+  },
+  "themes": [
+    {
+      "id": "imported-midnight",
+      "name": "Midnight",
+      "kind": "dark",
+      "colors": {
+        "accent": "#3399ff80",
+        "accent-text": "#ffffffff",
+        "background": "#101010ff",
+        "border": "#3d444dff",
+        "danger": "#f85149ff",
+        "go": "#3399ff80",
+        "go-text": "#ffffffff",
+        "muted": "#f0f6fcff",
+        "raised": "#101010ff",
+        "selection": "#3399ff80",
+        "sidebar": "#101010ff",
+        "surface": "#101010ff",
+        "text": "#f0f6fcff",
+        "thumbnail": "#101010ff",
+        "url-name": "#3399ff80",
+        "url-port": "#3399ff80",
+        "url-rest": "#f0f6fcff",
+        "url-scheme": "#f0f6fcff",
+        "url-sub": "#f0f6fcff",
+        "url-suffix": "#f85149ff"
+      }
+    }
+  ]
+}

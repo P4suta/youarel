@@ -13,6 +13,31 @@ by = "fuzz/fuzz_targets/state_decode.rs"
 
 [[owner]]
 shape = "parser"
+path = "crates/youarel-store/src/settings.rs"
+by = "fuzz/fuzz_targets/settings_decode.rs"
+
+[[owner]]
+shape = "parser"
+path = "crates/youarel-theme/src/lib.rs"
+by = "fuzz/fuzz_targets/theme_parse.rs"
+
+[[owner]]
+shape = "parser"
+path = "crates/youarel-import/src/chrome.rs"
+by = "fuzz/fuzz_targets/browser_bookmarks.rs"
+
+[[owner]]
+shape = "parser"
+path = "crates/youarel-import/src/firefox.rs"
+by = "fuzz/fuzz_targets/browser_bookmarks.rs"
+
+[[owner]]
+shape = "parser"
+path = "crates/youarel-import/src/safari.rs"
+by = "fuzz/fuzz_targets/browser_bookmarks.rs"
+
+[[owner]]
+shape = "parser"
 path = "crates/youarel-html/src/bookmarks.rs"
 by = "fuzz/fuzz_targets/bookmarks_parse.rs"
 

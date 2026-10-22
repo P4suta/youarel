@@ -1,8 +1,13 @@
-//! The window launcher: a window that a global shortcut or the tray brings up, which opens web shortcuts as the terminal launcher does.
+//! The window: a library of shortcuts that a global shortcut, the tray, or the Dock brings forward.
 //!
-//! [`launcher`] holds the window's side of the shell, which the tests drive without a webview, and a private module binds it to Tauri.
+//! [`library`] holds the window's side, which the tests drive without a webview, [`intent`] and [`view`] hold what crosses to the page and back, and a private module binds them to Tauri.
 
-pub mod launcher;
+pub mod emoji;
+pub mod intent;
+pub mod library;
 mod raw;
+pub mod syncing;
+pub mod themes;
+pub mod view;
 
 pub use raw::run;

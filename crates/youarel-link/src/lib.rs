@@ -48,6 +48,33 @@ impl Link {
     pub const fn scheme(&self) -> Scheme {
         self.scheme
     }
+
+    /// The host as the parser serializes it, which every admitted link has.
+    #[must_use]
+    pub fn host(&self) -> &str {
+        self.url.host_str().unwrap_or_default()
+    }
+
+    /// The port the link names, or `None` for its scheme's own.
+    #[must_use]
+    pub fn port(&self) -> Option<u16> {
+        self.url.port()
+    }
+
+    /// What follows the host and the port: the path, then the query and the fragment with their marks.
+    #[must_use]
+    pub fn rest(&self) -> String {
+        let mut rest = String::from(self.url.path());
+        if let Some(query) = self.url.query() {
+            rest.push('?');
+            rest.push_str(query);
+        }
+        if let Some(fragment) = self.url.fragment() {
+            rest.push('#');
+            rest.push_str(fragment);
+        }
+        rest
+    }
 }
 
 impl fmt::Display for Link {
@@ -148,5 +175,23 @@ mod tests {
             let link = Link::parse(text).unwrap();
             assert_eq!(Link::parse(link.as_str()).unwrap(), link, "{text}");
         }
+    }
+
+    #[test]
+    fn a_link_shows_its_host_port_and_rest() {
+        let link = Link::parse("HTTP://Localhost:5173/a/b?x=1#top").unwrap();
+        assert_eq!(
+            (link.host(), link.port(), link.rest().as_str()),
+            ("localhost", Some(5173), "/a/b?x=1#top")
+        );
+        let plain = Link::parse("https://url.spec.whatwg.org").unwrap();
+        assert_eq!(
+            (plain.host(), plain.port(), plain.rest().as_str()),
+            ("url.spec.whatwg.org", None, "/")
+        );
+        let address = Link::parse("http://[::1]:8080/").unwrap();
+        assert_eq!(address.host(), "[::1]");
+        let empty = Link::parse("https://example.com/?#").unwrap();
+        assert_eq!(empty.rest(), "/?#");
     }
 }

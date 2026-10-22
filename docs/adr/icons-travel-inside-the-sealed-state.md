@@ -20,6 +20,8 @@ A device keeps only the images its live shortcuts show, pruning when it saves, n
 
 The device that adds a shortcut fetches the page once for its title and the icons it names, best first, then the site's favicon, and keeps the first that draws.
 `youarel icons` fetches the missing icons of shortcuts that came without one, such as a bookmark file's.
+The window does the same on its own, a few shortcuts at each tick of its schedule, and asks each site once while it runs.
+Its icons then travel to every member, so an import's hosts reach the network from the window that first runs after it, as an addition's reach it from the device that adds.
 The window launcher draws every image again with `youarel-icon` before it shows it, so the webview's decoders read only images that youarel encoded, whichever member sent them.
 
 Rejected alternatives:
@@ -33,3 +35,4 @@ Rejected alternatives:
 The state grows by a few kilobytes for each distinct icon, which the longest state of 16 MiB holds thousands of times.
 A site that offers only a vector icon shows none, since `youarel-icon` draws from pixels.
 The device that adds a shortcut reaches the icon's host as it reaches the page's, and no other device does.
+Two windows that run before either's icons arrive may both ask a site, which reveals no host beyond the members.

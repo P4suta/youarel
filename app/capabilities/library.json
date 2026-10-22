@@ -1,0 +1,11 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "library",
+  "description": "What the library's page may ask of Tauri beyond the library's own commands: hearing that the person summoned the window, and dragging the window by its toolbar.",
+  "windows": ["library"],
+  "permissions": [
+    "core:event:allow-listen",
+    "core:event:allow-unlisten",
+    "core:window:allow-start-dragging"
+  ]
+}

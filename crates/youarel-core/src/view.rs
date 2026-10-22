@@ -38,8 +38,8 @@ fn best<'a>(query: &str, texts: impl IntoIterator<Item = &'a str>) -> Option<u32
         .max()
 }
 
-/// The search score of a live shortcut.
-fn shortcut_score(state: &State, tree: &Tree, query: &str, id: ItemId) -> Option<u32> {
+/// The search score of a live shortcut, over its alias, title, link, place, and each word of its note.
+pub(crate) fn shortcut_score(state: &State, tree: &Tree, query: &str, id: ItemId) -> Option<u32> {
     let shortcut = state.shortcut(id)?;
     let path = joined(&state.path(tree, state.folder_of(tree, id)));
     let located = alloc::format!("{path}/{}", shortcut.title.value);
@@ -50,7 +50,9 @@ fn shortcut_score(state: &State, tree: &Tree, query: &str, id: ItemId) -> Option
             shortcut.title.value.as_str(),
             bare(&shortcut.link.value),
             located.as_str(),
-        ],
+        ]
+        .into_iter()
+        .chain(shortcut.note.value.split_whitespace()),
     )?;
     let alias = &shortcut.alias.value;
     let exact = !alias.is_empty() && alias.eq_ignore_ascii_case(query);
@@ -251,6 +253,35 @@ mod tests {
         }
         let found = rows(&state, &search("gh"), &BTreeMap::new(), 0);
         assert_eq!(found.first(), Some(&Row::Entry(Entry::Shortcut(id(5)))));
+    }
+
+    #[test]
+    fn a_search_finds_a_shortcut_by_the_words_of_its_note() {
+        let mut state = sample();
+        let stamp = Stamp {
+            wall: 10,
+            counter: 0,
+            device: DeviceId([9; 16]),
+        };
+        state
+            .apply(
+                Edit::SetNote {
+                    id: id(3),
+                    note: String::from("crate errata"),
+                },
+                stamp,
+            )
+            .unwrap();
+        let visits = BTreeMap::new();
+        assert_eq!(
+            rows(&state, &search("errata"), &visits, 0),
+            [Row::Entry(Entry::Shortcut(id(3)))]
+        );
+        assert_eq!(
+            rows(&state, &search("ceraa"), &visits, 0),
+            [],
+            "a match stays within one word of the note"
+        );
     }
 
     #[test]

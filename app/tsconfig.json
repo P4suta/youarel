@@ -19,5 +19,5 @@
     "skipLibCheck": false,
     "types": []
   },
-  "include": ["ui/main.ts"]
+  "include": ["ui/*.ts"]
 }

@@ -14,11 +14,13 @@ libfuzzer-sys = "0.4.13"
 youarel-core = { path = "../crates/youarel-core" }
 youarel-html = { path = "../crates/youarel-html" }
 youarel-icon = { path = "../crates/youarel-icon" }
+youarel-import = { path = "../crates/youarel-import" }
 youarel-link = { path = "../crates/youarel-link" }
 youarel-release = { path = "../crates/youarel-release" }
 youarel-store = { path = "../crates/youarel-store" }
 youarel-crypto = { path = "../crates/youarel-crypto" }
 youarel-protocol = { path = "../crates/youarel-protocol" }
+youarel-theme = { path = "../crates/youarel-theme" }
 
 [[bin]]
 name = "link_parse"
@@ -100,6 +102,27 @@ bench = false
 [[bin]]
 name = "icon_normalize"
 path = "fuzz_targets/icon_normalize.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "settings_decode"
+path = "fuzz_targets/settings_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "theme_parse"
+path = "fuzz_targets/theme_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "browser_bookmarks"
+path = "fuzz_targets/browser_bookmarks.rs"
 test = false
 doc = false
 bench = false

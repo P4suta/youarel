@@ -111,6 +111,9 @@ struct ShortcutDocument {
     /// The shortcut's icon, which a document from before icons lacks, and which then reads as never written.
     #[serde(default)]
     icon: Option<RegisterDocument<Option<String>>>,
+    /// The shortcut's note, which a document from before notes lacks, and which then reads as never written.
+    #[serde(default)]
+    note: Option<RegisterDocument<String>>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -118,6 +121,9 @@ struct ShortcutDocument {
 struct FolderDocument {
     id: String,
     name: RegisterDocument<String>,
+    /// The folder's mark, which a document from before marks lacks, and which then reads as never written.
+    #[serde(default)]
+    mark: Option<RegisterDocument<String>>,
     parent: RegisterDocument<Option<String>>,
     position: RegisterDocument<String>,
     removed: RegisterDocument<bool>,
@@ -230,8 +236,9 @@ pub fn encode(state: &State) -> Result<String, serde_json::Error> {
             position: register_document(&shortcut.position, |key| String::from(key.as_str())),
             removed: register_document(&shortcut.removed, |removed| *removed),
             icon: Some(register_document(&shortcut.icon, |icon| {
-                icon.map(|icon| hex_digits(&icon.0))
+                icon.map(icon_name)
             })),
+            note: Some(register_document(&shortcut.note, String::clone)),
         })
         .collect();
     let folders = state
@@ -240,6 +247,7 @@ pub fn encode(state: &State) -> Result<String, serde_json::Error> {
         .map(|(id, folder)| FolderDocument {
             id: id_text(*id),
             name: register_document(&folder.name, String::clone),
+            mark: Some(register_document(&folder.mark, String::clone)),
             parent: register_document(&folder.parent, |parent| parent.map(id_text)),
             position: register_document(&folder.position, |key| String::from(key.as_str())),
             removed: register_document(&folder.removed, |removed| *removed),
@@ -303,10 +311,21 @@ fn position(document: RegisterDocument<String>) -> Result<Register<Key>, DecodeE
     })
 }
 
-fn icon_id(text: &str) -> Result<IconId, DecodeError> {
+/// The icon that sixty-four hexadecimal digits name.
+///
+/// # Errors
+///
+/// Returns [`DecodeError::Icon`] for any other text.
+pub fn icon_id(text: &str) -> Result<IconId, DecodeError> {
     from_hex(text)
         .map(IconId)
         .ok_or_else(|| DecodeError::Icon(text.to_owned()))
+}
+
+/// An icon's name as sixty-four lowercase hexadecimal digits, which [`icon_id`] reads back.
+#[must_use]
+pub fn icon_name(icon: IconId) -> String {
+    hex_digits(&icon.0)
 }
 
 /// A shortcut's icon, or one that no device wrote when the document predates icons.
@@ -323,6 +342,21 @@ fn icon(
         value: document.value.as_deref().map(icon_id).transpose()?,
         stamp: stamp(&document.stamp)?,
     })
+}
+
+/// A shortcut's note or a folder's mark, or an empty one that no device wrote when the document predates it.
+fn text_or_unwritten(
+    document: Option<RegisterDocument<String>>,
+) -> Result<Register<String>, DecodeError> {
+    document.map_or_else(
+        || {
+            Ok(Register {
+                value: String::new(),
+                stamp: NEVER,
+            })
+        },
+        register,
+    )
 }
 
 /// An icon's image, which holds no more than [`LONGEST_ICON`] bytes.
@@ -361,6 +395,7 @@ pub fn decode(text: &str) -> Result<State, DecodeError> {
             position: position(shortcut.position)?,
             removed: register(shortcut.removed)?,
             icon: icon(shortcut.icon)?,
+            note: text_or_unwritten(shortcut.note)?,
         };
         if state.shortcuts.insert(id, decoded).is_some() {
             return Err(DecodeError::Duplicate(shortcut.id));
@@ -376,6 +411,7 @@ pub fn decode(text: &str) -> Result<State, DecodeError> {
         let id = item(&folder.id)?;
         let decoded = Folder {
             name: register(folder.name)?,
+            mark: text_or_unwritten(folder.mark)?,
             parent: optional_item(&folder.parent)?,
             position: position(folder.position)?,
             removed: register(folder.removed)?,
@@ -442,6 +478,10 @@ mod tests {
         let bytes = [0xab; 16];
         assert_eq!(hex(&bytes), "ab".repeat(16));
         assert_eq!(unhex(&hex(&bytes)).unwrap(), bytes);
+        let icon = IconId([0xcd; 32]);
+        assert_eq!(super::icon_name(icon), "cd".repeat(32));
+        assert_eq!(super::icon_id(&super::icon_name(icon)).unwrap(), icon);
+        assert!(matches!(super::icon_id("cd"), Err(DecodeError::Icon(_))));
         for text in [
             "",
             "ab",
@@ -527,6 +567,78 @@ mod tests {
         let shortcut = read.shortcuts.values().next().unwrap();
         assert_eq!(shortcut.icon.value, None);
         assert_eq!(shortcut.icon.stamp, super::NEVER);
+    }
+
+    fn annotated() -> State {
+        let mut state = sample();
+        let stamp = |wall| Stamp {
+            wall,
+            counter: 0,
+            device: DeviceId([7; 16]),
+        };
+        state
+            .apply(
+                Edit::SetNote {
+                    id: ItemId([2; 16]),
+                    note: "read \"this\" first\n".to_owned(),
+                },
+                stamp(3),
+            )
+            .unwrap();
+        state
+    }
+
+    #[test]
+    fn a_note_reads_back_and_a_document_from_before_notes_reads_without_one() {
+        let state = annotated();
+        let text = encode(&state).unwrap();
+        assert_eq!(decode(&text).unwrap(), state);
+        assert_eq!(encode(&decode(&text).unwrap()).unwrap(), text);
+        let mut older: serde_json::Value =
+            serde_json::from_str(&encode(&sample()).unwrap()).unwrap();
+        for shortcut in older["shortcuts"].as_array_mut().unwrap() {
+            shortcut.as_object_mut().unwrap().remove("note");
+        }
+        let without = older.to_string();
+        assert!(!without.contains("note"), "{without}");
+        let read = decode(&without).unwrap();
+        let shortcut = read.shortcuts.values().next().unwrap();
+        assert_eq!(shortcut.note.value, "");
+        assert_eq!(shortcut.note.stamp, super::NEVER);
+    }
+
+    #[test]
+    fn a_mark_reads_back_and_a_document_from_before_marks_reads_without_one() {
+        let mut state = sample();
+        let stamp = Stamp {
+            wall: 3,
+            counter: 0,
+            device: DeviceId([7; 16]),
+        };
+        state
+            .apply(
+                Edit::MarkFolder {
+                    id: ItemId([1; 16]),
+                    mark: "📚".to_owned(),
+                },
+                stamp,
+            )
+            .unwrap();
+        let text = encode(&state).unwrap();
+        assert_eq!(decode(&text).unwrap(), state);
+        let mut older: serde_json::Value =
+            serde_json::from_str(&encode(&sample()).unwrap()).unwrap();
+        for folder in older["folders"].as_array_mut().unwrap() {
+            folder.as_object_mut().unwrap().remove("mark");
+        }
+        let without = older.to_string();
+        assert!(!without.contains("mark"), "{without}");
+        let read = decode(&without).unwrap();
+        let folder = read.folders.values().next().unwrap();
+        assert_eq!(
+            (folder.mark.value.as_str(), folder.mark.stamp),
+            ("", super::NEVER)
+        );
     }
 
     #[test]

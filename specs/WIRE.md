@@ -68,3 +68,4 @@ A recovery member's consent is its signature of the account `digest` under `youa
 A registration travels only between the relay's own parts and never reaches a device.
 
 The plaintext of a bundle is the state in the JSON form of `youarel-store`, and the plaintext of an entry is an admission.
+A shortcut's note and a folder's mark travel in that form like their other fields, and a document without one reads as a state where no device wrote it.

@@ -4,9 +4,11 @@
 
 pub mod codec;
 pub mod fs;
+pub mod settings;
 
 use crate::codec::DecodeError;
 use crate::fs::{FileError, Lock};
+use crate::settings::Settings;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -37,6 +39,11 @@ pub enum StoreError {
         path: PathBuf,
         error: serde_json::Error,
     },
+    /// The window's settings hold what this youarel would not have written.
+    Settings {
+        path: PathBuf,
+        error: settings::DecodeError,
+    },
     Encode(serde_json::Error),
     /// The operating system gave no randomness for a new identifier.
     Random(getrandom::Error),
@@ -50,7 +57,7 @@ impl core::fmt::Display for StoreError {
     fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::File(error) => write!(formatter, "{error}"),
-            Self::Decode { path, .. } | Self::Local { path, .. } => {
+            Self::Decode { path, .. } | Self::Local { path, .. } | Self::Settings { path, .. } => {
                 write!(formatter, "cannot read {}", path.display())
             }
             Self::Encode(_) => formatter.write_str("cannot write the state"),
@@ -77,6 +84,7 @@ impl std::error::Error for StoreError {
             // The file error is this error's own sentence, so its reason comes next.
             Self::File(error) => std::error::Error::source(error),
             Self::Decode { error, .. } => Some(error),
+            Self::Settings { error, .. } => Some(error),
             Self::Local { error, .. } | Self::Encode(error) => Some(error),
             Self::Random(_) | Self::Edit(_) | Self::Clock => None,
         }
@@ -203,6 +211,34 @@ impl Store {
             );
         }
         Ok(visits)
+    }
+
+    /// The window's settings, or the defaults when it never saved any.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`StoreError`] when the file cannot be read or holds what the window would not have written.
+    pub fn settings(&self) -> Result<Settings, StoreError> {
+        let path = self.directory.join(settings::SETTINGS_FILE);
+        fs::read_if_present(&path)?.map_or_else(
+            || Ok(Settings::default()),
+            |text| settings::decode(&text).map_err(|error| StoreError::Settings { path, error }),
+        )
+    }
+
+    /// Saves the window's settings in place of the ones it saved before.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`StoreError`] when the directory or the file cannot be written.
+    pub fn save_settings(&self, saved: &Settings) -> Result<(), StoreError> {
+        fs::create_dir_all(&self.directory)?;
+        let text = settings::encode(saved).map_err(StoreError::Encode)?;
+        fs::replace(
+            &self.directory.join(settings::SETTINGS_FILE),
+            text.as_bytes(),
+        )?;
+        Ok(())
     }
 
     /// Runs `work` on the device's state at time `now`, under the lock, and writes back what it changed.
@@ -490,5 +526,25 @@ mod tests {
 
     fn image(byte: u8) -> Vec<u8> {
         vec![byte; 4]
+    }
+
+    #[test]
+    fn the_window_s_settings_default_save_read_back_and_name_a_damaged_file() {
+        use super::settings::{SETTINGS_FILE, Settings};
+        use youarel_core::library_rules::{Layout, Sort};
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::new(directory.path().join("youarel"));
+        assert_eq!(store.settings().unwrap(), Settings::default());
+        let chosen = Settings {
+            layout: Layout::List,
+            sort: Sort::Title,
+            ..Settings::default()
+        };
+        store.save_settings(&chosen).unwrap();
+        assert_eq!(store.settings().unwrap(), chosen);
+        super::fs::replace(&store.directory().join(SETTINGS_FILE), b"{}").unwrap();
+        let error = store.settings().unwrap_err();
+        assert!(error.to_string().contains(SETTINGS_FILE), "{error}");
+        assert!(std::error::Error::source(&error).is_some());
     }
 }

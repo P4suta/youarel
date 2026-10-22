@@ -8,7 +8,8 @@ use youarel_core::home_rules::{HomeFacts, Host, data_dir};
 pub const OVERRIDE: &str = "YOUAREL_HOME";
 
 /// The kind of host this binary runs on.
-const fn host() -> Host {
+#[must_use]
+pub const fn host() -> Host {
     if cfg!(windows) {
         Host::Windows
     } else if cfg!(target_os = "macos") {
@@ -19,7 +20,7 @@ const fn host() -> Host {
 }
 
 /// A variable's value, or `None` when it is unset.
-fn variable(name: &str) -> Result<Option<String>> {
+pub(crate) fn variable(name: &str) -> Result<Option<String>> {
     std::env::var_os(name)
         .map(|value| {
             value

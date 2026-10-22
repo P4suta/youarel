@@ -2,6 +2,7 @@
 //!
 //! The binary in `main.rs` parses its arguments and calls in here.
 
+pub mod browsers;
 pub mod clock;
 pub mod commands;
 pub mod home;

@@ -1,0 +1,17 @@
+{
+  // A dark theme with comments and trailing commas, as VS Code writes one.
+  "name": "Midnight",
+  "type": "dark",
+  "colors": {
+    "editor.background": "#101010",
+    "editor.foreground": "#e0e0e0",
+    "focusBorder": "#3399ff80", /* a color with its alpha */
+    "sideBar.background": 7,
+  },
+  "tokenColors": [
+    { "scope": "comment", "settings": { "foreground": "#777" } },
+    { "scope": ["keyword", "storage.type"], "settings": { "foreground": "#ff0000" } },
+    { "scope": "keyword.control, keyword.other", "settings": { "foreground": "#ff8800" } },
+    { "settings": { "foreground": "#ffffff" } },
+  ],
+}

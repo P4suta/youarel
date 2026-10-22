@@ -1,0 +1,22 @@
+[package]
+name = "youarel-import"
+description = "The bookmarks of Safari, Chrome, and Firefox, read from the files each browser keeps"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+authors.workspace = true
+readme.workspace = true
+repository.workspace = true
+keywords = ["bookmarks", "browser", "import"]
+categories = ["parser-implementations"]
+
+[dependencies]
+lz4_flex.workspace = true
+plist.workspace = true
+serde_json.workspace = true
+youarel-html.workspace = true
+
+[lints]
+workspace = true

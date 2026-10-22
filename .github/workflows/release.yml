@@ -20,7 +20,7 @@ jobs:
   check:
     if: vars.RELEASES_ENABLED == 'true' && github.ref_type == 'tag'
     runs-on: ubuntu-26.04
-    timeout-minutes: 30
+    timeout-minutes: 120
     permissions:
       contents: read
     outputs:
@@ -31,12 +31,16 @@ jobs:
           persist-credentials: false
       - uses: jdx/mise-action@7a4e45a543138629540c9a1616d08632b893e492 # v5.0.1
         with:
-          install_args: rust taplo typos actionlint zizmor aqua:EmbarkStudios/cargo-deny aqua:rustsec/rustsec/cargo-audit aqua:nextest-rs/nextest/cargo-nextest
+          install_args: rust node npm:typescript taplo typos actionlint zizmor aqua:EmbarkStudios/cargo-deny aqua:rustsec/rustsec/cargo-audit aqua:nextest-rs/nextest/cargo-nextest cargo:kani-verifier@0.68.0 cargo:cargo-fuzz@0.13.2 cargo:cargo-mutants@27.1.0
           cache: false
       - name: Check that the tag names the workspace version
         id: version
         run: cargo xtask release version
-      - run: cargo xtask ci check
+      - name: Install the pinned verifier toolchain
+        run: rustup toolchain install nightly-2026-08-21 --profile minimal --component miri --component rust-src
+      - run: cargo kani setup
+      - name: Verify the exact candidate before builds and signing
+        run: cargo xtask ci assurance
 
   build:
     name: build (${{ matrix.target }})
@@ -68,7 +72,7 @@ jobs:
           persist-credentials: false
       - uses: jdx/mise-action@7a4e45a543138629540c9a1616d08632b893e492 # v5.0.1
         with:
-          install_args: rust
+          install_args: rust node npm:typescript aqua:nextest-rs/nextest/cargo-nextest
           cache: false
       - name: Add the target
         shell: bash
@@ -80,6 +84,18 @@ jobs:
         env:
           TARGET: ${{ matrix.target }}
         run: cargo xtask release build "$TARGET"
+      - name: Test the candidate target
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+        run: cargo nextest run --locked --workspace --all-targets --target "$TARGET" --no-tests=fail
+      - name: Lint the candidate target
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+        run: cargo clippy --locked --workspace --all-targets --target "$TARGET" -- -D warnings
+      - name: Check native platform behavior
+        run: cargo xtask check --platform
       - name: Sign the macOS program
         if: runner.os == 'macOS'
         env:

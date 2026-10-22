@@ -127,9 +127,18 @@ fn check(root: &Path, image: &str, model: &ProverifModel) -> Result<()> {
 ///
 /// Returns an error when Docker cannot build or run the image, the manifest declares no model, or a model or its probe fails.
 pub fn verify(root: &Path) -> Result<()> {
+    verify_selected(root, None)
+}
+
+/// Checks the named models and their negative controls.
+///
+/// # Errors
+///
+/// Returns an error for an empty, unknown, or failing selection.
+pub fn verify_selected(root: &Path, selected: Option<&[String]>) -> Result<()> {
     let root = std::fs::canonicalize(root).context("resolve the checkout")?;
     let manifest = obligations::load(&root)?;
-    let models: Vec<&ProverifModel> = manifest
+    let mut models: Vec<&ProverifModel> = manifest
         .obligation
         .iter()
         .filter_map(|obligation| match obligation {
@@ -137,6 +146,13 @@ pub fn verify(root: &Path) -> Result<()> {
             Obligation::Kani { .. } | Obligation::Quint(_) => None,
         })
         .collect();
+    if let Some(selected) = selected {
+        models.retain(|model| selected.contains(&model.model));
+        ensure!(
+            models.len() == selected.len(),
+            "the ProVerif selection names unknown or duplicate models"
+        );
+    }
     ensure!(
         !models.is_empty(),
         "the manifest declares no ProVerif obligation"

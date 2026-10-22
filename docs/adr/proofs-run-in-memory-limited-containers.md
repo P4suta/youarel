@@ -1,8 +1,10 @@
 ---
-status: accepted
+status: amended
 date: 2026-10-15
 ---
 # Proofs run in memory-limited containers
+
+The [affected-contract verification decision](verification-follows-affected-contracts.md) amends when these campaigns run and how incomplete outcomes gate completion.
 
 ## Context
 

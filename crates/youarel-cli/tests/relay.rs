@@ -2,41 +2,40 @@
 #![cfg(test)]
 
 use youarel_core::relay_rules::{MAILBOX_LIFETIME, RETENTION, WINDOW};
+use youarel_core::segment_rules::{Header, Kind, Sequence};
 use youarel_crypto::pairing::Code;
-use youarel_protocol::message::{Action, Bundle, Operation};
-use youarel_protocol::relay::{
-    Collected, Locate, Mail, Registration, Request, Side, Verb, read_nameplate,
-};
+use youarel_protocol::message::{Action, Operation};
+use youarel_protocol::relay::{Locate, Mail, Registration, Request, Side, Verb, read_nameplate};
+use youarel_protocol::segment::{Cursors, Delivered, Segment};
 use youarel_relay::Status;
 use youarel_relay::memory::MemoryRelay;
 use youarel_sync::account::Account;
-use youarel_sync::keystore::KeyStore;
 
 const NOW: u64 = 1_700_000_000_000;
 
 struct Device {
     directory: tempfile::TempDir,
+    sequence: std::cell::Cell<u64>,
 }
 
 impl Device {
     fn new() -> Self {
         Self {
             directory: tempfile::tempdir().unwrap(),
+            sequence: std::cell::Cell::new(0),
         }
     }
 
     fn account(&self) -> Account {
-        Account::open(
-            &self.directory.path().join("account"),
-            &KeyStore::File(self.directory.path().join("sealing.key")),
-        )
-        .unwrap()
+        Account::open(&self.directory.path().join("account")).unwrap()
     }
 
     fn publish(&self, relay: &mut MemoryRelay, now: u64, state: &[u8]) -> (Status, Vec<u8>) {
         let mut account = self.account();
-        let bundle = account.export(now, state).unwrap();
-        let request = account.request(now, Verb::Publish, bundle).unwrap();
+        let number = self.sequence.get().checked_add(1).unwrap();
+        self.sequence.set(number);
+        let segment = snapshot(&mut account, now, (number, state));
+        let request = account.request(now, Verb::Publish, segment).unwrap();
         let reply = relay.request(now, &request).unwrap();
         (reply.status, reply.body)
     }
@@ -44,11 +43,25 @@ impl Device {
     fn collect(&self, relay: &mut MemoryRelay, now: u64) -> (Status, Vec<u8>) {
         let request = self
             .account()
-            .request(now, Verb::Collect, Vec::new())
+            .request(now, Verb::Collect, positions())
             .unwrap();
         let reply = relay.request(now, &request).unwrap();
         (reply.status, reply.body)
     }
+}
+
+fn positions() -> Vec<u8> {
+    Cursors::default().encode().unwrap()
+}
+
+fn snapshot(account: &mut Account, now: u64, (number, state): (u64, &[u8])) -> Vec<u8> {
+    let header = Header::new(
+        Sequence::new(number).unwrap(),
+        [0; 32],
+        Kind::Snapshot { part: 0, parts: 1 },
+    )
+    .unwrap();
+    account.publish(now, header, state).unwrap()
 }
 
 /// Pairs `joiner` into `inviter`'s account through the four files.
@@ -60,7 +73,7 @@ fn pair(inviter: &Device, joiner: &Device) {
         .unwrap();
     let welcome = inviter.account().accept(&join).unwrap();
     let confirmation = joiner.account().confirm(&welcome).unwrap();
-    let entry = inviter.account().admit(NOW, &confirmation, b"{}").unwrap();
+    let entry = inviter.account().admit(NOW, &confirmation, None).unwrap();
     joiner.account().finish(&entry).unwrap();
 }
 
@@ -76,15 +89,18 @@ fn members_publish_and_collect_each_others_bundles() {
     assert_eq!(second.publish(&mut relay, NOW, b"second").0, Status::Ok);
     let (status, body) = second.collect(&mut relay, NOW);
     assert_eq!(status, Status::Ok);
-    let collected = Collected::decode(&body).unwrap();
-    assert_eq!(collected.slots.len(), 2);
+    let collected = Delivered::decode(&body).unwrap();
+    assert_eq!(collected.chains.len(), 2);
     let from_first = collected
-        .slots
+        .chains
         .iter()
-        .find(|slot| slot.device == first.account().device())
+        .find(|chain| chain.sender == first.account().device())
         .unwrap();
-    let imported = second.account().import(&from_first.bundle).unwrap();
-    assert_eq!(imported.state.as_slice(), b"first again");
+    let imported = second
+        .account()
+        .open_segment(from_first.segments.first().unwrap())
+        .unwrap();
+    assert_eq!(imported.body.as_slice(), b"first again");
 }
 
 #[test]
@@ -93,20 +109,21 @@ fn a_replayed_stale_or_forged_request_is_refused() {
     let device = Device::new();
     let mut account = device.account();
     account.found(NOW).unwrap();
-    let bundle = account.export(NOW, b"s").unwrap();
-    let request = account.request(NOW, Verb::Publish, bundle).unwrap();
+    let segment = snapshot(&mut account, NOW, (1, b"s"));
+    let request = account.request(NOW, Verb::Publish, segment).unwrap();
     assert_eq!(relay.request(NOW, &request).unwrap().status, Status::Ok);
     let replayed = relay.request(NOW + 1, &request).unwrap();
     assert_eq!(replayed.status, Status::Unauthorized);
     assert!(String::from_utf8_lossy(&replayed.body).contains("before"));
-    let late = account.request(NOW, Verb::Collect, Vec::new()).unwrap();
+    let late = account.request(NOW, Verb::Collect, positions()).unwrap();
     assert_eq!(
         relay.request(NOW + WINDOW + 1, &late).unwrap().status,
         Status::Unauthorized
     );
     let mut forged =
-        Request::decode(&account.request(NOW, Verb::Collect, Vec::new()).unwrap()).unwrap();
+        Request::decode(&account.request(NOW, Verb::Collect, positions()).unwrap()).unwrap();
     forged.verb = Verb::Erase;
+    forged.payload.clear();
     assert_eq!(
         relay
             .request(NOW, &forged.encode().unwrap())
@@ -130,14 +147,13 @@ fn a_stranger_or_a_removed_member_reaches_nothing() {
     pair(&first, &second);
     assert_eq!(first.publish(&mut relay, NOW, b"a").0, Status::Ok);
     assert_eq!(second.publish(&mut relay, NOW, b"b").0, Status::Ok);
-    let mut account = stranger.account();
-    let bundle = account.export(NOW, b"x").unwrap();
+    let account = stranger.account();
     let mut request =
-        Request::decode(&account.request(NOW, Verb::Collect, bundle).unwrap()).unwrap();
+        Request::decode(&account.request(NOW, Verb::Collect, positions()).unwrap()).unwrap();
     request.account = Request::decode(
         &first
             .account()
-            .request(NOW, Verb::Collect, Vec::new())
+            .request(NOW, Verb::Collect, positions())
             .unwrap(),
     )
     .unwrap()
@@ -153,8 +169,13 @@ fn a_stranger_or_a_removed_member_reaches_nothing() {
     first.account().remove(NOW, second_id).unwrap();
     assert_eq!(first.publish(&mut relay, NOW + 1, b"c").0, Status::Ok);
     assert_eq!(second.collect(&mut relay, NOW + 2).0, Status::Forbidden);
-    let collected = Collected::decode(&first.collect(&mut relay, NOW + 3).1).unwrap();
-    assert!(collected.slots.iter().all(|slot| slot.device != second_id));
+    let collected = Delivered::decode(&first.collect(&mut relay, NOW + 3).1).unwrap();
+    assert!(
+        collected
+            .chains
+            .iter()
+            .all(|chain| chain.sender != second_id)
+    );
 }
 
 #[test]
@@ -187,8 +208,8 @@ fn seeds() {
     let mut account = first.account();
     let key = account.enroll_recovery(NOW).unwrap();
     let member = Account::recovery_member(&key).unwrap();
-    let bundle = account.export(NOW, b"{}").unwrap();
-    let decoded = Bundle::decode(&bundle).unwrap();
+    let segment = snapshot(&mut account, NOW, (1, b"{}"));
+    let decoded = Segment::decode(&segment).unwrap();
     let recovery = decoded
         .operations
         .iter()
@@ -200,8 +221,8 @@ fn seeds() {
         })
         .unwrap()
         .clone();
-    let publish = account.request(NOW, Verb::Publish, bundle).unwrap();
-    let collect = account.request(NOW, Verb::Collect, Vec::new()).unwrap();
+    let publish = account.request(NOW, Verb::Publish, segment).unwrap();
+    let collect = account.request(NOW, Verb::Collect, positions()).unwrap();
     assert_eq!(relay.request(NOW, &publish).unwrap().status, Status::Ok);
     assert_eq!(second.publish(&mut relay, NOW, b"{}").0, Status::Ok);
     let collected = relay.request(NOW, &collect).unwrap().body;

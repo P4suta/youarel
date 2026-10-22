@@ -1,27 +1,43 @@
 //! The decoders of every sync and relay message never stop the reader, and whatever one reads it writes back byte for byte, so each message has one encoding.
 #![no_main]
 
-use youarel_protocol::message::{
-    Admission, Bundle, DevicePublic, Entry, Join, Joined, Operation, Welcome,
-};
+use youarel_protocol::message::{Admission, DevicePublic, Entry, Join, Joined, Operation, Welcome};
 use youarel_protocol::relay::{
-    Collected, Locate, Mail, Registration, Request, located_bytes, nameplate_bytes, read_located,
+    Locate, Mail, Registration, Request, located_bytes, nameplate_bytes, read_located,
     read_nameplate,
 };
+use youarel_protocol::segment::{Cursors, Delivered, Head, Segment};
 
 libfuzzer_sys::fuzz_target!(|data: &[u8]| {
+    if let Ok(segment) = Segment::decode(data) {
+        assert_eq!(
+            segment.encode().as_deref(),
+            Ok(data),
+            "a segment has one encoding"
+        );
+    }
+    if let Ok(cursors) = Cursors::decode(data) {
+        assert_eq!(
+            cursors.encode().as_deref(),
+            Ok(data),
+            "cursors have one encoding"
+        );
+    }
+    if let Ok(delivered) = Delivered::decode(data) {
+        assert_eq!(
+            delivered.encode().as_deref(),
+            Ok(data),
+            "a delivery has one encoding"
+        );
+    }
+    if let Ok(head) = Head::decode(data) {
+        assert_eq!(head.encode(), data, "a head has one encoding");
+    }
     if let Ok(operation) = Operation::decode(data) {
         assert_eq!(
             operation.encode().as_deref(),
             Ok(data),
             "an operation has one encoding"
-        );
-    }
-    if let Ok(bundle) = Bundle::decode(data) {
-        assert_eq!(
-            bundle.encode().as_deref(),
-            Ok(data),
-            "a bundle has one encoding"
         );
     }
     if let Ok(join) = Join::decode(data) {
@@ -63,13 +79,6 @@ libfuzzer_sys::fuzz_target!(|data: &[u8]| {
             request.encode().as_deref(),
             Ok(data),
             "a relay request has one encoding"
-        );
-    }
-    if let Ok(collected) = Collected::decode(data) {
-        assert_eq!(
-            collected.encode().as_deref(),
-            Ok(data),
-            "a collection has one encoding"
         );
     }
     if let Ok(mail) = Mail::decode(data) {

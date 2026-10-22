@@ -13,8 +13,8 @@ keywords = ["bookmarks", "launcher", "url"]
 categories = ["filesystem"]
 
 [dependencies]
-base64.workspace = true
 getrandom.workspace = true
+redb.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 youarel-core.workspace = true

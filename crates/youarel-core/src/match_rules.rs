@@ -11,7 +11,7 @@ pub const CONSECUTIVE: u32 = 16;
 pub const BOUNDARY: u32 = 8;
 
 /// The characters after which a word starts.
-const SEPARATORS: [char; 10] = [' ', '/', '.', '-', '_', ':', '?', '#', '&', '='];
+pub(crate) const SEPARATORS: [char; 10] = [' ', '/', '.', '-', '_', ':', '?', '#', '&', '='];
 
 /// A character with its ASCII case removed.
 const fn fold(character: char) -> char {

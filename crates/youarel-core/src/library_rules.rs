@@ -1,13 +1,31 @@
-//! What the library window lists: the live shortcuts of a scope that a search finds, in the order a person sorts them, the counts beside each scope, and where a key moves the selection.
+//! What the library window lists, counts, and moves the selection through.
 //!
+//! A listing holds the shortcuts that show in a scope and that a search finds, in the order a person chooses among the automatic ones, and the trash holds what waits there.
 //! The window holds the scope, the sort, the search, and the selection as values, and reads every listing, count, and move from here.
 
+use crate::index_rules;
 use crate::rank_rules::{DAY, Rank, Visits, frecency};
-use crate::state::{Entry, ItemId, Shortcut, State, Tree};
+use crate::state::{Entry, ItemId, Presence, Shortcut, State, Tree, standing_in};
 use crate::view;
-use alloc::collections::{BTreeMap, BTreeSet};
+use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
+
+/// How long a drag rests over a folder before that folder opens, in milliseconds.
+pub const SPRING_DELAY: u64 = 600;
+
+/// The drag and folder that a hover belongs to.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub struct Hover {
+    pub token: ItemId,
+    pub folder: ItemId,
+}
+
+/// Whether the same active hover has reached its spring delay.
+#[must_use]
+pub fn spring_due(active: Option<Hover>, requested: Hover, elapsed: u64) -> bool {
+    active == Some(requested) && elapsed >= SPRING_DELAY
+}
 use core::cmp::Reverse;
 
 /// How many days after it was added a shortcut counts as recently added.
@@ -20,7 +38,7 @@ const SCHEME_MARK: &str = "://";
 /// Which shortcuts the window shows.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Hash)]
 pub enum Scope {
-    /// Every live shortcut.
+    /// Every shortcut that shows.
     #[default]
     All,
     /// The shortcuts in no collection.
@@ -31,22 +49,20 @@ pub enum Scope {
     Collection(ItemId),
 }
 
-/// The order of a listing without a search.
+/// The order of a listing without a search, which the window keeps as a setting and never arranges by hand.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Hash)]
 pub enum Sort {
     /// The latest added first.
-    #[default]
     Newest,
     /// The earliest added first.
     Oldest,
-    /// By title, ignoring case.
+    /// By title, ignoring case, as an explorer sorts by name.
+    #[default]
     Title,
     /// By link without its scheme, so the pages of one host sit together, each host's in the order of their paths.
     Link,
     /// The one this device opened last first, and the ones it never opened after them, newest first.
     Opened,
-    /// In the order of the folders and their entries, as a person arranged them.
-    Manual,
 }
 
 /// How the window lays its shortcuts out.
@@ -86,6 +102,12 @@ pub const fn added(id: ItemId, shortcut: &Shortcut) -> u64 {
         Some(time) => time,
         None => shortcut.link.stamp.wall,
     }
+}
+
+/// A link without its scheme, which the order by link reads so that the pages of one host sit together.
+#[must_use]
+pub fn address(link: &str) -> &str {
+    link.split_once(SCHEME_MARK).map_or(link, |(_, rest)| rest)
 }
 
 /// Whether a shortcut added at `added` counts as recent at `now`; one added after `now`, as a clock that moved back leaves it, counts as recent.
@@ -136,6 +158,24 @@ pub const fn period(time: u64, now: u64) -> Period {
     }
 }
 
+/// The times a period holds at `now`, as [`period`] draws it: from the first time on, and before the second when there is one.
+#[must_use]
+pub const fn period_bounds(age: Period, now: u64) -> (u64, Option<u64>) {
+    let week = now.saturating_sub(WEEK);
+    let month = now.saturating_sub(RECENT);
+    match age {
+        Period::Week => (week, None),
+        Period::Month => (month, Some(week)),
+        Period::Earlier => (0, Some(month)),
+    }
+}
+
+/// The earliest time at which a shortcut added counts as recent at `now`, as [`recent`] draws it.
+#[must_use]
+pub const fn recent_since(now: u64) -> u64 {
+    now.saturating_sub(RECENT)
+}
+
 /// A listing gathered under keys, held flat: the items in their new order, and each key with how many items follow under it, in the order of the keys.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Gathered<K, T> {
@@ -184,7 +224,7 @@ pub fn grouped<T: Copy, K: Ord>(listing: &[T], key: impl Fn(T) -> K) -> Vec<(K, 
         .collect()
 }
 
-/// Whether a live shortcut lies in a scope.
+/// Whether a shortcut that shows lies in a scope.
 fn holds(facts: Facts<'_>, scope: &Scope, id: ItemId, shortcut: &Shortcut) -> bool {
     let home = facts.state.folder_of(facts.tree, id);
     match scope {
@@ -195,72 +235,55 @@ fn holds(facts: Facts<'_>, scope: &Scope, id: ItemId, shortcut: &Shortcut) -> bo
     }
 }
 
-/// The live shortcuts in the order of a walk down the folders from `root`: each folder's entries in their order, a folder's own entries before those of the next.
-fn walked(facts: Facts<'_>, root: Option<ItemId>) -> Vec<ItemId> {
-    let mut order = Vec::new();
-    let mut opened = BTreeSet::new();
-    let mut pending: Vec<Entry> = facts.state.entries(facts.tree, root);
-    pending.reverse();
-    while let Some(entry) = pending.pop() {
-        match entry {
-            Entry::Shortcut(id) => order.push(id),
-            // Each folder opens once, so the walk ends whatever the entries hold.
-            Entry::Folder(folder) => {
-                if opened.insert(folder) {
-                    let mut inside = facts.state.entries(facts.tree, Some(folder));
-                    inside.reverse();
-                    pending.extend(inside);
-                }
-            }
+/// What a listing without a search sorts a shortcut by.
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
+pub enum Order {
+    Newest(Reverse<u64>, ItemId),
+    Oldest(u64, ItemId),
+    /// The title without its case, the title itself, and the identifier.
+    Title(String, String, ItemId),
+    Link(String, ItemId),
+    /// When this device opened it last, or zero for never, the latest first, then the latest added first.
+    Opened(Reverse<u64>, Reverse<u64>, ItemId),
+}
+
+/// What a listing without a search sorts a shortcut by, which this device opened last at `opened` or at zero for never.
+#[must_use]
+pub fn order(sort: Sort, id: ItemId, shortcut: &Shortcut, opened: u64) -> Order {
+    let time = added(id, shortcut);
+    match sort {
+        Sort::Newest => Order::Newest(Reverse(time), id),
+        Sort::Oldest => Order::Oldest(time, id),
+        Sort::Title => {
+            let title = &shortcut.title.value;
+            Order::Title(title.to_lowercase(), String::clone(title), id)
         }
+        Sort::Link => Order::Link(String::from(address(&shortcut.link.value)), id),
+        Sort::Opened => Order::Opened(Reverse(opened), Reverse(time), id),
     }
-    order
 }
 
 /// The shortcuts of a listing without a search, in the order of `sort`.
 fn sorted(facts: Facts<'_>, mut found: Vec<(ItemId, &Shortcut)>, query: Query<'_>) -> Vec<ItemId> {
     let opened = |id: &ItemId| facts.visits.get(id).map_or(0, |visits| visits.last);
-    match query.sort {
-        Sort::Newest => found.sort_by_key(|(id, shortcut)| (Reverse(added(*id, shortcut)), *id)),
-        Sort::Oldest => found.sort_by_key(|(id, shortcut)| (added(*id, shortcut), *id)),
-        Sort::Title => found.sort_by_cached_key(|(id, shortcut)| {
-            let title = &shortcut.title.value;
-            (title.to_lowercase(), String::clone(title), *id)
-        }),
-        Sort::Link => found.sort_by_key(|(id, shortcut)| {
-            let link = shortcut.link.value.as_str();
-            let address = link.split_once(SCHEME_MARK).map_or(link, |(_, rest)| rest);
-            (address, *id)
-        }),
-        Sort::Opened => found.sort_by_key(|(id, shortcut)| {
-            (Reverse(opened(id)), Reverse(added(*id, shortcut)), *id)
-        }),
-        Sort::Manual => {
-            let root = match query.scope {
-                Scope::Collection(folder) => Some(*folder),
-                Scope::All | Scope::Unsorted | Scope::Recent => None,
-            };
-            let order: BTreeMap<ItemId, usize> = walked(facts, root)
-                .into_iter()
-                .enumerate()
-                .map(|(place, id)| (id, place))
-                .collect();
-            found.sort_by_key(|(id, _)| (order.get(id).copied().unwrap_or(usize::MAX), *id));
-        }
-    }
+    found.sort_by_cached_key(|(id, shortcut)| order(query.sort, *id, shortcut, opened(id)));
     found.into_iter().map(|(id, _)| id).collect()
 }
 
-/// The live shortcuts of the query's scope, ranked by the search when it is not empty, and in the query's order otherwise.
-#[must_use]
-pub fn listing(facts: Facts<'_>, query: Query<'_>) -> Vec<ItemId> {
-    let found: Vec<(ItemId, &Shortcut)> = facts
-        .state
+/// Every shortcut of a state that shows in its tree.
+fn shown<'a>(state: &'a State, tree: &'a Tree) -> impl Iterator<Item = (ItemId, &'a Shortcut)> {
+    state
         .shortcuts
         .iter()
-        .filter(|(_, shortcut)| !shortcut.removed.value)
-        .filter(|(id, shortcut)| holds(facts, query.scope, **id, shortcut))
+        .filter(|(_, shortcut)| standing_in(tree, shortcut) == index_rules::Standing::Shown)
         .map(|(id, shortcut)| (*id, shortcut))
+}
+
+/// The shortcuts that show in the query's scope, ranked by the search when it is not empty, and in the query's order otherwise.
+#[must_use]
+pub fn listing(facts: Facts<'_>, query: Query<'_>) -> Vec<ItemId> {
+    let found: Vec<(ItemId, &Shortcut)> = shown(facts.state, facts.tree)
+        .filter(|(id, shortcut)| holds(facts, query.scope, *id, shortcut))
         .collect();
     if query.search.is_empty() {
         return sorted(facts, found, query);
@@ -277,21 +300,23 @@ pub fn listing(facts: Facts<'_>, query: Query<'_>) -> Vec<ItemId> {
     ranked.into_iter().map(Rank::into_id).collect()
 }
 
-/// How many live shortcuts each scope holds.
+/// How many shortcuts that show each scope holds, and how many items wait in the trash.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Counts {
     pub all: usize,
     pub unsorted: usize,
     pub recent: usize,
-    /// The shortcuts in each live collection and the collections inside it.
+    /// The shortcuts in each collection that shows and the collections inside it.
     pub collections: BTreeMap<ItemId, usize>,
+    /// The folders and the shortcuts in the trash themselves, without what a folder there hides.
+    pub trash: usize,
 }
 
 const fn count(counts: &mut usize) {
     *counts = counts.saturating_add(1);
 }
 
-/// The counts of every scope.
+/// The counts of every scope and of the trash.
 #[must_use]
 pub fn counts(state: &State, tree: &Tree, now: u64) -> Counts {
     let mut counts = Counts::default();
@@ -301,35 +326,51 @@ pub fn counts(state: &State, tree: &Tree, now: u64) -> Counts {
         visits: &BTreeMap::new(),
         now,
     };
-    for (id, shortcut) in state
-        .shortcuts
-        .iter()
-        .filter(|(_, shortcut)| !shortcut.removed.value)
-    {
+    for (id, shortcut) in shown(state, tree) {
         count(&mut counts.all);
-        if holds(facts, &Scope::Unsorted, *id, shortcut) {
+        if holds(facts, &Scope::Unsorted, id, shortcut) {
             count(&mut counts.unsorted);
         }
-        if holds(facts, &Scope::Recent, *id, shortcut) {
+        if holds(facts, &Scope::Recent, id, shortcut) {
             count(&mut counts.recent);
         }
-        for folder in tree.lineage(state.folder_of(tree, *id)) {
+        for folder in tree.lineage(state.folder_of(tree, id)) {
             count(counts.collections.entry(folder).or_default());
         }
     }
+    counts.trash = trash(state).len();
     counts
 }
 
-/// The collections the sidebar lists: the live folders at the top, in their order.
+/// What a name sorts by: the name without its case, the name itself, and the identifier.
 #[must_use]
-pub fn collections(state: &State, tree: &Tree) -> Vec<ItemId> {
-    state
-        .entries(tree, None)
+pub fn by_name(name: &str, id: ItemId) -> (String, String, ItemId) {
+    (name.to_lowercase(), String::from(name), id)
+}
+
+/// What the trash lists: every folder and every shortcut in the trash itself, the folders first, each by its name.
+///
+/// A folder in the trash hides what it holds, which comes back with it, and a shortcut put in the trash on its own before its folder lists on its own.
+#[must_use]
+pub fn trash(state: &State) -> Vec<Entry> {
+    let mut folders: Vec<(String, String, ItemId)> = state
+        .folders
+        .iter()
+        .filter(|(_, folder)| folder.presence.value == Presence::Trashed)
+        .map(|(id, folder)| by_name(&folder.name.value, *id))
+        .collect();
+    folders.sort_unstable();
+    let mut shortcuts: Vec<(String, String, ItemId)> = state
+        .shortcuts
+        .iter()
+        .filter(|(_, shortcut)| shortcut.presence.value == Presence::Trashed)
+        .map(|(id, shortcut)| by_name(&shortcut.title.value, *id))
+        .collect();
+    shortcuts.sort_unstable();
+    folders
         .into_iter()
-        .filter_map(|entry| match entry {
-            Entry::Folder(id) => Some(id),
-            Entry::Shortcut(_) => None,
-        })
+        .map(|(_, _, id)| Entry::Folder(id))
+        .chain(shortcuts.into_iter().map(|(_, _, id)| Entry::Shortcut(id)))
         .collect()
 }
 
@@ -543,13 +584,69 @@ pub fn column_step(standing: Standing, key: Move) -> ColumnStep {
 /// The properties Kani proves over every short grid and walk, every identifier's time, and every short grouping.
 #[cfg(any(test, kani))]
 mod proofs {
+    #[cfg(kani)]
+    #[kani::proof]
+    #[kani::unwind(17)]
+    fn a_hover_springs_only_for_its_drag_and_folder_after_its_delay() {
+        let active: Option<([u8; 16], [u8; 16])> = kani::any();
+        let active = active.map(|(token, folder)| super::Hover {
+            token: ItemId(token),
+            folder: ItemId(folder),
+        });
+        let requested = super::Hover {
+            token: ItemId(kani::any()),
+            folder: ItemId(kani::any()),
+        };
+        let elapsed: u64 = kani::any();
+        let due = super::spring_due(active, requested, elapsed);
+        if due {
+            kani::assert(
+                active == Some(requested),
+                "only the same active drag and folder spring",
+            );
+            kani::assert(
+                elapsed >= super::SPRING_DELAY,
+                "a hover waits for its delay",
+            );
+        } else {
+            kani::assert(
+                active != Some(requested) || elapsed < super::SPRING_DELAY,
+                "every eligible hover springs",
+            );
+        }
+        kani::cover!(
+            due && elapsed == super::SPRING_DELAY,
+            "the delay boundary springs"
+        );
+        kani::cover!(active.is_none(), "a cancelled hover stays closed");
+        kani::cover!(
+            active.is_some_and(|hover| hover.token != requested.token),
+            "a stale drag stays closed"
+        );
+        kani::cover!(
+            active.is_some_and(|hover| hover.folder != requested.folder),
+            "another folder stays closed"
+        );
+    }
+
+    #[cfg(kani)]
+    #[kani::proof]
+    #[kani::unwind(17)]
+    fn rejects_a_spring_before_its_delay() {
+        let hover = super::Hover {
+            token: ItemId([1; 16]),
+            folder: ItemId([2; 16]),
+        };
+        kani::assert(
+            super::spring_due(Some(hover), hover, super::SPRING_DELAY.saturating_sub(1)),
+            "NEGATIVE_LIBRARY_CONTROL",
+        );
+    }
     #[cfg(test)]
     use super::column_moved;
-    #[cfg(kani)]
-    use super::recent;
     use super::{
         ColumnStep, Gathered, Move, Period, RECENT, Standing, WEEK, column_step, gather,
-        grouped_moved, kept_columns, moved, period,
+        grouped_moved, kept_columns, moved, period, period_bounds, recent, recent_since,
     };
     #[cfg(kani)]
     use crate::state::ItemId;
@@ -671,6 +768,13 @@ mod proofs {
         };
         let monotone = later < time || period(later, now) <= period(time, now);
         named && monotone
+    }
+
+    /// What a period's bounds promise: they hold a time exactly when it falls in that period, and the recent times begin where the past month does.
+    pub(super) fn bounds_spec(time: u64, now: u64, age: Period) -> bool {
+        let (from, until) = period_bounds(age, now);
+        let held = from <= time && until.is_none_or(|until| time < until);
+        held == (period(time, now) == age) && recent(time, now) == (time >= recent_since(now))
     }
 
     /// The most items, columns, and places the harnesses draw.
@@ -911,6 +1015,31 @@ mod proofs {
         kani::cover!(period(time, now) == Period::Earlier, "earlier");
     }
 
+    /// Every time, every clock reading, and every period: a period's bounds hold exactly the times that fall in it.
+    #[cfg(kani)]
+    #[kani::proof]
+    fn a_period_s_bounds_hold_exactly_its_times() {
+        let time: u64 = kani::any();
+        let now: u64 = kani::any();
+        let age = match kani::any::<u8>() {
+            0 => Period::Week,
+            1 => Period::Month,
+            _ => Period::Earlier,
+        };
+        kani::assert(
+            bounds_spec(time, now, age),
+            "a period's bounds hold exactly its times",
+        );
+        kani::cover!(
+            age == Period::Month && period(time, now) == Period::Month,
+            "a time of the past month"
+        );
+        kani::cover!(
+            age == Period::Earlier && period(time, now) == Period::Earlier,
+            "an earlier time"
+        );
+    }
+
     /// Every listing of up to three items under every key up to three each.
     #[cfg(kani)]
     #[kani::proof]
@@ -945,18 +1074,54 @@ mod proofs {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_hover_waits_and_refuses_stale_drags_and_folders() {
+        let hover = super::Hover {
+            token: ItemId([1; 16]),
+            folder: ItemId([2; 16]),
+        };
+        for elapsed in [
+            0,
+            super::SPRING_DELAY - 1,
+            super::SPRING_DELAY,
+            super::SPRING_DELAY + 1,
+            u64::MAX,
+        ] {
+            assert_eq!(
+                super::spring_due(Some(hover), hover, elapsed),
+                elapsed >= super::SPRING_DELAY
+            );
+            assert!(!super::spring_due(None, hover, elapsed));
+            assert!(!super::spring_due(
+                Some(hover),
+                super::Hover {
+                    token: ItemId([3; 16]),
+                    ..hover
+                },
+                elapsed
+            ));
+            assert!(!super::spring_due(
+                Some(hover),
+                super::Hover {
+                    folder: ItemId([3; 16]),
+                    ..hover
+                },
+                elapsed
+            ));
+        }
+    }
     use super::proofs::{
-        BOUND, KEYS, column_checked, column_step_spec, grid_spec, grouped_spec, grouping_spec,
-        kept_spec, period_spec,
+        BOUND, KEYS, bounds_spec, column_checked, column_step_spec, grid_spec, grouped_spec,
+        grouping_spec, kept_spec, period_spec,
     };
     use super::{
         Counts, Facts, Move, Period, Query, RECENT, RECENT_DAYS, Scope, Sort, Standing, WEEK,
-        WEEK_DAYS, added, collections, column_moved, counts, grouped, grouped_moved, listing,
-        moved, period, recent,
+        WEEK_DAYS, added, by_name, column_moved, counts, grouped, grouped_moved, listing, moved,
+        period, period_bounds, recent, recent_since, trash,
     };
     use crate::clock_rules::{DeviceId, Stamp};
     use crate::rank_rules::{DAY, Visits};
-    use crate::state::{Edit, ItemId, State};
+    use crate::state::{Edit, Entry, ItemId, State};
     use alloc::collections::BTreeMap;
     use alloc::string::String;
     use alloc::vec::Vec;
@@ -1122,11 +1287,7 @@ mod tests {
             "the links by host, the scheme passed over"
         );
         assert_eq!(all(Sort::Opened), [news, w3c, weather, whatwg]);
-        assert_eq!(all(Sort::Manual), [whatwg, w3c, weather, news]);
-        assert_eq!(
-            list(&library, &Scope::Collection(library.work), "", Sort::Manual),
-            [whatwg, w3c]
-        );
+        assert_eq!(Sort::default(), Sort::Title, "a listing sorts by name");
     }
 
     #[test]
@@ -1155,7 +1316,7 @@ mod tests {
             .state
             .apply(
                 Edit::Remove {
-                    entry: crate::state::Entry::Shortcut(library.news),
+                    entry: Entry::Shortcut(library.news),
                 },
                 stamp(20),
             )
@@ -1180,9 +1341,62 @@ mod tests {
                 unsorted: 2,
                 recent: 2,
                 collections: collections_count,
+                trash: 0,
             }
         );
-        assert_eq!(collections(&library.state, &tree), [library.work]);
+    }
+
+    #[test]
+    fn the_trash_lists_its_folders_then_its_shortcuts_by_name_and_hides_what_a_folder_holds() {
+        let mut library = library();
+        let (work, whatwg, weather, news) =
+            (library.work, library.whatwg, library.weather, library.news);
+        let trashed = [
+            Entry::Shortcut(whatwg),
+            Entry::Folder(work),
+            Entry::Shortcut(weather),
+            Entry::Shortcut(news),
+        ];
+        for (wall, entry) in (20..).zip(trashed) {
+            library
+                .state
+                .apply(Edit::Trash { entry }, stamp(wall))
+                .unwrap();
+        }
+        assert_eq!(
+            trash(&library.state),
+            [
+                Entry::Folder(work),
+                Entry::Shortcut(news),
+                Entry::Shortcut(whatwg),
+                Entry::Shortcut(weather),
+            ],
+            "Hacker News, URL Standard, weather"
+        );
+        let tree = library.state.tree();
+        let left = counts(&library.state, &tree, NOW);
+        assert_eq!(
+            (left.all, left.unsorted, left.trash, left.collections.len()),
+            (0, 0, 4, 0),
+            "the trash hides the note inside Work as well"
+        );
+        assert_eq!(list(&library, &Scope::All, "", Sort::Newest), []);
+        assert_eq!(list(&library, &Scope::All, "spec", Sort::Newest), []);
+        library
+            .state
+            .apply(
+                Edit::PutBack {
+                    entry: Entry::Folder(work),
+                },
+                stamp(24),
+            )
+            .unwrap();
+        assert_eq!(
+            list(&library, &Scope::Collection(work), "", Sort::Newest),
+            [library.w3c],
+            "the shortcut put in the trash on its own stays there"
+        );
+        assert_eq!(by_name("École", news).0, "école");
     }
 
     #[test]
@@ -1406,6 +1620,47 @@ mod tests {
             ]
         );
         assert_eq!(grouped(&[], |id: ItemId| id), []);
+    }
+
+    #[test]
+    fn a_period_s_bounds_hold_exactly_its_times() {
+        assert_eq!(period_bounds(Period::Week, NOW), (NOW - WEEK, None));
+        assert_eq!(
+            period_bounds(Period::Month, NOW),
+            (NOW - RECENT, Some(NOW - WEEK))
+        );
+        assert_eq!(period_bounds(Period::Earlier, NOW), (0, Some(NOW - RECENT)));
+        assert_eq!(period_bounds(Period::Month, WEEK - 1), (0, Some(0)));
+        assert_eq!(recent_since(NOW), NOW - RECENT);
+        assert_eq!(recent_since(RECENT - 1), 0);
+        let nows = [
+            0,
+            1,
+            WEEK - 1,
+            WEEK,
+            WEEK + 1,
+            RECENT,
+            RECENT + 1,
+            NOW,
+            u64::MAX,
+        ];
+        for now in nows {
+            let mut times = alloc::vec![0, 1, now, u64::MAX];
+            for span in [WEEK, RECENT] {
+                for edge in [
+                    now.saturating_sub(span),
+                    now.saturating_sub(span).saturating_sub(1),
+                ] {
+                    times.push(edge);
+                }
+            }
+            times.push(now.saturating_add(1));
+            for time in times {
+                for age in [Period::Week, Period::Month, Period::Earlier] {
+                    assert!(bounds_spec(time, now, age), "{time} {now} {age:?}");
+                }
+            }
+        }
     }
 
     #[test]

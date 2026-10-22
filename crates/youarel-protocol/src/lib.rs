@@ -5,4 +5,5 @@
 pub mod log;
 pub mod message;
 pub mod relay;
+pub mod segment;
 pub mod wire;

@@ -1,7 +1,8 @@
 ---
-status: proposed
+status: amended
 date: 2026-10-15
 amends: passwordless-device-identity.md
+amended-by: the-device-keys-live-beside-the-state.md
 ---
 # Membership replayed from a signed log, joined through a code and four messages
 

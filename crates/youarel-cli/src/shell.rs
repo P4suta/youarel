@@ -3,27 +3,33 @@
 //! The launcher reads its own input, asks [`step`](youarel_core::ui_rules::step) what it means, and hands the effect to [`carry_out`], which acts through the store and the browser.
 //! The texts here are what the launcher shows for the interface; it draws them and decides nothing the machine decides.
 
+use crate::resolve::named;
 use crate::web::Page;
 use crate::{clock, icons, web};
 use anyhow::Result;
 use std::collections::BTreeMap;
-use youarel_core::rank_rules::Visits;
-use youarel_core::state::{Edit, Entry, ItemId, Slot, State};
+use youarel_core::state::{Edit, Entry, ItemId, Slot};
 use youarel_core::ui_rules::{Effect, Field, Mode, Row, Ui};
-use youarel_core::view;
 use youarel_link::Link;
-use youarel_store::Store;
+use youarel_store::{Session, Store, StoreError};
 
 /// The key hints a launcher shows while browsing.
 pub const HINTS: &str = "Enter open · → ← folders · ^E rename · ^L alias · ^D remove · ^O new folder · ^X ^V move · Shift ↑↓ reorder · Esc quit";
 /// The notice while the page of a link to add is read.
 pub const READING_TITLE: &str = "reading the page's title and icon…";
+/// The most entries a launcher shows: the first of a folder's entries, or the best of a search's matches.
+pub const SHOWN: usize = 200;
 
-/// What a launcher shows: the state as read, and the rows for the interface.
+/// What a launcher shows: one page of rows for the interface with the texts of each, the path of the folder browsed, and the names of the entries the header and the prompt name.
 #[derive(Debug)]
 pub struct Screen {
-    pub state: State,
     pub rows: Vec<Row>,
+    /// The texts of each row, in the rows' order.
+    pub texts: Vec<RowText>,
+    /// The names of the folders from the top down to the one browsed, joined by slashes.
+    pub path: String,
+    /// The text that names the carried entry and the one waiting for confirmation.
+    pub names: BTreeMap<Entry, String>,
 }
 
 /// What a launcher does after an effect.
@@ -35,36 +41,118 @@ pub enum Outcome {
     Leave,
 }
 
-/// The rows for the interface: the core's rows, after an offer to add a typed link the store does not hold.
-#[must_use]
-pub fn rows(state: &State, ui: &Ui, visits: &BTreeMap<ItemId, Visits>, now: u64) -> Vec<Row> {
-    let mut rows = view::rows(state, ui, visits, now);
-    if let Ok(link) = Link::parse(ui.query.trim()) {
-        let held = state
-            .shortcuts
-            .values()
-            .any(|shortcut| !shortcut.removed.value && shortcut.link.value == link.as_str());
-        if !held {
-            rows.insert(0, Row::Add(link.as_str().to_owned()));
+/// The rows for the interface: one page of a folder's entries or of a search's matches.
+///
+/// While the query is empty, the first [`SHOWN`] entries of the folder follow a way up, and otherwise the best [`SHOWN`] matches.
+/// An offer to add a typed link the store does not hold comes first.
+///
+/// # Errors
+///
+/// Returns a [`StoreError`] when the store cannot be read.
+pub fn rows(session: &Session, ui: &Ui) -> Result<Vec<Row>, StoreError> {
+    let mut rows = Vec::new();
+    if ui.query.is_empty() {
+        let folders = session.folders();
+        let folder = ui.folder.filter(|folder| folders.shows(*folder));
+        if let Some(folder) = folder {
+            rows.push(Row::Parent(folders.tree().parent(folder)));
         }
+        rows.extend(
+            session
+                .entries_page(folder, 0, SHOWN)?
+                .into_iter()
+                .map(Row::Entry),
+        );
+    } else {
+        rows.extend(
+            session
+                .find(&ui.query)?
+                .into_iter()
+                .take(SHOWN)
+                .map(Row::Entry),
+        );
     }
-    rows
+    if let Ok(link) = Link::parse(ui.query.trim())
+        && !session.holds_link(link.as_str())?
+    {
+        rows.insert(0, Row::Add(link.as_str().to_owned()));
+    }
+    Ok(rows)
 }
 
-/// The state and the rows the interface shows now.
+/// The texts of one row as the store holds its entry.
+fn text_of(session: &Session, row: &Row) -> Result<RowText, StoreError> {
+    let text = |kind, name: &str, detail: &str, alias: &str| RowText {
+        kind,
+        name: name.to_owned(),
+        detail: detail.to_owned(),
+        alias: alias.to_owned(),
+    };
+    Ok(match row {
+        Row::Parent(_) => text(Kind::Parent, "..", "", ""),
+        Row::Add(link) => text(Kind::Add, "add", link, ""),
+        Row::Entry(Entry::Folder(id)) => text(
+            Kind::Folder,
+            session
+                .folders()
+                .folder(*id)
+                .map_or("", |folder| folder.name.value.as_str()),
+            "",
+            "",
+        ),
+        Row::Entry(Entry::Shortcut(id)) => session.item(*id)?.map_or_else(
+            || text(Kind::Shortcut, "", "", ""),
+            |shortcut| {
+                text(
+                    Kind::Shortcut,
+                    &shortcut.title.value,
+                    bare(&shortcut.link.value),
+                    &shortcut.alias.value,
+                )
+            },
+        ),
+    })
+}
+
+/// The texts that name the carried entry and the entry waiting for confirmation.
+fn names(session: &Session, ui: &Ui) -> Result<BTreeMap<Entry, String>, StoreError> {
+    let confirmed = match &ui.mode {
+        Mode::Confirm { target } => Some(*target),
+        Mode::Browse | Mode::Typing { .. } => None,
+    };
+    let mut found = BTreeMap::new();
+    for entry in ui.carried.into_iter().chain(confirmed) {
+        let shortcut = match entry {
+            Entry::Shortcut(id) => session.item(id)?,
+            Entry::Folder(_) => None,
+        };
+        found.insert(entry, named(session.folders(), entry, shortcut.as_ref()));
+    }
+    Ok(found)
+}
+
+/// The rows the interface shows now, with their texts and the names the header and the prompt show.
 ///
 /// # Errors
 ///
 /// Returns an error when the clock or the store cannot be read.
 pub fn load(store: &Store, ui: &Ui) -> Result<Screen> {
     let now = clock::now()?;
-    let (state, visits) = store
+    store
         .session(now, |session| {
-            Ok((session.state().clone(), session.visits().clone()))
+            let rows = rows(session, ui)?;
+            let texts = rows
+                .iter()
+                .map(|row| text_of(session, row))
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(Screen {
+                texts,
+                path: session.folders().path(ui.folder).join("/"),
+                names: names(session, ui)?,
+                rows,
+            })
         })
-        .map_err(anyhow::Error::from)?;
-    let rows = rows(&state, ui, &visits, now);
-    Ok(Screen { state, rows })
+        .map_err(anyhow::Error::from)
 }
 
 /// Runs one edit in a session now, and the notice it leaves.
@@ -80,9 +168,34 @@ fn edit(store: &Store, edit: Edit, done: &str) -> Outcome {
     }))
 }
 
+/// Moves an entry beside a neighbor in the folder it sits in, which the store tells.
+fn reorder(store: &Store, entry: Entry, slot: Slot) -> Outcome {
+    let result = clock::now().and_then(|now| {
+        store
+            .session(now, |session| {
+                let folder = match entry {
+                    Entry::Folder(id) => session.folders().tree().parent(id),
+                    Entry::Shortcut(id) => session
+                        .item(id)?
+                        .and_then(|shortcut| session.folders().home(&shortcut)),
+                };
+                session.edit(Edit::Move {
+                    entry,
+                    folder,
+                    slot,
+                })
+            })
+            .map_err(anyhow::Error::from)
+    });
+    Outcome::Continue(Some(match result {
+        Ok(()) => "moved".to_owned(),
+        Err(error) => format!("{error:#}"),
+    }))
+}
+
 /// Carries out one effect of the machine through the store and the browser.
 #[must_use]
-pub fn carry_out(store: &Store, ui: &Ui, screen: &Screen, effect: Effect) -> Outcome {
+pub fn carry_out(store: &Store, ui: &Ui, effect: Effect) -> Outcome {
     match effect {
         Effect::None => Outcome::Continue(None),
         Effect::Quit => Outcome::Leave,
@@ -120,25 +233,12 @@ pub fn carry_out(store: &Store, ui: &Ui, screen: &Screen, effect: Effect) -> Out
             neighbor,
             before,
         } => {
-            let tree = screen.state.tree();
-            let folder = match entry {
-                Entry::Folder(id) => tree.parent(id),
-                Entry::Shortcut(id) => screen.state.folder_of(&tree, id),
-            };
             let slot = if before {
                 Slot::Before(neighbor)
             } else {
                 Slot::After(neighbor)
             };
-            edit(
-                store,
-                Edit::Move {
-                    entry,
-                    folder,
-                    slot,
-                },
-                "moved",
-            )
+            reorder(store, entry, slot)
         }
     }
 }
@@ -155,11 +255,8 @@ fn open(store: &Store, id: ItemId) -> Outcome {
     let link = clock::now().and_then(|now| {
         store
             .session(now, |session| {
-                session.visit(id);
-                Ok(session
-                    .state()
-                    .shortcut(id)
-                    .map(|shortcut| shortcut.link.value.clone()))
+                session.visit(id)?;
+                Ok(session.item(id)?.map(|shortcut| shortcut.link.value))
             })
             .map_err(anyhow::Error::from)
     });
@@ -252,43 +349,14 @@ pub struct RowText {
     pub alias: String,
 }
 
-/// The texts of one row.
-#[must_use]
-pub fn row_text(state: &State, row: &Row) -> RowText {
-    let text = |kind, name: &str, detail: &str, alias: &str| RowText {
-        kind,
-        name: name.to_owned(),
-        detail: detail.to_owned(),
-        alias: alias.to_owned(),
-    };
-    match row {
-        Row::Parent(_) => text(Kind::Parent, "..", "", ""),
-        Row::Add(link) => text(Kind::Add, "add", link, ""),
-        Row::Entry(Entry::Folder(id)) => text(
-            Kind::Folder,
-            state
-                .folder(*id)
-                .map_or("", |folder| folder.name.value.as_str()),
-            "",
-            "",
-        ),
-        Row::Entry(Entry::Shortcut(id)) => state.shortcut(*id).map_or_else(
-            || text(Kind::Shortcut, "", "", ""),
-            |shortcut| {
-                text(
-                    Kind::Shortcut,
-                    &shortcut.title.value,
-                    bare(&shortcut.link.value),
-                    &shortcut.alias.value,
-                )
-            },
-        ),
-    }
+/// The text that names an entry the screen names, or none for one it does not.
+fn describe(screen: &Screen, entry: Entry) -> &str {
+    screen.names.get(&entry).map_or("", String::as_str)
 }
 
 /// The prompt: what typing fills now, and the text typed so far.
 #[must_use]
-pub fn prompt(ui: &Ui, state: &State) -> String {
+pub fn prompt(ui: &Ui, screen: &Screen) -> String {
     match &ui.mode {
         Mode::Browse => format!("> {}", ui.query),
         Mode::Typing {
@@ -304,32 +372,30 @@ pub fn prompt(ui: &Ui, state: &State) -> String {
             };
             format!("{label}: {text}")
         }
-        Mode::Confirm { target } => {
-            let tree = state.tree();
-            let named = crate::resolve::describe(state, &tree, *target);
-            format!("remove {named}? y / n")
-        }
+        Mode::Confirm { target } => format!("remove {}? y / n", describe(screen, *target)),
     }
 }
 
 /// The header: the browsed folder's path, and the entry the person carries.
 #[must_use]
-pub fn header(ui: &Ui, state: &State) -> String {
-    let tree = state.tree();
-    let mut title = format!("youarel  /{}", state.path(&tree, ui.folder).join("/"));
+pub fn header(ui: &Ui, screen: &Screen) -> String {
+    let mut title = format!("youarel  /{}", screen.path);
     if let Some(carried) = ui.carried {
         title.push_str("  · carrying ");
-        title.push_str(&crate::resolve::describe(state, &tree, carried));
+        title.push_str(describe(screen, carried));
     }
     title
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Kind, Outcome, bare, carry_out, header, load, prompt, row_text};
-    use youarel_core::state::Entry;
+    use super::{Kind, Outcome, SHOWN, bare, carry_out, header, load, prompt};
+    use youarel_core::state::{Edit, Entry, ItemId};
     use youarel_core::ui_rules::{Effect, Field, Mode, Row, Ui};
     use youarel_store::Store;
+
+    /// A time for the sessions the tests run.
+    const NOW: u64 = 1_700_000_000_000;
 
     #[test]
     fn a_launcher_shows_and_edits_the_store_through_the_shell() {
@@ -337,11 +403,10 @@ mod tests {
         let store = Store::new(home.path().to_path_buf());
         let ui = Ui::default();
         let empty = load(&store, &ui).unwrap();
-        assert_eq!(empty.rows, []);
+        assert_eq!((empty.rows.len(), empty.texts.len()), (0, 0));
         let created = carry_out(
             &store,
             &ui,
-            &empty,
             Effect::CreateFolder {
                 name: "Work".to_owned(),
                 parent: None,
@@ -361,13 +426,14 @@ mod tests {
                 Row::Entry(Entry::Shortcut(_)) | Row::Parent(_) | Row::Add(_) => None,
             })
             .unwrap();
-        let shown = row_text(&screen.state, &Row::Entry(Entry::Folder(folder)));
+        let shown = &screen.texts[0];
         assert_eq!((shown.kind, shown.name.as_str()), (Kind::Folder, "Work"));
         let carrying = Ui {
             carried: Some(Entry::Folder(folder)),
             ..Ui::default()
         };
-        assert!(header(&carrying, &screen.state).contains("carrying"));
+        let carried = load(&store, &carrying).unwrap();
+        assert!(header(&carrying, &carried).contains("carrying Work/"));
         let naming = Ui {
             mode: Mode::Typing {
                 target: None,
@@ -376,11 +442,23 @@ mod tests {
             },
             ..Ui::default()
         };
-        assert_eq!(prompt(&naming, &screen.state), "new folder: Ho");
-        assert_eq!(
-            carry_out(&store, &ui, &screen, Effect::Quit),
-            Outcome::Leave
-        );
+        assert_eq!(prompt(&naming, &screen), "new folder: Ho");
+        let confirming = Ui {
+            mode: Mode::Confirm {
+                target: Entry::Folder(folder),
+            },
+            ..Ui::default()
+        };
+        let asked = load(&store, &confirming).unwrap();
+        assert_eq!(prompt(&confirming, &asked), "remove Work/? y / n");
+        assert_eq!(carry_out(&store, &ui, Effect::Quit), Outcome::Leave);
+        let inside = Ui {
+            folder: Some(folder),
+            ..Ui::default()
+        };
+        let opened = load(&store, &inside).unwrap();
+        assert_eq!(opened.rows, [Row::Parent(None)]);
+        assert_eq!(header(&inside, &opened), "youarel  /Work");
         let typed = Ui {
             query: "https://example.com/".to_owned(),
             ..Ui::default()
@@ -392,5 +470,53 @@ mod tests {
         );
         assert_eq!(bare("https://example.com/"), "example.com/");
         assert_eq!(bare("http://example.com/"), "example.com/");
+    }
+
+    #[test]
+    fn a_launcher_shows_one_page_and_reorders_in_the_folder_the_store_names() {
+        let home = tempfile::tempdir().unwrap();
+        let store = Store::new(home.path().to_path_buf());
+        let ids: Vec<ItemId> = store
+            .session(NOW, |session| {
+                let mut ids = Vec::new();
+                for place in 0..=SHOWN {
+                    let id = session.fresh_id()?;
+                    session.edit(Edit::AddShortcut {
+                        id,
+                        link: format!("https://example.com/{place}"),
+                        title: format!("Page {place}"),
+                        folder: None,
+                    })?;
+                    ids.push(id);
+                }
+                Ok(ids)
+            })
+            .unwrap();
+        let screen = load(&store, &Ui::default()).unwrap();
+        assert_eq!((screen.rows.len(), screen.texts.len()), (SHOWN, SHOWN));
+        assert_eq!(screen.texts[1].detail, "example.com/1");
+        let searched = Ui {
+            query: "page".to_owned(),
+            ..Ui::default()
+        };
+        assert_eq!(load(&store, &searched).unwrap().rows.len(), SHOWN);
+        let moved = carry_out(
+            &store,
+            &Ui::default(),
+            Effect::Reorder {
+                entry: Entry::Shortcut(ids[1]),
+                neighbor: Entry::Shortcut(ids[0]),
+                before: true,
+            },
+        );
+        assert_eq!(moved, Outcome::Continue(Some("moved".to_owned())));
+        let reordered = load(&store, &Ui::default()).unwrap();
+        assert_eq!(
+            reordered.rows[..2],
+            [
+                Row::Entry(Entry::Shortcut(ids[1])),
+                Row::Entry(Entry::Shortcut(ids[0]))
+            ]
+        );
     }
 }

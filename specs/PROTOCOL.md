@@ -48,41 +48,74 @@ The account never loses its last member to a concurrent removal, because the rep
 The epoch key encrypts the state.
 A `Rotate` operation carries the new key wrapped for each member it reaches, so a member reads the key with its own key-encapsulation key.
 The rotation that sets the current epoch in the replay names the current key; when two members rotate to one epoch at once, the first of them in the replay wins.
-A device keeps every epoch key it can unwrap, by its commitment, since concurrent rotations may share an epoch number, so a bundle sealed under an earlier or a losing key still opens.
+A device keeps every epoch key it can unwrap, by its commitment, since concurrent rotations may share an epoch number, so a segment sealed under an earlier or a losing key still opens.
 A device MUST seal under the current epoch, and before sealing it MUST rotate when a member lacks a slot of the current epoch or a member was removed since the last rotation.
-A removal and its rotation SHOULD travel in one bundle.
+A removal and its rotation SHOULD travel in one publication.
 
-## Bundles
+## Segment chains
 
-A bundle carries an account's membership log and one device's state, sealed under an epoch key and signed by its sender.
+A device owns an increasing chain of immutable sealed, signed segments.
+Each segment carries complete records of a partial state, with the ordinary register stamps and join, and authenticates the sender, epoch, sequence, preceding plaintext digest, and kind.
+The first sequence is one, with a zero predecessor.
+The first segment and the first part of a snapshot carry the membership log; other segments MAY carry it too.
+The current writer carries the full checked log in every envelope.
 
-A device importing a bundle MUST:
+A device receiving a segment MUST:
 
-1. reject a bundle of another account;
-2. merge the bundle's log into its own and resolve it;
+1. reject a segment of another account;
+2. merge the operations that verify into its log and resolve it;
 3. reject the state when the sender is not a member after resolution, or its signature fails;
-4. open the state with the epoch key the bundle names, and reject it when the key commitment or the authentication fails;
-5. decode the state, admit every link again, and merge it into its own.
+4. open the records with the named epoch key and reject a failed commitment or authentication;
+5. require the next sequence and matching predecessor, or the first part of an advertised complete retained snapshot after a gap;
+6. decode the complete record body, admit every link again, and commit the record merges with the peer cursor in one transaction.
 
-A bundle can travel as a file through any channel: a USB drive, a messenger, or a shared folder in which each device writes only `<device>.youarel`, named by its identifier in hexadecimal.
-A device syncing through a shared folder imports every other device's file there, reports and skips any it refuses, and then writes its own.
+A duplicate plaintext at the cursor's sequence is harmless; a conflicting digest there refuses.
+An older sequence does not change the cursor.
+A missing prefix with no complete retained snapshot reports `Lost` and requires a one-time bootstrap through another source.
+An adapter MUST report incomplete or refused peers instead of claiming a complete sync, while continuing other peers and its own publication.
+
+A delta includes only records with this device's writes after its committed watermark.
+Received writes do not trigger an echo.
+The writer reserves immutable bodies and saves their exact envelopes before exposing them, then commits the watermark only after delivery of every part.
+A retry reuses those envelopes, and edits after reservation remain dirty.
+Automatic compaction accompanies a pending change after 256 deltas or twice the preceding snapshot's body bytes.
+Snapshots stream complete records in parts targeting 8 MiB, with an admitted plaintext limit of 16 MiB per segment.
+
+A shared folder holds `<device hex>/<20-digit sequence>.youarel` and `<device hex>/head`.
+The writer saves segment files before replacing its head and prunes older files afterwards.
+Readers report files that have not arrived yet without advancing their cursors.
+Export and import use a snapshot directory of that same layout; import writes nothing there.
+Changing targets ordinarily writes a full snapshot after every previously reserved sequence, without reusing a sequence.
 
 ## The relay
 
-The optional relay is a shared folder that checks who writes: it keeps one slot per member, holding that member's newest bundle, and hands every member's slot to any member.
+The optional relay checks who writes and keeps a bounded segment chain per member.
 It never holds an epoch key, so it reads no state.
 
 A member's request carries the account, the device, a verb, the device's clock in milliseconds, a random nonce, and a payload, signed by the device under `youarel/v1/request`.
 The relay MUST refuse a request whose time lies more than 120 seconds from its own clock, whose nonce it admitted before, whose device the account's log does not list as a member, or whose signature fails.
 It keeps each admitted nonce until the request would be stale anyway.
 
-- **Publish** carries the member's bundle, which the relay MUST verify against the account's log and the member's keys before it replaces the member's slot.
-  The relay merges the bundle's operations that verify into its own copy of the log, so the first bundle of an account founds the account at the relay, and a device that returns after the relay deleted the account seeds it again.
-- **Collect** hands back every member's slot, in ascending order of the devices.
+- **Publish** carries one segment whose account, sender, membership, and signature MUST verify.
+  It requires the next sequence with compatible snapshot parts, or a newer snapshot part zero as a restart.
+  An exact retained replay is accepted; different bytes at an occupied sequence refuse, and a pruned older publication does not change the head.
+  Checked membership operations establish or update the account at the relay.
+- **Collect** carries cursors and returns a bounded `Delivered` page in device order, with checked membership operations, chain availability, publication times, and a `more` flag.
+- **Bridge** explicitly starts a newer delta suffix after a device uses another transport for a large-library bootstrap.
+  It cannot claim to be a snapshot and advertises no snapshot hint.
+  A reader still requires the matching preceding plaintext digest, so only a peer already caught up through that other transport can continue.
 - **Erase** deletes everything the relay keeps of the account.
 
-The relay drops the slot of every device the log stops listing, keeps an account no longer than 400 days after its last admitted request, and bounds what an account holds in all.
-A member hears of a device whose slot the relay has not renewed for 180 days, and ends that membership only when its person says so, since the slot's time is the relay's own claim.
+The relay retains at most 64 chains and 64 MiB of segment envelopes in an account.
+An append may prune only its own older prefix, keeping the newest complete snapshot and its suffix when they fit.
+Otherwise it keeps the largest fitting suffix and MUST omit the incomplete snapshot hint.
+An incoming segment that cannot fit beside the other chains refuses with `TooLarge`.
+A library whose snapshot exceeds that quota uses deltas at the relay, and a lagging peer receives `Lost` until it bootstraps through a shared folder or snapshot directory.
+A known oversized snapshot or an existing relay suffix without a complete snapshot suppresses automatic full snapshots at that target.
+
+The relay drops the chain of every device the log stops listing and keeps an account no longer than 400 days after its last admitted request.
+A member hears of a device whose chain the relay has not renewed for 180 days and ends that membership only when its person says so, since the time is the relay's own claim.
+A device renews an unchanged chain after 30 days by resending its exact latest envelope in a fresh signed request, without allocating a sequence or emitting a new edit.
 A device that returns after a long absence revives nothing, because the state keeps every tombstone.
 
 The relay keeps a directory that names the account of every recovery member: whenever a member publishes, it notes the members whose `AddRecovery` the account's log holds and still lists.
@@ -104,8 +137,10 @@ A new device joins through a short code and four messages, which a channel of th
 4. The joiner completes the PAKE, decapsulates, derives the same key, and checks the inviter's confirmation.
    It sends its own confirmation of the channel key.
 5. The inviter MUST check that confirmation before it sends anything secret.
-   It then writes the `Add` operation and sends the entry: the log, which now lists the joiner, the epoch keys, and its state, sealed under the channel key.
-6. The joiner opens the entry and installs what it holds, as a member.
+   It then writes the `Add` operation and sends the entry: the log, which now lists the joiner, every held epoch key, and an optional snapshot hint, sealed under the channel key.
+   It sends no library records in the entry.
+6. The joiner checks that the log actually admits its public identity, installs the metadata, and fetches records through ordinary segment sync.
+   An entry MUST NOT replace an existing association.
 
 An attacker who reads the messages cannot test codes offline, an attacker who replaces a message gets one guess per invitation, and an invitation expires when it is used or abandoned.
 The inviter seals the entry only for a joiner that proved the channel key while the code was secret, so an attacker who answers the welcome itself receives nothing to open, even after it learns the code.
@@ -118,11 +153,14 @@ The key is a secret that a person prints and keeps, and the keys of one member g
 
 1. A member creates the key, signs the consent as the key's member, and writes the `AddRecovery` operation.
    It then rotates, so the key's member holds a slot of the current epoch, as every member does.
-2. A device that recovers finds a bundle of the account: a file, a shared folder, or the relay, whose directory names the account of the key's member.
-   Through the relay, it collects the bundles as the key's member, which the relay admits as any member.
-3. Before it keeps anything, the device MUST check that the bundle's log holds the key member's consented `AddRecovery` and still lists it, that a member signed the bundle, and that the key member's slots open the bundle's state.
-4. The device then keeps the log and the epoch keys, writes the `Add` of its own keys under the key member's signature, and merges the state.
-   Its first bundle carries that `Add`, so its next seal rotates to an epoch that reaches it.
+   The enrolling device also signs a rotation grant for each other epoch key it holds, with its original epoch and commitment and a slot sealed to the recovery member.
+   These historical grants remain in the checked rotation list without replacing the canonical current epoch, so the new key can read retained snapshots and segments from before its enrollment.
+2. A recovering device finds a retained chain in a shared folder, snapshot directory, or the relay, whose directory names the account of the key's member.
+   Through the relay it collects as the key's member, which the relay admits as any member.
+3. Before saving its association, the device MUST check the key member's consented `AddRecovery`, current membership, the segment sender's signature, and the key member's ability to open the segment under its named epoch.
+4. The device keeps the log and epoch keys, writes the `Add` of its own keys under the key member's signature, and receives the retained records through ordinary sync.
+   Its first publication carries that `Add` and rotates to an epoch that reaches it.
+   A relay without a usable bootstrap requires recovery through a shared folder or snapshot directory.
+   An incomplete or broken import is an unfinished recovery, never a successful empty library.
 
 The key's member stays a member, so the key keeps working until a member removes that member; a person who suspects that someone read the key removes its member and creates another.
-A passkey's PRF output, which an authenticator returns for the same credential each time, can take the place of the recovery key.

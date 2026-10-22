@@ -152,7 +152,7 @@ fn chunk(out: &mut Vec<u8>, kind: [u8; 4], data: &[u8]) -> Result<()> {
 }
 
 /// The PNG of the drawing at `side` pixels, with every scanline unfiltered.
-fn png(side: u32) -> Result<Vec<u8>> {
+pub(crate) fn png(side: u32) -> Result<Vec<u8>> {
     let pixels = draw(side)?;
     let line = usize::try_from(side)?.saturating_mul(PIXEL);
     let mut encoder = ZlibEncoder::new(Vec::new(), Compression::best());

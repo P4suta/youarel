@@ -1,6 +1,7 @@
 ---
-status: proposed
+status: amended
 date: 2026-10-19
+amended-by: the-state-is-kept-in-an-indexed-store.md, a-store-reads-only-the-format-it-writes.md
 ---
 # Binary records hold the state
 

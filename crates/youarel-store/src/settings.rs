@@ -3,9 +3,11 @@
 //! Only the window writes them, so they live beside the store outside its lock, and a lost write loses a preference and nothing of the state.
 //! Decoding accepts only what encoding writes: known fields, known words, and every color of an imported theme.
 
+use crate::codec;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use youarel_core::library_rules::{Grouping, Layout, Sort};
+use youarel_core::state::ItemId;
 use youarel_core::theme_rules::{self, ALL, Color, Kind, Palette, SLOTS, Slot};
 
 /// The file of the window's preferences.
@@ -28,13 +30,12 @@ const LAYOUTS: [(Layout, &str); 3] = [
     (Layout::Columns, "columns"),
 ];
 /// The words that name each order in the document.
-const SORTS: [(Sort, &str); 6] = [
+const SORTS: [(Sort, &str); 5] = [
     (Sort::Newest, "newest"),
     (Sort::Oldest, "oldest"),
     (Sort::Title, "title"),
     (Sort::Link, "link"),
     (Sort::Opened, "opened"),
-    (Sort::Manual, "manual"),
 ];
 /// The words that name each grouping in the document.
 const GROUPINGS: [(Grouping, &str); 4] = [
@@ -127,11 +128,13 @@ pub enum Column {
 /// Every column of the list that a person may hide, in the order the list shows them.
 pub const HIDEABLE: [Column; 3] = [Column::Link, Column::Collection, Column::Added];
 
-/// The window's preferences.
+/// The window's preferences, which a person sets and the window never sets behind their back.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Settings {
-    /// The layout the window last showed, which it opens with again.
+    /// The layout the window opens with, whatever layout it showed last.
     pub layout: Layout,
+    /// The collection the window opens at, or every shortcut for none, whatever place it showed last.
+    pub start: Option<ItemId>,
     /// The order of a listing without a search.
     pub sort: Sort,
     /// How the cards and the list gather their shortcuts under headings.
@@ -199,6 +202,9 @@ struct ImportedDocument {
 struct Document {
     format: u32,
     layout: String,
+    /// The collection the window opens at in hexadecimal, which a document from before the setting lacks, and which every shortcut leaves out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    start: Option<String>,
     sort: String,
     /// The grouping, which a document from before groupings lacks, and which no grouping leaves out.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -311,6 +317,7 @@ pub fn encode(settings: &Settings) -> Result<String, serde_json::Error> {
     let document = Document {
         format: FORMAT,
         layout: word(&LAYOUTS, settings.layout).to_owned(),
+        start: settings.start.map(|ItemId(id)| codec::hex(&id)),
         sort: word(&SORTS, settings.sort).to_owned(),
         group: (settings.grouping != Grouping::None)
             .then(|| word(&GROUPINGS, settings.grouping).to_owned()),
@@ -356,6 +363,14 @@ pub fn decode(text: &str) -> Result<Settings, DecodeError> {
     };
     Ok(Settings {
         layout: named(&LAYOUTS, &document.layout)?,
+        start: document
+            .start
+            .map(|spelled| {
+                codec::from_hex(&spelled)
+                    .map(ItemId)
+                    .ok_or(DecodeError::Word(spelled))
+            })
+            .transpose()?,
         sort: named(&SORTS, &document.sort)?,
         grouping: match document.group {
             Some(group) => named(&GROUPINGS, &group)?,

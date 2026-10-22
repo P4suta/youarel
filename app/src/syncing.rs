@@ -2,7 +2,7 @@
 
 use serde::Serialize;
 use youarel_core::folder_rules::{self, Seen};
-use youarel_core::sync_rules::{self, Schedule, Sync};
+use youarel_core::sync_rules::{self, Outcome, Schedule, Sync};
 use youarel_store::settings::SyncChoice;
 
 /// Where the window's syncing stands, as the sidebar and the settings show it.
@@ -39,7 +39,8 @@ pub struct SyncView {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Syncing {
     schedule: Schedule,
-    running: bool,
+    /// The sync that runs, or `None`.
+    running: Option<Sync>,
     error: Option<String>,
     /// The name of this device's own bundle in the shared folder, once a sync learned it.
     own: Option<String>,
@@ -50,41 +51,48 @@ pub struct Syncing {
 }
 
 impl Syncing {
-    /// Notes an edit, which the other devices then need soon.
-    pub const fn edited(&mut self) {
-        self.schedule.edited = true;
+    /// Notes an edit at `now`, which the other devices then need once a burst of edits settles.
+    pub const fn edited(&mut self, now: u64) {
+        self.schedule.pending = true;
+        self.schedule.edited = Some(now);
     }
 
-    /// Makes the next sync due at once, as after a change of the settings or a person's request.
+    /// Notes that this device holds what no publish carried, as the store says at the window's start.
+    pub const fn unpublished(&mut self) {
+        self.schedule.pending = true;
+    }
+
+    /// Makes the next sync due at once, as after a change of the settings or a person's request: a publish when something waits for one, and a merge otherwise.
     pub fn now(&mut self) {
         self.schedule = Schedule {
-            edited: self.schedule.edited,
+            pending: self.schedule.pending,
             ..Schedule::default()
         };
     }
 
     /// The sync that should begin at `now` through `choice`, for a device that `has_account` says belongs to one, which this call marks begun; `None` when none should.
     pub fn begin(&mut self, choice: &SyncChoice, has_account: bool, now: u64) -> Option<Sync> {
-        if !choice.enabled || choice.target.is_empty() || !has_account || self.running {
+        if !choice.enabled || choice.target.is_empty() || !has_account || self.running.is_some() {
             return None;
         }
         let sync = sync_rules::due(self.schedule, now)?;
-        self.running = true;
+        self.running = Some(sync);
         self.schedule = sync_rules::begun(self.schedule, sync, now);
         Some(sync)
     }
 
-    /// Records how a sync ended, and answers whether it succeeded.
-    pub fn end(&mut self, outcome: Result<(), String>) -> bool {
-        self.running = false;
+    /// Records how the running sync ended: whether this device still has something new to say at the target, or why it failed; and answers whether it succeeded.
+    pub fn end(&mut self, outcome: Result<bool, String>) -> bool {
+        // An end with no sync begun counts as a publish's, which keeps whatever waits for one.
+        let sync = self.running.take().unwrap_or(Sync::Publish);
         match outcome {
-            Ok(()) => {
-                self.schedule.failures = 0;
+            Ok(pending) => {
+                self.schedule = sync_rules::ended(self.schedule, sync, Outcome::Done { pending });
                 self.error = None;
                 true
             }
             Err(error) => {
-                self.schedule.failures = self.schedule.failures.saturating_add(1);
+                self.schedule = sync_rules::ended(self.schedule, sync, Outcome::Failed);
                 self.error = Some(error);
                 self.rewatch = true;
                 false
@@ -125,7 +133,7 @@ impl Syncing {
             SyncState::Off
         } else if !has_account {
             SyncState::NoAccount
-        } else if self.running {
+        } else if self.running.is_some() {
             SyncState::Syncing
         } else if self.error.is_some() {
             SyncState::Failed
@@ -147,6 +155,10 @@ impl Syncing {
 
 #[cfg(test)]
 mod tests {
+    const OWN_CHAIN: &str = "1111111111111111111111111111111111111111111111111111111111111111";
+    const OWN_HEAD: &str = "1111111111111111111111111111111111111111111111111111111111111111/head";
+    const OTHER_HEAD: &str =
+        "2222222222222222222222222222222222222222222222222222222222222222/head";
     use super::{SyncState, Syncing};
     use youarel_core::folder_rules::Seen;
     use youarel_core::sync_rules::{BACKOFF, INTERVAL, QUIET, SETTLE, Sync};
@@ -177,20 +189,25 @@ mod tests {
         assert_eq!(syncing.begin(&unnamed, true, NOW), None, "no target");
         assert_eq!(syncing.begin(&chosen(), false, NOW), None, "no account");
         assert_eq!(syncing.view(&chosen(), true).state, SyncState::Waiting);
-        assert_eq!(syncing.begin(&chosen(), true, NOW), Some(Sync::Publish));
+        assert_eq!(
+            syncing.begin(&chosen(), true, NOW),
+            Some(Sync::Merge),
+            "the first sync reads at once"
+        );
         assert_eq!(syncing.view(&chosen(), true).state, SyncState::Syncing);
         assert_eq!(
             syncing.begin(&chosen(), true, NOW + INTERVAL),
             None,
             "one sync at a time"
         );
-        assert!(syncing.end(Ok(())));
+        assert!(syncing.end(Ok(false)));
         assert_eq!(syncing.begin(&chosen(), true, NOW + 1), None);
-        syncing.edited();
+        syncing.edited(NOW + 1);
+        assert_eq!(syncing.begin(&chosen(), true, NOW + SETTLE), None);
         assert_eq!(
-            syncing.begin(&chosen(), true, NOW + SETTLE),
+            syncing.begin(&chosen(), true, NOW + 1 + SETTLE),
             Some(Sync::Publish),
-            "an edit syncs soon"
+            "an edit publishes once it settles"
         );
         assert!(!syncing.end(Err("unreachable".to_owned())));
         let failed = syncing.view(&chosen(), true);
@@ -198,19 +215,56 @@ mod tests {
             (failed.state, failed.error.as_deref()),
             (SyncState::Failed, Some("unreachable"))
         );
-        assert_eq!(syncing.begin(&chosen(), true, NOW + SETTLE + 1), None);
+        assert_eq!(syncing.begin(&chosen(), true, NOW + 2 + SETTLE), None);
         assert_eq!(
-            syncing.begin(&chosen(), true, NOW + SETTLE + BACKOFF),
+            syncing.begin(&chosen(), true, NOW + 1 + SETTLE + BACKOFF),
             Some(Sync::Publish),
-            "the backoff passes"
+            "a failed publish tries again once the backoff passes"
         );
-        syncing.end(Ok(()));
+        assert!(syncing.end(Ok(false)));
         syncing.now();
         assert_eq!(
-            syncing.begin(&chosen(), true, NOW + SETTLE + BACKOFF + 1),
-            Some(Sync::Publish),
-            "a request syncs at once"
+            syncing.begin(&chosen(), true, NOW + 2 + SETTLE + BACKOFF),
+            Some(Sync::Merge),
+            "a request reads at once and leaves the published bundle alone"
         );
+        assert!(syncing.end(Ok(false)));
+        syncing.edited(NOW + 3 + SETTLE + BACKOFF);
+        syncing.now();
+        assert_eq!(
+            syncing.begin(&chosen(), true, NOW + 3 + SETTLE + BACKOFF),
+            Some(Sync::Publish),
+            "and publishes at once an edit that waits"
+        );
+    }
+
+    #[test]
+    fn a_merge_that_finds_something_new_brings_one_publish() {
+        let mut syncing = Syncing::default();
+        assert_eq!(syncing.begin(&chosen(), true, NOW), Some(Sync::Merge));
+        assert!(
+            syncing.end(Ok(true)),
+            "the folder lacks this device's bundle"
+        );
+        assert_eq!(syncing.begin(&chosen(), true, NOW + 1), Some(Sync::Publish));
+        assert!(syncing.end(Ok(false)));
+        for tick in 1..=4 {
+            assert_eq!(
+                syncing.begin(&chosen(), true, NOW + 1 + tick * INTERVAL),
+                Some(Sync::Merge),
+                "an idle window only reads"
+            );
+            assert!(syncing.end(Ok(false)));
+        }
+        let mut restarted = Syncing::default();
+        restarted.unpublished();
+        assert_eq!(
+            restarted.begin(&chosen(), true, NOW),
+            Some(Sync::Publish),
+            "what an earlier run left unpublished goes at once"
+        );
+        assert!(restarted.end(Ok(false)));
+        assert_eq!(restarted.begin(&chosen(), true, NOW + 1), None);
     }
 
     #[test]
@@ -236,9 +290,9 @@ mod tests {
     #[test]
     fn another_device_s_bundle_brings_a_merge_once_the_folder_rests() {
         let mut syncing = Syncing::default();
-        assert_eq!(syncing.begin(&chosen(), true, NOW), Some(Sync::Publish));
-        assert!(syncing.end(Ok(())));
-        assert!(syncing.noticed(Seen::Touched("other.youarel"), NOW + 1));
+        assert_eq!(syncing.begin(&chosen(), true, NOW), Some(Sync::Merge));
+        assert!(syncing.end(Ok(false)));
+        assert!(syncing.noticed(Seen::Touched(OTHER_HEAD), NOW + 1));
         assert_eq!(
             syncing.begin(&chosen(), true, NOW + QUIET),
             None,
@@ -248,23 +302,23 @@ mod tests {
             syncing.begin(&chosen(), true, NOW + 1 + QUIET),
             Some(Sync::Merge)
         );
-        assert!(syncing.end(Ok(())));
+        assert!(syncing.end(Ok(false)));
         assert_eq!(
             syncing.begin(&chosen(), true, NOW + 1 + QUIET),
             None,
-            "the merge answered the notice"
+            "the merge answered the notice and found nothing to publish"
         );
     }
 
     #[test]
     fn the_device_s_own_bundle_and_what_lies_beside_it_bring_no_merge() {
         let mut syncing = Syncing::default();
-        syncing.learned("mine.youarel".to_owned());
-        assert!(!syncing.noticed(Seen::Touched("mine.youarel"), NOW));
+        syncing.learned(OWN_CHAIN.to_owned());
+        assert!(!syncing.noticed(Seen::Touched(OWN_HEAD), NOW));
         assert!(!syncing.noticed(Seen::Touched("._other.youarel"), NOW));
         assert!(!syncing.noticed(Seen::Read, NOW));
-        assert_eq!(syncing.begin(&chosen(), true, NOW), Some(Sync::Publish));
-        assert!(syncing.end(Ok(())));
+        assert_eq!(syncing.begin(&chosen(), true, NOW), Some(Sync::Merge));
+        assert!(syncing.end(Ok(false)));
         assert_eq!(syncing.begin(&chosen(), true, NOW + QUIET), None);
         assert!(
             syncing.noticed(Seen::Rescan, NOW + 1),
@@ -282,11 +336,11 @@ mod tests {
         syncing.watching(true);
         assert!(syncing.view(&chosen(), true).watched);
         assert!(!syncing.rewatch());
-        assert_eq!(syncing.begin(&chosen(), true, NOW), Some(Sync::Publish));
+        assert_eq!(syncing.begin(&chosen(), true, NOW), Some(Sync::Merge));
         assert!(!syncing.end(Err("unreachable".to_owned())));
         assert!(syncing.rewatch(), "a failure starts the watch again");
         assert!(!syncing.rewatch(), "and only once");
-        assert!(syncing.noticed(Seen::Touched("other.youarel"), NOW + 1));
+        assert!(syncing.noticed(Seen::Touched(OTHER_HEAD), NOW + 1));
         assert_eq!(
             syncing.begin(&chosen(), true, NOW + 1 + QUIET),
             None,
@@ -294,9 +348,21 @@ mod tests {
         );
         assert_eq!(
             syncing.begin(&chosen(), true, NOW + BACKOFF),
-            Some(Sync::Publish)
+            Some(Sync::Merge),
+            "a failed merge tries again as a merge"
         );
         syncing.watching(false);
         assert!(!syncing.view(&chosen(), true).watched);
+    }
+
+    #[test]
+    fn a_failure_with_no_sync_begun_counts_as_a_failed_publish() {
+        let mut syncing = Syncing::default();
+        assert!(!syncing.end(Err("unreachable".to_owned())));
+        assert_eq!(
+            syncing.begin(&chosen(), true, NOW),
+            Some(Sync::Publish),
+            "it keeps whatever might wait for a publish"
+        );
     }
 }

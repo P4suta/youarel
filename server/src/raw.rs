@@ -2,8 +2,7 @@
 #![expect(
     clippy::future_not_send,
     clippy::too_many_arguments,
-    clippy::unused_async_trait_impl,
-    reason = "a Worker runs its futures on one thread, the binding macros generate the functions that take five arguments, and the Durable Object trait declares every handler async"
+    reason = "a Worker runs its futures on one thread and the binding macros generate the functions that take five arguments"
 )]
 
 use crate::store;
@@ -54,6 +53,26 @@ fn hex(bytes: &[u8]) -> String {
 
 fn failed(error: &StoreError) -> worker::Error {
     worker::Error::RustError(error.to_string())
+}
+
+async fn storage_transaction<T: 'static>(
+    storage: worker::Storage,
+    work: impl FnOnce(worker::SqlStorage) -> Result<T> + 'static,
+) -> Result<T> {
+    let sql = storage.sql();
+    let (sent, received) = oneshot::channel();
+    storage
+        .transaction(move |_transaction| async move {
+            let result = work(sql)?;
+            sent.send(result).map_err(|_closed| {
+                worker::Error::RustError(String::from("the transaction result was dropped"))
+            })?;
+            Ok(())
+        })
+        .await?;
+    received
+        .await
+        .map_err(|error| worker::Error::RustError(error.to_string()))
 }
 
 fn answer(reply: Reply) -> Result<Response> {
@@ -154,8 +173,15 @@ impl core::fmt::Debug for AccountObject {
 }
 
 impl AccountObject {
-    fn store(&self) -> Result<SqlAccount> {
-        SqlAccount::open(self.state.storage().sql()).map_err(|error| failed(&error))
+    async fn transact<T: 'static>(
+        &self,
+        work: impl FnOnce(&mut SqlAccount) -> Result<T> + 'static,
+    ) -> Result<T> {
+        storage_transaction(self.state.storage(), move |sql| {
+            let mut store = SqlAccount::open(sql).map_err(|error| failed(&error))?;
+            work(&mut store)
+        })
+        .await
     }
 
     /// Tells every admitted listener that a member published.
@@ -188,9 +214,12 @@ impl DurableObject for AccountObject {
             return Response::from_websocket(pair.client);
         }
         let body = request.bytes().await?;
-        let mut store = self.store()?;
-        let handled = account::handle(&mut store, Date::now().as_millis(), &body)
-            .map_err(|error| failed(&error))?;
+        let now = Date::now().as_millis();
+        let handled = self
+            .transact(move |store| {
+                account::handle(store, now, &body).map_err(|error| failed(&error))
+            })
+            .await?;
         if let Some(expires) = handled.expires {
             let at = i64::try_from(expires)
                 .map_err(|error| worker::Error::RustError(error.to_string()))?;
@@ -210,8 +239,8 @@ impl DurableObject for AccountObject {
 
     /// Deletes the account once its retention passes without a request.
     async fn alarm(&self) -> Result<Response> {
-        let mut store = self.store()?;
-        account::AccountStore::erase(&mut store).map_err(|error| failed(&error))?;
+        self.transact(|store| account::AccountStore::erase(store).map_err(|error| failed(&error)))
+            .await?;
         for socket in self.state.get_websockets() {
             drop(socket.close(Some(POLICY), Some("the relay deleted the account")));
         }
@@ -239,9 +268,12 @@ impl DurableObject for AccountObject {
         if account::route(&bytes).map(|id| hex(&id)).as_deref() != Some(listener.account.as_str()) {
             return socket.close(Some(POLICY), Some("the request names another account"));
         }
-        let mut store = self.store()?;
-        let handled = account::handle(&mut store, Date::now().as_millis(), &bytes)
-            .map_err(|error| failed(&error))?;
+        let now = Date::now().as_millis();
+        let handled = self
+            .transact(move |store| {
+                account::handle(store, now, &bytes).map_err(|error| failed(&error))
+            })
+            .await?;
         if handled.reply.status != Status::Ok {
             return socket.close(
                 Some(POLICY),
@@ -279,14 +311,17 @@ impl DurableObject for DirectoryObject {
     async fn fetch(&self, mut request: Request) -> Result<Response> {
         let path = request.path();
         let body = request.bytes().await?;
-        let mut store =
-            SqlDirectory::open(self.state.storage().sql()).map_err(|error| failed(&error))?;
-        let reply = if path == REGISTER_PATH {
-            directory::register(&mut store, &body)
-        } else {
-            directory::locate(&store, &body)
-        };
-        answer(reply.map_err(|error| failed(&error))?)
+        let reply = storage_transaction(self.state.storage(), move |sql| {
+            let mut store = SqlDirectory::open(sql).map_err(|error| failed(&error))?;
+            let reply = if path == REGISTER_PATH {
+                directory::register(&mut store, &body)
+            } else {
+                directory::locate(&store, &body)
+            };
+            reply.map_err(|error| failed(&error))
+        })
+        .await?;
+        answer(reply)
     }
 }
 
@@ -307,10 +342,13 @@ impl core::fmt::Debug for MailboxObject {
 }
 
 impl MailboxObject {
-    fn handle(&self, body: &[u8]) -> Result<Reply> {
-        let mut store =
-            SqlMail::open(self.state.storage().sql()).map_err(|error| failed(&error))?;
-        mailbox::handle(&mut store, Date::now().as_millis(), body).map_err(|error| failed(&error))
+    async fn handle(&self, body: Vec<u8>) -> Result<Reply> {
+        let now = Date::now().as_millis();
+        storage_transaction(self.state.storage(), move |sql| {
+            let mut store = SqlMail::open(sql).map_err(|error| failed(&error))?;
+            mailbox::handle(&mut store, now, &body).map_err(|error| failed(&error))
+        })
+        .await
     }
 }
 
@@ -325,8 +363,8 @@ impl DurableObject for MailboxObject {
     async fn fetch(&self, mut request: Request) -> Result<Response> {
         let body = request.bytes().await?;
         let picks = matches!(Mail::decode(&body), Ok(Mail::Pick { .. }));
-        let first = self.handle(&body)?;
         if !picks {
+            let first = self.handle(body).await?;
             if first.status == Status::Ok {
                 for waiter in self.waiting.borrow_mut().drain(..) {
                     // A pick that gave up waiting has dropped its receiver, and the others still wake.
@@ -335,13 +373,17 @@ impl DurableObject for MailboxObject {
             }
             return answer(first);
         }
+        let (woken, wakes) = oneshot::channel();
+        self.waiting
+            .borrow_mut()
+            .retain(|waiter| !waiter.is_canceled());
+        self.waiting.borrow_mut().push(woken);
+        let first = self.handle(body.clone()).await?;
         if first.status != Status::NoContent {
             return answer(first);
         }
-        let (woken, wakes) = oneshot::channel();
-        self.waiting.borrow_mut().push(woken);
         match select(wakes, Delay::from(PICK_WAIT)).await {
-            Either::Left(_) | Either::Right(_) => answer(self.handle(&body)?),
+            Either::Left(_) | Either::Right(_) => answer(self.handle(body).await?),
         }
     }
 }

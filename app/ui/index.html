@@ -28,6 +28,7 @@
       <symbol id="icon-sliders" viewBox="0 0 16 16"><path d="M3 4h10 M3 8h10 M3 12h10" /><circle cx="6" cy="4" r="1.4" /><circle cx="10.5" cy="8" r="1.4" /><circle cx="5" cy="12" r="1.4" /></symbol>
       <symbol id="icon-contrast" viewBox="0 0 16 16"><circle cx="8" cy="8" r="5.5" /><path d="M8 2.5v11a5.5 5.5 0 0 0 0-11z" class="filled" /></symbol>
       <symbol id="icon-check" viewBox="0 0 16 16"><path d="M3.5 8.5 6.5 11.5 12.5 4.5" /></symbol>
+      <symbol id="icon-trash" viewBox="0 0 16 16"><path d="M2.5 4.5h11 M6.5 4.5V2.75h3V4.5 M4 4.5l.75 9h6.5l.75-9 M6.75 7v4 M9.25 7v4" /></symbol>
     </svg>
 
     <aside id="sidebar">
@@ -70,10 +71,9 @@
           <select id="sort" aria-label="Order">
             <option value="newest">Newest first</option>
             <option value="oldest">Oldest first</option>
-            <option value="title">By title</option>
+            <option value="title">By name</option>
             <option value="link">By address</option>
             <option value="opened">Last opened</option>
-            <option value="manual">As arranged</option>
           </select>
         </label>
       </div>
@@ -93,10 +93,13 @@
           <span class="field-label">Title</span>
           <input id="add-title" type="text" autocomplete="off" placeholder="Read from the page" />
         </label>
-        <label class="field">
-          <span class="field-label">Collection</span>
-          <select id="add-collection"></select>
-        </label>
+        <div class="field">
+          <label class="field-label" for="add-collection">Collection</label>
+          <div class="picker">
+            <input id="add-collection-search" type="search" autocomplete="off" spellcheck="false" placeholder="Find a collection" aria-label="Find a collection" />
+            <select id="add-collection"></select>
+          </div>
+        </div>
         <p class="hint">You can also drop a URL or a browser tab onto the window. A collection keeps each link once.</p>
         <div class="actions">
           <button type="button" class="secondary" data-close>Cancel</button>
@@ -118,17 +121,20 @@
             <span class="field-label">Alias</span>
             <input id="edit-alias" type="text" autocomplete="off" spellcheck="false" placeholder="A few letters that find it first" />
           </label>
-          <label class="field">
-            <span class="field-label">Collection</span>
-            <select id="edit-collection"></select>
-          </label>
+          <div class="field">
+            <label class="field-label" for="edit-collection">Collection</label>
+            <div class="picker">
+              <input id="edit-collection-search" type="search" autocomplete="off" spellcheck="false" placeholder="Find a collection" aria-label="Find a collection" />
+              <select id="edit-collection"></select>
+            </div>
+          </div>
         </div>
         <label class="field">
           <span class="field-label">Note</span>
           <textarea id="edit-note" rows="3"></textarea>
         </label>
         <div class="actions">
-          <button type="button" class="danger" id="edit-remove">Remove</button>
+          <button type="button" class="secondary" id="edit-remove">Move to Trash</button>
           <span class="spacer"></span>
           <button type="button" class="secondary" data-close>Cancel</button>
           <button type="submit" class="primary">Save</button>
@@ -169,8 +175,28 @@
       <div class="tabs" role="tablist">
         <button type="button" role="tab" class="tab" data-tab="general" aria-selected="true"></button>
         <button type="button" role="tab" class="tab" data-tab="theme" aria-selected="false"></button>
+        <button type="button" role="tab" class="tab" data-tab="devices" aria-selected="false"></button>
       </div>
       <section class="pane" data-pane="general">
+        <h3>Window</h3>
+        <div class="group">
+          <div class="setting">
+            <label for="open-at">Open at</label>
+            <div class="picker">
+              <input id="open-at-search" type="search" autocomplete="off" spellcheck="false" placeholder="Find a collection" aria-label="Find a collection to open at" />
+              <select id="open-at"></select>
+            </div>
+          </div>
+          <label class="setting">
+            <span>Open as</span>
+            <select id="open-as" aria-label="Open as">
+              <option value="cards">Cards</option>
+              <option value="list">List</option>
+              <option value="columns">Columns</option>
+            </select>
+          </label>
+          <p class="hint">The window opens here each time it starts, wherever it stood and however it showed before.</p>
+        </div>
         <h3>Sync</h3>
         <div class="group">
           <label class="setting toggle">
@@ -184,7 +210,7 @@
           <p id="sync-line" class="hint"></p>
           <p id="sync-pace" class="hint"></p>
         </div>
-        <h3>Import</h3>
+        <h3>Import and Export</h3>
         <div class="group">
           <div class="setting">
             <span>Import bookmarks</span>
@@ -195,14 +221,61 @@
             </div>
           </div>
           <p class="hint">A bookmark file may be an HTML export or the file a browser keeps, such as the <code>Bookmarks</code> file Chrome, Edge, and Brave keep in their profiles. The same URL is kept once. Your browser's bookmarks stay as they are.</p>
+          <div class="setting">
+            <span>Export bookmarks</span>
+            <button type="button" class="secondary" id="export-html">Export Bookmark File…</button>
+          </div>
+          <p class="hint">Saves a bookmark file in Downloads that any browser can import.</p>
         </div>
       </section>
       <section class="pane" data-pane="theme" hidden></section>
+      <section class="pane" data-pane="devices" hidden>
+        <h3>Devices</h3>
+        <div class="group">
+          <label for="device-target">Shared folder or relay</label>
+          <input id="device-target" type="text" autocomplete="off" spellcheck="false" placeholder="A shared folder or relay address" />
+          <div class="buttons">
+            <button id="device-invite" type="button" class="primary">Add a device…</button>
+            <button id="device-join" type="button" class="secondary">Join from another device…</button>
+          </div>
+          <p id="device-line" class="hint" role="status" aria-live="polite"></p>
+          <button id="device-retry" type="button" class="secondary">Refresh devices</button>
+        </div>
+        <div id="device-list" class="group"></div>
+        <h3>Recovery</h3>
+        <div class="group buttons">
+          <button id="device-new-recovery" type="button" class="secondary">Create recovery key…</button>
+          <button id="device-recover" type="button" class="secondary">Recover with a key…</button>
+        </div>
+      </section>
       <div class="actions">
         <button type="button" class="primary" data-close>Done</button>
       </div>
     </dialog>
 
     <div id="menu" class="menu" role="menu" hidden></div>
+    <dialog id="device-invitation" class="sheet">
+      <h2>Add a device</h2>
+      <p>Use the same shared folder or relay on both devices.</p>
+      <pre id="device-code" class="device-code" hidden></pre>
+      <div id="device-qr" class="device-qr" hidden></div>
+      <button id="device-copy-code" type="button" class="secondary" hidden>Copy code</button>
+      <p id="device-pairing-line" role="status" aria-live="polite"></p>
+      <div class="actions">
+        <button id="device-cancel" type="button" class="secondary">Cancel invitation</button>
+        <button id="device-pairing-close" type="button" class="primary" hidden>Done</button>
+      </div>
+    </dialog>
+    <dialog id="device-recovery" class="sheet">
+      <h2>Recovery key</h2>
+      <p>Keep this key somewhere safe. It is shown once.</p>
+      <pre id="device-recovery-key" class="device-code"></pre>
+      <p id="device-recovery-status" role="status" aria-live="polite"></p>
+      <div class="actions">
+        <button id="device-copy-recovery" type="button" class="secondary">Copy</button>
+        <button id="device-print-recovery" type="button" class="secondary">Print…</button>
+        <button id="device-saved-recovery" type="button" class="primary">I saved it</button>
+      </div>
+    </dialog>
   </body>
 </html>

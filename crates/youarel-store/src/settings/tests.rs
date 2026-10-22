@@ -4,7 +4,12 @@ use super::{
 };
 use std::collections::BTreeSet;
 use youarel_core::library_rules::{Grouping, Layout, Sort};
+use youarel_core::state::ItemId;
 use youarel_core::theme_rules::{self, Color, Kind, SLOTS, Slot};
+
+/// The collection the chosen settings open at, and its spelling in the document.
+const START: ItemId = ItemId([0xab; 16]);
+const START_TEXT: &str = "abababababababababababababababab";
 
 fn imported() -> Imported {
     let mut declared = [None; SLOTS];
@@ -21,7 +26,8 @@ fn imported() -> Imported {
 fn chosen() -> Settings {
     Settings {
         layout: Layout::Columns,
-        sort: Sort::Manual,
+        start: Some(START),
+        sort: Sort::Link,
         grouping: Grouping::Site,
         hidden: BTreeSet::from([Column::Collection, Column::Added]),
         theme: ThemeChoice {
@@ -64,7 +70,7 @@ fn every_setting_reads_back_from_its_document() {
     assert_eq!(encode(&decode(&text).unwrap()).unwrap(), text);
     let default = encode(&Settings::default()).unwrap();
     assert!(
-        default.contains("\"columns\"") && default.contains("\"newest\""),
+        default.contains("\"columns\"") && default.contains("\"title\""),
         "{default}"
     );
     assert!(
@@ -76,6 +82,14 @@ fn every_setting_reads_back_from_its_document() {
         "no imported theme writes no list"
     );
     assert!(!default.contains("\"group\""), "no grouping writes none");
+    assert!(
+        !default.contains("\"start\""),
+        "a window that opens at every shortcut writes no place"
+    );
+    assert!(
+        text.contains(&format!("\"start\": \"{START_TEXT}\"")),
+        "{text}"
+    );
     assert!(
         !default.contains("\"hidden\""),
         "every column shown writes none"
@@ -100,7 +114,10 @@ fn a_document_the_window_would_not_write_is_refused() {
     let text = encode(&chosen()).unwrap();
     let words = [
         text.replace("\"columns\"", "\"grid\""),
-        text.replace("\"manual\"", "\"Manual\""),
+        text.replace("\"link\"", "\"Link\""),
+        text.replace("\"link\"", "\"manual\""),
+        text.replace(START_TEXT, "zz"),
+        text.replace(START_TEXT, &START_TEXT.to_uppercase()),
         text.replace("\"group\": \"site\"", "\"group\": \"domain\""),
         text.replace("\"added\"", "\"opened\""),
         text.replace("\"kind\": \"dark\"", "\"kind\": \"dim\""),

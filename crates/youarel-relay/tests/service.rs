@@ -4,16 +4,18 @@
 use youarel_core::relay_rules::{
     MAILBOX_LIFETIME, MOST_BYTES, MOST_MAILBOXES, MOST_SLOTS, RETENTION, WINDOW,
 };
+use youarel_core::segment_rules::{Header, Kind, Sequence};
 use youarel_crypto::Label;
 use youarel_crypto::kem::KeyPair;
 use youarel_crypto::seal::Sealed;
 use youarel_crypto::sign::SigningKeys;
 use youarel_protocol::message::{
-    Action, Bundle, DevicePublic, Digest, Operation, Recovery, account_of, operation_digest,
+    Action, DevicePublic, Digest, Operation, Recovery, account_of, operation_digest,
 };
 use youarel_protocol::relay::{
-    Collected, Locate, Mail, Registration, Request, Side, Verb, read_located, read_nameplate,
+    Locate, Mail, Registration, Request, Side, Verb, read_located, read_nameplate,
 };
+use youarel_protocol::segment::{Cursors, Delivered, Segment};
 use youarel_relay::Status;
 use youarel_relay::directory::{self, DirectoryStore as _};
 use youarel_relay::memory::{MemoryDirectory, MemoryRelay};
@@ -58,27 +60,37 @@ impl Device {
         operation.encode().unwrap()
     }
 
-    /// This device's bundle of `log`, with a state of `size` bytes.
-    fn bundle(&self, account: Digest, log: &[Vec<u8>], size: usize) -> Vec<u8> {
+    fn segment(
+        &self,
+        account: Digest,
+        log: &[Vec<u8>],
+        (header, size): (Header, usize),
+    ) -> Vec<u8> {
         let mut operations = log.to_vec();
         operations.sort_by_key(|bytes| operation_digest(bytes));
-        let mut bundle = Bundle {
+        let mut segment = Segment {
             account,
             operations,
             sender: self.id(),
             epoch: 0,
+            header,
             sealed: Sealed {
                 commitment: [1; 32],
                 nonce: [2; 24],
-                ciphertext: vec![3; size],
+                ciphertext: vec![3; size.max(youarel_crypto::seal::TAG)],
             },
-            signature: self.keys.sign(Label::Bundle, b"").unwrap(),
+            signature: self.keys.sign(Label::Segment, b"").unwrap(),
         };
-        bundle.signature = self
+        segment.signature = self
             .keys
-            .sign(Label::Bundle, &bundle.unsigned().bytes().unwrap())
+            .sign(Label::Segment, &segment.unsigned().bytes().unwrap())
             .unwrap();
-        bundle.encode().unwrap()
+        segment.encode().unwrap()
+    }
+
+    fn first_delta(&self, account: Digest, log: &[Vec<u8>], size: usize) -> Vec<u8> {
+        let header = Header::new(Sequence::FIRST, [0; 32], Kind::Delta).unwrap();
+        self.segment(account, log, (header, size))
     }
 
     /// This device's request, stamped `stamped`, with a nonce of `nonce`.
@@ -88,6 +100,11 @@ impl Device {
         (verb, payload): (Verb, Vec<u8>),
         (stamped, nonce): (u64, u8),
     ) -> Vec<u8> {
+        let payload = if verb == Verb::Collect && payload.is_empty() {
+            Cursors::default().encode().unwrap()
+        } else {
+            payload
+        };
         let mut request = Request {
             account,
             device: self.id(),
@@ -146,15 +163,21 @@ impl Account {
         self.log.push(operation);
     }
 
-    /// Publishes `device`'s bundle with a state of `size` bytes.
+    /// Publishes a fresh one-part snapshot with a state of `size` bytes.
     fn publish(
         &self,
         relay: &mut MemoryRelay,
         (device, size): (&Device, usize),
         (now, nonce): (u64, u8),
     ) -> Status {
-        let bundle = device.bundle(self.id, &self.log, size);
-        let request = device.request(self.id, (Verb::Publish, bundle), (now, nonce));
+        let header = Header::new(
+            Sequence::new(u64::from(nonce) + 1).unwrap(),
+            [0; 32],
+            Kind::Snapshot { part: 0, parts: 1 },
+        )
+        .unwrap();
+        let segment = device.segment(self.id, &self.log, (header, size));
+        let request = device.request(self.id, (Verb::Publish, segment), (now, nonce));
         relay.request(now, &request).unwrap().status
     }
 
@@ -168,10 +191,254 @@ impl Account {
         let reply = relay.request(now, &request).unwrap();
         (reply.status, reply.body)
     }
+
+    fn send(
+        &self,
+        relay: &mut MemoryRelay,
+        device: &Device,
+        (header, verb, nonce): (Header, Verb, u8),
+    ) -> youarel_relay::Reply {
+        let bytes = device.segment(self.id, &self.log, (header, youarel_crypto::seal::TAG));
+        let request = device.request(self.id, (verb, bytes), (NOW, nonce));
+        relay.request(NOW, &request).unwrap()
+    }
 }
 
 #[test]
-fn members_publish_and_collect_each_others_newest_bundle() {
+fn multipart_snapshots_are_advertised_only_after_every_part_and_collect_resumes() {
+    use youarel_core::segment_rules::{Cursor, Fetch, fetch};
+    let mut relay = MemoryRelay::default();
+    let device = Device::new();
+    let account = Account::found(&device);
+    let header = |number, kind| Header::new(Sequence::new(number).unwrap(), [0; 32], kind).unwrap();
+    let first = header(1, Kind::Snapshot { part: 0, parts: 2 });
+    assert_eq!(
+        account
+            .send(&mut relay, &device, (first, Verb::Publish, 1))
+            .status,
+        Status::Ok
+    );
+    let partial = Delivered::decode(&account.collect(&mut relay, &device, (NOW, 2)).1).unwrap();
+    let partial_chain = partial.chains.first().unwrap();
+    assert!(partial_chain.incomplete);
+    assert_eq!(partial_chain.head.snapshot(), None);
+    assert_eq!(partial_chain.segments.len(), 1);
+    assert_eq!(
+        fetch(
+            None,
+            partial_chain.head.available(),
+            partial_chain.head.latest()
+        ),
+        Fetch::Segment(Sequence::FIRST)
+    );
+    let last = header(2, Kind::Snapshot { part: 1, parts: 2 });
+    assert_eq!(
+        account
+            .send(&mut relay, &device, (last, Verb::Publish, 3))
+            .status,
+        Status::Ok
+    );
+    assert_eq!(
+        account
+            .send(
+                &mut relay,
+                &device,
+                (header(3, Kind::Delta), Verb::Publish, 4)
+            )
+            .status,
+        Status::Ok
+    );
+    let complete = Delivered::decode(&account.collect(&mut relay, &device, (NOW, 5)).1).unwrap();
+    let chain = complete.chains.first().unwrap();
+    assert!(!chain.incomplete);
+    assert_eq!(chain.head.snapshot(), Some(Sequence::FIRST));
+    assert_eq!(chain.segments.len(), 3);
+    let mut cursors = Cursors::default();
+    cursors
+        .peers
+        .insert(device.id(), Cursor::new(Sequence::new(2).unwrap(), [0; 32]));
+    let request = device.request(
+        account.id,
+        (Verb::Collect, cursors.encode().unwrap()),
+        (NOW, 6),
+    );
+    let resumed = Delivered::decode(&relay.request(NOW, &request).unwrap().body).unwrap();
+    assert_eq!(resumed.chains.first().unwrap().segments.len(), 1);
+    assert_eq!(
+        Segment::decode(resumed.chains.first().unwrap().segments.first().unwrap())
+            .unwrap()
+            .header
+            .sequence(),
+        Sequence::new(3).unwrap()
+    );
+}
+
+#[test]
+fn replay_renews_exact_bytes_and_forks_or_implicit_delta_gaps_refuse() {
+    let mut relay = MemoryRelay::default();
+    let device = Device::new();
+    let account = Account::found(&device);
+    let header = |number, kind| Header::new(Sequence::new(number).unwrap(), [0; 32], kind).unwrap();
+    let snapshot = header(1, Kind::Snapshot { part: 0, parts: 1 });
+    let bytes = device.segment(
+        account.id,
+        &account.log,
+        (snapshot, youarel_crypto::seal::TAG),
+    );
+    for (now, nonce) in [(NOW, 1), (NOW + 1, 2)] {
+        let request = device.request(account.id, (Verb::Publish, bytes.clone()), (now, nonce));
+        assert_eq!(relay.request(now, &request).unwrap().status, Status::Ok);
+    }
+    let renewed = Delivered::decode(&account.collect(&mut relay, &device, (NOW + 1, 3)).1).unwrap();
+    assert_eq!(renewed.chains.first().unwrap().published, NOW + 1);
+    let changed = device.segment(
+        account.id,
+        &account.log,
+        (snapshot, youarel_crypto::seal::TAG + 1),
+    );
+    let request = device.request(account.id, (Verb::Publish, changed), (NOW, 4));
+    assert_eq!(
+        relay.request(NOW, &request).unwrap().status,
+        Status::Conflict
+    );
+    assert_eq!(
+        account
+            .send(
+                &mut relay,
+                &device,
+                (header(3, Kind::Delta), Verb::Publish, 5)
+            )
+            .status,
+        Status::Conflict
+    );
+    assert_eq!(
+        account
+            .send(
+                &mut relay,
+                &device,
+                (header(3, Kind::Delta), Verb::Bridge, 6)
+            )
+            .status,
+        Status::Ok
+    );
+    let bridged = Delivered::decode(&account.collect(&mut relay, &device, (NOW, 7)).1).unwrap();
+    let chain = bridged.chains.first().unwrap();
+    assert_eq!(chain.head.first(), Sequence::new(3).unwrap());
+    assert_eq!(chain.head.snapshot(), None);
+    assert_eq!(chain.segments, Vec::<Vec<u8>>::new());
+}
+
+#[test]
+fn a_collection_pages_without_omitting_the_remaining_chains() {
+    use youarel_core::segment_rules::Cursor;
+    let mut relay = MemoryRelay::default();
+    let device = Device::new();
+    let account = Account::found(&device);
+    for number in 1..=66u8 {
+        let kind = if number == 1 {
+            Kind::Snapshot { part: 0, parts: 1 }
+        } else {
+            Kind::Delta
+        };
+        let header = Header::new(Sequence::new(u64::from(number)).unwrap(), [0; 32], kind).unwrap();
+        assert_eq!(
+            account
+                .send(&mut relay, &device, (header, Verb::Publish, number))
+                .status,
+            Status::Ok
+        );
+    }
+    let first = Delivered::decode(&account.collect(&mut relay, &device, (NOW, 100)).1).unwrap();
+    assert!(first.more);
+    assert_eq!(first.chains.first().unwrap().segments.len(), 64);
+    let mut cursors = Cursors::default();
+    cursors.peers.insert(
+        device.id(),
+        Cursor::new(Sequence::new(64).unwrap(), [0; 32]),
+    );
+    let request = device.request(
+        account.id,
+        (Verb::Collect, cursors.encode().unwrap()),
+        (NOW, 101),
+    );
+    let last = Delivered::decode(&relay.request(NOW, &request).unwrap().body).unwrap();
+    assert!(!last.more);
+    assert_eq!(last.chains.first().unwrap().segments.len(), 2);
+}
+
+#[test]
+fn an_oversized_snapshot_leaves_an_honest_delta_suffix_and_reports_lost_bootstrap() {
+    use youarel_core::segment_rules::{Cursor, Fetch, fetch};
+    let mut relay = MemoryRelay::default();
+    let device = Device::new();
+    let account = Account::found(&device);
+    let size = MOST_BYTES / 5 + 1;
+    for part in 0..5u8 {
+        let number = u64::from(part) + 1;
+        let header = Header::new(
+            Sequence::new(number).unwrap(),
+            [0; 32],
+            Kind::Snapshot {
+                part: u32::from(part),
+                parts: 5,
+            },
+        )
+        .unwrap();
+        let bytes = device.segment(account.id, &account.log, (header, size));
+        let request = device.request(account.id, (Verb::Publish, bytes), (NOW, part));
+        assert_eq!(relay.request(NOW, &request).unwrap().status, Status::Ok);
+    }
+    let fresh = Delivered::decode(&account.collect(&mut relay, &device, (NOW, 9)).1).unwrap();
+    let chain = fresh.chains.first().unwrap();
+    assert_eq!(chain.head.snapshot(), None);
+    assert_eq!(chain.head.first(), Sequence::new(2).unwrap());
+    assert_eq!(
+        fetch(None, chain.head.available(), chain.head.latest()),
+        Fetch::Lost
+    );
+    assert_eq!(chain.segments, Vec::<Vec<u8>>::new());
+    let mut cursors = Cursors::default();
+    cursors
+        .peers
+        .insert(device.id(), Cursor::new(Sequence::new(4).unwrap(), [0; 32]));
+    let request = device.request(
+        account.id,
+        (Verb::Collect, cursors.encode().unwrap()),
+        (NOW, 10),
+    );
+    let caught_up = Delivered::decode(&relay.request(NOW, &request).unwrap().body).unwrap();
+    assert_eq!(caught_up.chains.first().unwrap().segments.len(), 1);
+    let delta = Header::new(Sequence::new(6).unwrap(), [0; 32], Kind::Delta).unwrap();
+    assert_eq!(
+        account
+            .send(&mut relay, &device, (delta, Verb::Publish, 11))
+            .status,
+        Status::Ok
+    );
+}
+
+#[test]
+fn a_delta_bridge_cannot_claim_to_be_a_snapshot_restart() {
+    let mut relay = MemoryRelay::default();
+    let device = Device::new();
+    let account = Account::found(&device);
+    let header = Header::new(
+        Sequence::FIRST,
+        [0; 32],
+        Kind::Snapshot { part: 0, parts: 1 },
+    )
+    .unwrap();
+    assert_eq!(
+        account
+            .send(&mut relay, &device, (header, Verb::Bridge, 1))
+            .status,
+        Status::BadRequest
+    );
+    assert_eq!(relay.accounts(), 0);
+}
+
+#[test]
+fn members_publish_and_collect_each_others_newest_snapshot() {
     let mut relay = MemoryRelay::default();
     let (first, second) = (Device::new(), Device::new());
     let mut account = Account::found(&first);
@@ -194,29 +461,29 @@ fn members_publish_and_collect_each_others_newest_bundle() {
     );
     let (status, body) = account.collect(&mut relay, &second, (NOW, 5));
     assert_eq!(status, Status::Ok);
-    let collected = Collected::decode(&body).unwrap();
+    let collected = Delivered::decode(&body).unwrap();
     let mut devices: Vec<Digest> = vec![first.id(), second.id()];
     devices.sort_unstable();
     assert_eq!(
         collected
-            .slots
+            .chains
             .iter()
-            .map(|slot| slot.device)
+            .map(|chain| chain.sender)
             .collect::<Vec<_>>(),
         devices
     );
     let newest = collected
-        .slots
+        .chains
         .iter()
-        .find(|slot| slot.device == first.id())
+        .find(|chain| chain.sender == first.id())
         .unwrap();
     assert_eq!(
-        Bundle::decode(&newest.bundle)
+        Segment::decode(newest.segments.first().unwrap())
             .unwrap()
             .sealed
             .ciphertext
             .len(),
-        6
+        youarel_crypto::seal::TAG
     );
     assert_eq!(newest.published, NOW);
 }
@@ -313,6 +580,7 @@ fn the_relay_refuses_what_it_must() {
         Request::decode(&first.request(account.id, (Verb::Collect, Vec::new()), (NOW, 13)))
             .unwrap();
     forged.verb = Verb::Erase;
+    forged.payload.clear();
     assert_eq!(
         relay
             .request(NOW, &forged.encode().unwrap())
@@ -327,14 +595,14 @@ fn the_relay_refuses_what_it_must() {
     );
     let elsewhere = first.request(
         account.id,
-        (Verb::Publish, stranger.bundle(other.id, &other.log, 1)),
+        (Verb::Publish, stranger.first_delta(other.id, &other.log, 1)),
         (NOW, 15),
     );
     assert_eq!(
         relay.request(NOW, &elsewhere).unwrap().status,
         Status::BadRequest
     );
-    let mut tampered = Bundle::decode(&first.bundle(account.id, &account.log, 4)).unwrap();
+    let mut tampered = Segment::decode(&first.first_delta(account.id, &account.log, 4)).unwrap();
     tampered.epoch = 7;
     let unsigned = first.request(
         account.id,
@@ -380,12 +648,12 @@ fn a_removed_member_loses_its_slot_and_its_access() {
         account.collect(&mut relay, &second, (NOW, 4)).0,
         Status::Forbidden
     );
-    let collected = Collected::decode(&account.collect(&mut relay, &first, (NOW, 5)).1).unwrap();
+    let collected = Delivered::decode(&account.collect(&mut relay, &first, (NOW, 5)).1).unwrap();
     assert_eq!(
         collected
-            .slots
+            .chains
             .iter()
-            .map(|slot| slot.device)
+            .map(|chain| chain.sender)
             .collect::<Vec<_>>(),
         [first.id()]
     );
@@ -554,6 +822,40 @@ fn a_mailbox_carries_each_side_s_messages_in_order_until_it_closes() {
     assert_eq!(
         read_nameplate(&relay.mail(closed, &open()).unwrap().body).unwrap(),
         1
+    );
+}
+
+#[test]
+fn polling_mail_returns_no_content_or_consumes_one_message_and_refuses_an_expired_box() {
+    let mut relay = MemoryRelay::default();
+    let opened = relay.mail(NOW, &Mail::Open.encode().unwrap()).unwrap();
+    let nameplate = read_nameplate(&opened.body).unwrap();
+    let poll = Mail::Poll {
+        nameplate,
+        to: Side::Joiner,
+    }
+    .encode()
+    .unwrap();
+    assert_eq!(relay.mail(NOW, &poll).unwrap().status, Status::NoContent);
+    for message in [b"first".as_slice(), b"second".as_slice()] {
+        let drop = Mail::Drop {
+            nameplate,
+            to: Side::Joiner,
+            message: message.to_vec(),
+        }
+        .encode()
+        .unwrap();
+        assert_eq!(relay.mail(NOW, &drop).unwrap().status, Status::Ok);
+    }
+    assert_eq!(relay.mail(NOW, &poll).unwrap().body, b"first");
+    assert_eq!(relay.mail(NOW, &poll).unwrap().body, b"second");
+    assert_eq!(relay.mail(NOW, &poll).unwrap().status, Status::NoContent);
+    assert_eq!(
+        relay
+            .mail(NOW + MAILBOX_LIFETIME + 1, &poll)
+            .unwrap()
+            .status,
+        Status::NotFound
     );
 }
 

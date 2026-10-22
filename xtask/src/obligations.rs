@@ -60,10 +60,18 @@ pub struct QuintModel {
     pub seed: String,
     pub samples: u32,
     pub steps: u32,
-    /// The distinct states the model checker finds, which a model change must update.
-    pub distinct_states: u64,
+    /// The measured complete state count; absence keeps the proof gate pending until a full run records it.
+    pub distinct_states: Option<core::num::NonZeroU64>,
     /// How many traces of `main` the repository commits under `specs/traces`.
     pub traces: usize,
+}
+
+impl QuintModel {
+    #[must_use]
+    pub fn accepts_state_count(&self, found: Option<u64>) -> bool {
+        self.distinct_states
+            .is_some_and(|expected| found == Some(expected.get()))
+    }
 }
 
 /// A Kani harness, with the contract it states and the input domain it admits.
@@ -103,6 +111,36 @@ pub fn load(root: &Path) -> Result<Manifest> {
 #[cfg(test)]
 mod tests {
     use super::{Manifest, Obligation};
+
+    #[test]
+    fn an_unmeasured_quint_state_count_stays_explicitly_pending() {
+        let manifest: Manifest = toml::from_str(
+            r#"
+[[obligation]]
+verifier = "quint"
+spec = "specs/segments.qnt"
+main = "segments"
+probe = "segments_probe"
+invariant = "safe"
+witnesses = ["applied"]
+seed = "0x2a"
+samples = 1000
+steps = 12
+traces = 100
+"#,
+        )
+        .unwrap();
+        let [Obligation::Quint(model)] = manifest.obligation.as_slice() else {
+            panic!("one Quint obligation");
+        };
+        assert!(!model.accepts_state_count(Some(1)));
+        assert!(!model.accepts_state_count(None));
+        let mut measured = model.clone();
+        measured.distinct_states = core::num::NonZeroU64::new(2);
+        assert!(measured.accepts_state_count(Some(2)));
+        assert!(!measured.accepts_state_count(Some(1)));
+        assert!(!measured.accepts_state_count(None));
+    }
 
     #[test]
     fn a_kani_obligation_names_its_harnesses_and_probes() {

@@ -1,11 +1,13 @@
-//! A device's account: its identity, the membership log, the epoch keys, and the bundles, joins, and welcomes it reads and writes.
+//! A device's identity, membership log, epoch keys, segment envelopes, and pairing messages.
 //!
 //! The files sit in one directory beside the store:
-//! `identity` and `epochs` sealed under the key the credential store holds, `genesis` naming the account, and each operation of the log under `log/`.
-//! Pending invitations and a joining device's state sit under `invitations/` and in `joining`, sealed as well.
+//! `identity` and `epochs` with the device's keys, `genesis` naming the account, and each operation of the log under `log/`.
+//! Pending invitations and a joining device's state sit under `invitations/` and in `joining`.
+//! A file that holds a secret takes the permissions of the user's data directory, as the state beside it does.
 
-use crate::keystore::KeyStore;
-use crate::{SyncError, hex, sealed, unhex};
+use crate::{SyncError, hex, unhex};
+mod segments;
+pub use segments::OpenedSegment;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use youarel_core::membership_rules::Resolution;
@@ -19,33 +21,76 @@ use youarel_crypto::slot::{self, Binding};
 use youarel_crypto::{DIGEST, KEY, Label};
 use youarel_protocol::log::{self, Checked};
 use youarel_protocol::message::{
-    Action, Admission, Bundle, DevicePublic, Digest, Entry, Join, Joined, Operation, Recovery,
-    Rotation, Unsigned, UnsignedBundle, Welcome, account_of, operation_digest,
+    Action, Admission, DevicePublic, Digest, Entry, Join, Joined, Operation, Recovery, Rotation,
+    SnapshotHint, Unsigned, Welcome, account_of, operation_digest,
 };
 use youarel_protocol::relay::{Request, UnsignedRequest, Verb};
+pub use youarel_protocol::segment::body_digest;
 use youarel_protocol::wire::{Reader, Writer};
 use youarel_store::fs;
 use zeroize::Zeroizing;
 
-/// The purposes the sealed files of an account bind.
-const IDENTITY: &[u8] = b"youarel/v1/file/identity";
-const EPOCHS: &[u8] = b"youarel/v1/file/epochs";
-const INVITATION: &[u8] = b"youarel/v1/file/invitation";
-const JOINING: &[u8] = b"youarel/v1/file/joining";
+/// The file of the device's own keys.
+const IDENTITY_FILE: &str = "identity";
+/// The file of the epoch keys the device holds.
+const EPOCHS_FILE: &str = "epochs";
+/// The file of a joining device's state.
+const JOINING_FILE: &str = "joining";
+/// The directory of pending invitations, one file to an invitation.
+const INVITATIONS: &str = "invitations";
+/// The longest secret file of an account, which an identity or a long list of epoch keys fits.
+const LONGEST_SECRET: u64 = 1024 * 1024;
 /// The longest operation file a reader accepts.
 const LONGEST_OPERATION: u64 = 2 * 1024 * 1024;
 /// The suffix of an operation file.
 const OPERATION_SUFFIX: &str = ".op";
+/// The directory of the account's log, one file to an operation.
+const LOG: &str = "log";
 /// The file that names the account, which only a device of an account holds.
 pub const GENESIS: &str = "genesis";
 
-/// Whether the account directory belongs to an account, read without creating anything or reaching the credential store.
+/// Whether the account directory belongs to an account, read without creating anything or reading the device's keys.
 ///
 /// # Errors
 ///
 /// Returns a [`SyncError`] when the file exists but cannot be read.
 pub fn founded(directory: &Path) -> Result<bool, SyncError> {
     Ok(fs::read_if_present(&directory.join(GENESIS))?.is_some())
+}
+
+/// The bytes of a file that holds a secret, or `None` when the file does not exist.
+fn read_secret(path: &Path) -> Result<Option<Zeroizing<Vec<u8>>>, SyncError> {
+    Ok(fs::read_bounded_if_present(path, LONGEST_SECRET)?.map(Zeroizing::new))
+}
+
+/// The operations among the files `names` of the log directory `log` whose bytes digest to the names of their files.
+fn read_log(log: &Path, names: Vec<String>) -> Result<BTreeMap<Digest, Vec<u8>>, SyncError> {
+    let mut operations = BTreeMap::new();
+    for name in names {
+        let Some(digest) = digest_name(&name) else {
+            continue;
+        };
+        let bytes = fs::read_bounded(&log.join(&name), LONGEST_OPERATION)?;
+        if operation_digest(&bytes) == digest {
+            operations.insert(digest, bytes);
+        }
+    }
+    Ok(operations)
+}
+
+/// How many operations the account's log holds, read without creating anything or reading the device's keys, as an open account counts them.
+///
+/// # Errors
+///
+/// Returns a [`SyncError`] when the log exists but cannot be listed or an operation cannot be read.
+pub fn logged(directory: &Path) -> Result<usize, SyncError> {
+    let log = directory.join(LOG);
+    let names = match fs::list(&log) {
+        Ok(names) => names,
+        Err(error) if error.source.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(error) => return Err(error.into()),
+    };
+    Ok(read_log(&log, names)?.len())
 }
 /// The tag of a sealed record that still waits: an invitation without a join, or a join without a welcome.
 const WAITING: u8 = 0;
@@ -77,6 +122,17 @@ impl Identity {
             SigningKeys::generate()?,
             KeyPair::generate()?,
         ))
+    }
+
+    /// The identity that the account in `directory` keeps, made and kept on the first open.
+    fn kept(directory: &Path) -> Result<Self, SyncError> {
+        let path = directory.join(IDENTITY_FILE);
+        let Some(bytes) = read_secret(&path)? else {
+            let identity = Self::generate()?;
+            fs::replace(&path, &identity.encode())?;
+            return Ok(identity);
+        };
+        Self::decode(&bytes)
     }
 
     fn from_keys(signing: SigningKeys, kem: KeyPair) -> Self {
@@ -177,18 +233,16 @@ pub struct Status {
     pub member: bool,
 }
 
-/// What a bundle brought.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Imported {
-    pub sender: Digest,
-    /// The sender's state in the JSON form of the store.
-    pub state: Zeroizing<Vec<u8>>,
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Member {
+    pub device: Digest,
+    pub added: u64,
+    pub recovery: bool,
 }
 
 /// A device's account, open in its directory.
 pub struct Account {
     directory: PathBuf,
-    sealing: Zeroizing<[u8; KEY]>,
     identity: Identity,
     genesis: Option<Digest>,
     log: BTreeMap<Digest, Vec<u8>>,
@@ -215,37 +269,21 @@ impl Account {
     ///
     /// # Errors
     ///
-    /// Returns a [`SyncError`] when a file cannot be read or opened, or the key store refuses.
-    pub fn open(directory: &Path, store: &KeyStore) -> Result<Self, SyncError> {
-        fs::create_dir_all(&directory.join("log"))?;
-        fs::create_dir_all(&directory.join("invitations"))?;
-        let sealing = store.key()?;
-        let identity_path = directory.join("identity");
-        let identity = if let Some(bytes) = sealed::read(&identity_path, &sealing, IDENTITY)? {
-            Identity::decode(&bytes)?
-        } else {
-            let identity = Identity::generate()?;
-            sealed::write(&identity_path, &sealing, IDENTITY, &identity.encode())?;
-            identity
-        };
+    /// Returns a [`SyncError`] when a file cannot be read, or the identity or the epoch keys it holds are malformed.
+    pub fn open(directory: &Path) -> Result<Self, SyncError> {
+        let log_directory = directory.join(LOG);
+        fs::create_dir_all(&log_directory)?;
+        fs::create_dir_all(&directory.join(INVITATIONS))?;
+        let identity = Identity::kept(directory)?;
         let genesis = match fs::read_if_present(&directory.join(GENESIS))? {
             Some(text) => Some(unhex::<DIGEST>(text.trim()).ok_or_else(|| {
                 SyncError::Refused(String::from("the genesis file holds no digest"))
             })?),
             None => None,
         };
-        let mut log = BTreeMap::new();
-        for name in fs::list(&directory.join("log"))? {
-            let Some(digest) = digest_name(&name) else {
-                continue;
-            };
-            let bytes = fs::read_bounded(&directory.join("log").join(&name), LONGEST_OPERATION)?;
-            if operation_digest(&bytes) == digest {
-                log.insert(digest, bytes);
-            }
-        }
+        let log = read_log(&log_directory, fs::list(&log_directory)?)?;
         let mut epochs = BTreeMap::new();
-        if let Some(bytes) = sealed::read(&directory.join("epochs"), &sealing, EPOCHS)? {
+        if let Some(bytes) = read_secret(&directory.join(EPOCHS_FILE))? {
             let mut reader = Reader::new(&bytes);
             let count = reader.count(youarel_protocol::message::MOST_EPOCHS)?;
             for _ in 0..count {
@@ -257,7 +295,6 @@ impl Account {
         }
         Ok(Self {
             directory: directory.to_path_buf(),
-            sealing,
             identity,
             genesis,
             log,
@@ -277,18 +314,22 @@ impl Account {
         self.genesis.is_some()
     }
 
+    /// How many operations the account's log holds, which [`logged`] counts the same way without the device's keys.
+    #[must_use]
+    pub fn operations(&self) -> usize {
+        self.log.len()
+    }
+
     fn save_epochs(&self) -> Result<(), SyncError> {
         let mut writer = Writer::new();
         writer.count(self.epochs.len())?;
         for (epoch, key) in self.epochs.values() {
             writer.word(*epoch).raw(key.as_slice());
         }
-        sealed::write(
-            &self.directory.join("epochs"),
-            &self.sealing,
-            EPOCHS,
+        Ok(fs::replace(
+            &self.directory.join(EPOCHS_FILE),
             &Zeroizing::new(writer.finish()),
-        )
+        )?)
     }
 
     fn keep_operation(&mut self, bytes: Vec<u8>) -> Result<Digest, SyncError> {
@@ -297,7 +338,7 @@ impl Account {
             fs::replace(
                 &self
                     .directory
-                    .join("log")
+                    .join(LOG)
                     .join(format!("{}{OPERATION_SUFFIX}", hex(&digest))),
                 &bytes,
             )?;
@@ -424,6 +465,52 @@ impl Account {
         })
     }
 
+    /// # Errors
+    ///
+    /// Refuses an absent or invalid membership log.
+    pub fn members(&self) -> Result<Vec<Member>, SyncError> {
+        let checked = self.check()?;
+        let mut added = BTreeMap::new();
+        for digest in &checked.resolution.applied {
+            let Some(operation) = checked.operations.get(digest) else {
+                continue;
+            };
+            match &operation.action {
+                Action::Genesis(device) | Action::Add(device) => {
+                    added.insert(
+                        device.id(),
+                        Member {
+                            device: device.id(),
+                            added: operation.wall,
+                            recovery: false,
+                        },
+                    );
+                }
+                Action::AddRecovery(recovery) => {
+                    let device = recovery.device.id();
+                    added.insert(
+                        device,
+                        Member {
+                            device,
+                            added: operation.wall,
+                            recovery: true,
+                        },
+                    );
+                }
+                Action::Remove(device) => {
+                    added.remove(device);
+                }
+                Action::Rotate(_) => {}
+            }
+        }
+        Ok(checked
+            .resolution
+            .members
+            .iter()
+            .filter_map(|device| added.get(device).copied())
+            .collect())
+    }
+
     /// Whether the canonical rotation leaves a member without a key, or a removal followed it.
     fn rotation_due(checked: &Checked) -> bool {
         let resolution = &checked.resolution;
@@ -541,151 +628,12 @@ impl Account {
         Ok(())
     }
 
-    /// The associated data that binds a sealed state to its account, epoch, and sender.
-    fn state_binding(account: &Digest, epoch: u32, sender: &Digest) -> Vec<u8> {
-        let mut writer = Writer::new();
-        writer
-            .raw(Label::State.text().as_bytes())
-            .raw(account)
-            .word(epoch)
-            .raw(sender);
-        writer.finish()
-    }
-
-    /// A bundle of the account's log and this device's state, sealed under the current epoch key and signed.
-    ///
-    /// The device rotates first when a member lacks the current key.
-    ///
-    /// # Errors
-    ///
-    /// Returns a [`SyncError`] when the device belongs to no account or holds no key of the current epoch.
-    pub fn export(&mut self, now: u64, state: &[u8]) -> Result<Vec<u8>, SyncError> {
-        self.rotate_if_due(now)?;
-        let checked = self.check()?;
-        let account = self.account_id()?;
-        let device = self.device();
-        let rotation = checked
-            .resolution
-            .rotation
-            .and_then(|digest| checked.operations.get(&digest))
-            .and_then(|operation| match &operation.action {
-                Action::Rotate(rotation) => Some(rotation.commitment),
-                Action::Genesis(_)
-                | Action::Add(_)
-                | Action::AddRecovery(_)
-                | Action::Remove(_) => None,
-            })
-            .ok_or_else(|| SyncError::Refused(String::from("the account has no epoch key yet")))?;
-        let (epoch, key) = self.epochs.get(&rotation).ok_or_else(|| {
-            SyncError::Refused(String::from(
-                "this device holds no key of the current epoch; import a newer bundle first",
-            ))
-        })?;
-        let sealed = seal::seal(key, &Self::state_binding(&account, *epoch, &device), state)?;
-        let operations: Vec<Vec<u8>> = checked
-            .operations
-            .keys()
-            .filter_map(|digest| self.log.get(digest).cloned())
-            .collect();
-        let unsigned = UnsignedBundle {
-            account: &account,
-            operations: &operations,
-            sender: &device,
-            epoch: *epoch,
-            sealed: &sealed,
-        };
-        let signature = self
-            .identity
-            .signing
-            .sign(Label::Bundle, &unsigned.bytes()?)?;
-        let bundle = Bundle {
-            account,
-            operations,
-            sender: device,
-            epoch: *epoch,
-            sealed,
-            signature,
-        };
-        Ok(bundle.encode()?)
-    }
-
-    /// Reads a bundle: merges its log, checks the sender, and opens its state.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`SyncError::Refused`] for a bundle of another account, from a device that is no member, or under a key this device lacks, and another [`SyncError`] when it is malformed or forged.
-    pub fn import(&mut self, bytes: &[u8]) -> Result<Imported, SyncError> {
-        let bundle = Bundle::decode(bytes)?;
-        let account = self.account_id()?;
-        if bundle.account != account {
-            return Err(SyncError::Refused(String::from(
-                "the bundle belongs to another account",
-            )));
-        }
-        for operation in &bundle.operations {
-            if Operation::decode(operation).is_ok() {
-                self.keep_operation(operation.clone())?;
-            }
-        }
-        let checked = self.check()?;
-        Self::verify_sender(&checked, &bundle)?;
-        self.learn_keys(&checked)?;
-        let (_, key) = self.epochs.get(&bundle.sealed.commitment).ok_or_else(|| {
-            SyncError::Refused(String::from(
-                "this device holds no key of the bundle's epoch",
-            ))
-        })?;
-        Self::open_state(&account, &bundle, key)
-    }
-
-    /// Checks that a member signed `bundle` under the keys the log publishes for it.
-    fn verify_sender(checked: &Checked, bundle: &Bundle) -> Result<(), SyncError> {
-        let sender = checked.keys.get(&bundle.sender).ok_or_else(|| {
-            SyncError::Refused(String::from(
-                "the bundle comes from a device this account never listed",
-            ))
-        })?;
-        if !sender.signing.verify(
-            Label::Bundle,
-            &bundle.unsigned().bytes()?,
-            &bundle.signature,
-        ) {
-            return Err(SyncError::Refused(String::from(
-                "the bundle's signature does not verify",
-            )));
-        }
-        if !checked.resolution.members.contains(&bundle.sender) {
-            return Err(SyncError::Refused(String::from(
-                "the bundle's sender is no member of the account",
-            )));
-        }
-        Ok(())
-    }
-
-    /// The state that `bundle` seals under `key`.
-    fn open_state(
-        account: &Digest,
-        bundle: &Bundle,
-        key: &[u8; KEY],
-    ) -> Result<Imported, SyncError> {
-        let state = seal::open(
-            key,
-            &Self::state_binding(account, bundle.epoch, &bundle.sender),
-            &bundle.sealed,
-        )?;
-        Ok(Imported {
-            sender: bundle.sender,
-            state,
-        })
-    }
-
     fn invitation_path(&self, number: u16) -> PathBuf {
-        self.directory.join("invitations").join(number.to_string())
+        self.directory.join(INVITATIONS).join(number.to_string())
     }
 
     fn invitation(&self, number: u16) -> Result<Option<Invitation>, SyncError> {
-        let Some(bytes) = sealed::read(&self.invitation_path(number), &self.sealing, INVITATION)?
-        else {
+        let Some(bytes) = read_secret(&self.invitation_path(number))? else {
             return Ok(None);
         };
         let mut reader = Reader::new(&bytes);
@@ -720,12 +668,10 @@ impl Account {
                 writer.raw(key.as_slice()).raw(confirmation);
             }
         }
-        sealed::write(
+        Ok(fs::replace(
             &self.invitation_path(number),
-            &self.sealing,
-            INVITATION,
             &Zeroizing::new(writer.finish()),
-        )
+        )?)
     }
 
     /// A new invitation code, which a person types on the joining device.
@@ -735,6 +681,20 @@ impl Account {
     /// Returns [`SyncError::Refused`] when this device is no member of an account.
     pub fn invite(&self) -> Result<Code, SyncError> {
         self.invite_as(Code::generate()?)
+    }
+
+    /// # Errors
+    ///
+    /// Reports failure to remove this invitation's local channel state.
+    pub fn cancel_invitation(&self, number: u16) -> Result<(), SyncError> {
+        Ok(fs::remove_if_present(&self.invitation_path(number))?)
+    }
+
+    /// # Errors
+    ///
+    /// Reports failure to remove this device's unfinished join state.
+    pub fn cancel_join(&self) -> Result<(), SyncError> {
+        Ok(fs::remove_if_present(&self.directory.join(JOINING_FILE))?)
     }
 
     /// An invitation under `code`, whose number a relay's mailbox holds.
@@ -786,8 +746,7 @@ impl Account {
     }
 
     fn joining(&self) -> Result<Option<Joining>, SyncError> {
-        let Some(bytes) = sealed::read(&self.directory.join("joining"), &self.sealing, JOINING)?
-        else {
+        let Some(bytes) = read_secret(&self.directory.join(JOINING_FILE))? else {
             return Ok(None);
         };
         let mut reader = Reader::new(&bytes);
@@ -818,12 +777,10 @@ impl Account {
                 writer.byte(ANSWERED).short(*invitation).raw(key.as_slice());
             }
         }
-        sealed::write(
-            &self.directory.join("joining"),
-            &self.sealing,
-            JOINING,
+        Ok(fs::replace(
+            &self.directory.join(JOINING_FILE),
             &Zeroizing::new(writer.finish()),
-        )
+        )?)
     }
 
     /// The joining device's first message, for the code a member showed.
@@ -883,12 +840,17 @@ impl Account {
         Ok(welcome.encode()?)
     }
 
-    /// The entry for a joiner that confirmed the channel key: this device adds it to the account, then seals the account's log, its epoch keys, and `state` for it alone.
+    /// Admits a confirmed joiner and seals the membership, epoch keys, and optional snapshot hint for it alone.
     ///
     /// # Errors
     ///
     /// Returns [`SyncError::Refused`] when no welcomed invitation waits for this confirmation, the confirmation fails, or this device is no member.
-    pub fn admit(&mut self, now: u64, bytes: &[u8], state: &[u8]) -> Result<Vec<u8>, SyncError> {
+    pub fn admit(
+        &mut self,
+        now: u64,
+        bytes: &[u8],
+        hint: Option<SnapshotHint>,
+    ) -> Result<Vec<u8>, SyncError> {
         let joined = Joined::decode(bytes)?;
         let Some(Invitation::Welcomed {
             joiner,
@@ -932,7 +894,7 @@ impl Account {
                 epochs.sort_unstable();
                 epochs
             },
-            state: state.to_vec(),
+            hint,
         };
         let entry = Entry {
             invitation: joined.invitation,
@@ -987,12 +949,40 @@ impl Account {
         .encode())
     }
 
-    /// Installs an entry: the account's log, which lists this device, its epoch keys, and the inviter's state, which it hands back.
+    fn admission_genesis(&self, admission: &Admission) -> Result<Digest, SyncError> {
+        let genesis = admission
+            .operations
+            .iter()
+            .find(|operation| account_of(operation) == admission.account)
+            .map(|operation| operation_digest(operation))
+            .ok_or_else(|| {
+                SyncError::Refused(String::from("the entry lacks the account's genesis"))
+            })?;
+        let operations: BTreeMap<Digest, Vec<u8>> = admission
+            .operations
+            .iter()
+            .map(|operation| (operation_digest(operation), operation.clone()))
+            .collect();
+        let checked = log::check(genesis, admission.account, &operations);
+        if !checked.member(&self.device()) {
+            return Err(SyncError::Refused(String::from(
+                "the entry does not admit this device",
+            )));
+        }
+        Ok(genesis)
+    }
+
+    /// Installs checked membership and epoch keys, returning the hint for a separate bounded bootstrap.
     ///
     /// # Errors
     ///
     /// Returns [`SyncError::Refused`] when this device confirmed no welcome of this invitation, and another [`SyncError`] when the entry does not authenticate.
-    pub fn finish(&mut self, bytes: &[u8]) -> Result<Zeroizing<Vec<u8>>, SyncError> {
+    pub fn finish(&mut self, bytes: &[u8]) -> Result<Option<SnapshotHint>, SyncError> {
+        if self.genesis.is_some() {
+            return Err(SyncError::Refused(String::from(
+                "this device belongs to an account already",
+            )));
+        }
         let entry = Entry::decode(bytes)?;
         let Some(Joining::Confirmed {
             invitation,
@@ -1013,14 +1003,7 @@ impl Account {
             &entry.invitation.to_be_bytes(),
             &entry.sealed,
         )?)?;
-        let genesis = admission
-            .operations
-            .iter()
-            .find(|operation| account_of(operation) == admission.account)
-            .map(|operation| operation_digest(operation))
-            .ok_or_else(|| {
-                SyncError::Refused(String::from("the entry lacks the account's genesis"))
-            })?;
+        let genesis = self.admission_genesis(&admission)?;
         for operation in admission.operations {
             self.keep_operation(operation)?;
         }
@@ -1033,8 +1016,8 @@ impl Account {
             self.keep_key(epoch, Zeroizing::new(key))?;
         }
         self.save_epochs()?;
-        fs::remove_if_present(&self.directory.join("joining"))?;
-        Ok(Zeroizing::new(admission.state))
+        fs::remove_if_present(&self.directory.join(JOINING_FILE))?;
+        Ok(admission.hint)
     }
 
     /// Removes a device from the account; the next bundle rotates to a key it never sees.
@@ -1087,6 +1070,7 @@ impl Account {
         }
         let key = RecoveryKey::generate()?;
         let recovery = Identity::from_recovery(&key)?;
+        let public = recovery.public.clone();
         let consent = recovery
             .signing
             .sign(Label::RecoveryConsent, &self.account_id()?)?;
@@ -1099,7 +1083,45 @@ impl Account {
             }),
         )?;
         self.rotate_if_due(now)?;
+        self.share_history(now, &public)?;
         Ok(key)
+    }
+
+    fn share_history(&mut self, now: u64, recovery: &DevicePublic) -> Result<(), SyncError> {
+        let checked = self.check()?;
+        let current = checked
+            .resolution
+            .rotation
+            .and_then(|digest| checked.operations.get(&digest))
+            .and_then(|operation| {
+                if let Action::Rotate(rotation) = &operation.action {
+                    Some(rotation.commitment)
+                } else {
+                    None
+                }
+            });
+        let account = self.account_id()?;
+        let device = recovery.id();
+        let mut historical = Vec::new();
+        for (commitment, (epoch, key)) in &self.epochs {
+            if Some(*commitment) == current {
+                continue;
+            }
+            let binding = Binding {
+                account: &account,
+                epoch: *epoch,
+                device: &device,
+            };
+            historical.push(Rotation {
+                epoch: *epoch,
+                commitment: *commitment,
+                slots: vec![slot::wrap(key, recovery.kem.as_slice(), &binding)?],
+            });
+        }
+        for rotation in historical {
+            self.write_operation(&self.check()?, now, Action::Rotate(rotation))?;
+        }
+        Ok(())
     }
 
     /// The identifier of the member that `key` grows into, under which a relay finds its account.
@@ -1111,7 +1133,7 @@ impl Account {
         Ok(Identity::from_recovery(key)?.public.id())
     }
 
-    /// A request to the relay in `account`, signed by the member that `key` grows into, which a device without an account sends to collect the bundles it recovers from.
+    /// A recovery member's signed request for retained segment chains.
     ///
     /// # Errors
     ///
@@ -1124,13 +1146,18 @@ impl Account {
         let recovery = Identity::from_recovery(key)?;
         let device = recovery.public.id();
         let nonce = youarel_crypto::random::<NONCE>()?;
+        let payload = if verb == Verb::Collect {
+            youarel_protocol::segment::Cursors::default().encode()?
+        } else {
+            Vec::new()
+        };
         let unsigned = UnsignedRequest {
             account: &account,
             device: &device,
             verb,
             stamped: now,
             nonce: &nonce,
-            payload: &[],
+            payload: &payload,
         };
         let signature = recovery.signing.sign(Label::Request, &unsigned.bytes()?)?;
         Ok(Request {
@@ -1139,84 +1166,10 @@ impl Account {
             verb,
             stamped: now,
             nonce,
-            payload: Vec::new(),
+            payload,
             signature,
         }
         .encode()?)
-    }
-
-    /// Recovers the account that `bundle` belongs to: as the member `key` grows into, this device learns the epoch keys, adds itself, and opens the bundle's state.
-    ///
-    /// Nothing reaches the disk until the key's member consented to the bundle's account, a member signed the bundle, and its state opens.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`SyncError::Refused`] when this device belongs to an account already or the key belongs to no member of the bundle's account, and another [`SyncError`] when the bundle is malformed or forged.
-    pub fn recover(
-        &mut self,
-        now: u64,
-        key: &RecoveryKey,
-        bundle: &[u8],
-    ) -> Result<Imported, SyncError> {
-        if self.genesis.is_some() {
-            return Err(SyncError::Refused(String::from(
-                "this device belongs to an account already",
-            )));
-        }
-        let decoded = Bundle::decode(bundle)?;
-        let account = decoded.account;
-        let genesis = decoded
-            .operations
-            .iter()
-            .find(|operation| account_of(operation) == account)
-            .map(|operation| operation_digest(operation))
-            .ok_or_else(|| {
-                SyncError::Refused(String::from("the bundle lacks its account's genesis"))
-            })?;
-        let recovery = Identity::from_recovery(key)?;
-        let log: BTreeMap<Digest, Vec<u8>> = decoded
-            .operations
-            .iter()
-            .map(|operation| (operation_digest(operation), operation.clone()))
-            .collect();
-        let checked = log::check(genesis, account, &log);
-        if !checked.recoveries().contains(&recovery.public.id()) {
-            return Err(SyncError::Refused(String::from(
-                "the recovery key belongs to no member of this account",
-            )));
-        }
-        Self::verify_sender(&checked, &decoded)?;
-        let keys = self.unwrapped(&account, &checked, &recovery)?;
-        let commitment = &decoded.sealed.commitment;
-        let epoch_key = keys
-            .iter()
-            .find(|(_, candidate)| {
-                seal::commitment(candidate).is_ok_and(|made| made == *commitment)
-            })
-            .map(|(_, found)| found)
-            .ok_or_else(|| {
-                SyncError::Refused(String::from(
-                    "the recovery key holds no key of the bundle's epoch",
-                ))
-            })?;
-        let imported = Self::open_state(&account, &decoded, epoch_key)?;
-        let added = Self::operation_by(
-            &recovery,
-            account,
-            &checked,
-            (now, Action::Add(self.identity.public.clone())),
-        )?;
-        for operation in decoded.operations {
-            self.keep_operation(operation)?;
-        }
-        fs::replace(
-            &self.directory.join(GENESIS),
-            format!("{}\n", hex(&genesis)).as_bytes(),
-        )?;
-        self.genesis = Some(genesis);
-        self.keep_keys(keys)?;
-        self.keep_operation(added)?;
-        Ok(imported)
     }
 
     /// The members that recovery keys grow into, which `status` lists among the others.
@@ -1231,7 +1184,50 @@ impl Account {
 
 #[cfg(test)]
 mod tests {
-    use super::{GENESIS, LONGEST_OPERATION, founded};
+    use super::{
+        Account, EPOCHS_FILE, GENESIS, IDENTITY_FILE, INVITATIONS, Identity, JOINING_FILE, LOG,
+        LONGEST_OPERATION, OPERATION_SUFFIX, founded, logged, operation_digest,
+    };
+    use crate::hex;
+    use youarel_store::fs;
+
+    const NOW: u64 = 1_700_000_000_000;
+
+    #[test]
+    fn the_log_counts_each_operation_whose_bytes_match_its_name() {
+        let directory = tempfile::tempdir().unwrap();
+        assert_eq!(logged(&directory.path().join("absent")).unwrap(), 0);
+        let log = directory.path().join(LOG);
+        fs::create_dir_all(&log).unwrap();
+        assert_eq!(logged(directory.path()).unwrap(), 0);
+        for bytes in [b"one".as_slice(), b"two"] {
+            let name = format!("{}{OPERATION_SUFFIX}", hex(&operation_digest(bytes)));
+            fs::replace(&log.join(name), bytes).unwrap();
+        }
+        let forged = format!("{}{OPERATION_SUFFIX}", hex(&operation_digest(b"three")));
+        fs::replace(&log.join(forged), b"not three").unwrap();
+        fs::replace(&log.join("notes.txt"), b"one").unwrap();
+        assert_eq!(logged(directory.path()).unwrap(), 2);
+        let unlisted = tempfile::tempdir().unwrap();
+        fs::replace(&unlisted.path().join(LOG), b"a file").unwrap();
+        logged(unlisted.path()).unwrap_err();
+    }
+
+    #[test]
+    fn an_open_account_counts_its_log_as_its_files_do() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut account = Account::open(directory.path()).unwrap();
+        assert_eq!(account.operations(), 0);
+        account.found(NOW).unwrap();
+        assert_eq!(
+            account.operations(),
+            2,
+            "the genesis and the first rotation"
+        );
+        assert_eq!(logged(directory.path()).unwrap(), 2);
+        let reopened = Account::open(directory.path()).unwrap();
+        assert_eq!(reopened.operations(), 2);
+    }
 
     #[test]
     fn the_log_reads_every_operation_the_wire_admits() {
@@ -1246,7 +1242,66 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         assert!(!founded(&directory.path().join("absent")).unwrap());
         assert!(!founded(directory.path()).unwrap());
-        youarel_store::fs::replace(&directory.path().join(GENESIS), b"named").unwrap();
+        fs::replace(&directory.path().join(GENESIS), b"named").unwrap();
         assert!(founded(directory.path()).unwrap());
+    }
+
+    #[test]
+    fn an_account_keeps_its_keys_in_plain_files_and_reopens_them() {
+        use youarel_core::segment_rules::{Header, Kind, Sequence};
+        let (inviting, joining) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let mut inviter = Account::open(inviting.path()).unwrap();
+        inviter.found(NOW).unwrap();
+        let header = Header::new(
+            Sequence::FIRST,
+            [0; 32],
+            Kind::Snapshot { part: 0, parts: 1 },
+        )
+        .unwrap();
+        let segment = inviter.publish(NOW, header, b"state").unwrap();
+        let code = inviter.invite().unwrap();
+        let join = Account::open(joining.path()).unwrap().join(code).unwrap();
+        let identity = fs::read_bytes_if_present(&inviting.path().join(IDENTITY_FILE)).unwrap();
+        assert_eq!(
+            Identity::decode(&identity.unwrap()).unwrap().public.id(),
+            inviter.device()
+        );
+        let secrets = [
+            inviting.path().join(IDENTITY_FILE),
+            inviting.path().join(EPOCHS_FILE),
+            inviting
+                .path()
+                .join(INVITATIONS)
+                .join(code.number.to_string()),
+            joining.path().join(IDENTITY_FILE),
+            joining.path().join(JOINING_FILE),
+        ];
+        for secret in &secrets {
+            assert_ne!(
+                fs::read_bytes_if_present(secret).unwrap(),
+                None,
+                "{secret:?}"
+            );
+        }
+        let mut reopened = Account::open(inviting.path()).unwrap();
+        assert_eq!(reopened.device(), inviter.device());
+        assert_eq!(
+            reopened.open_segment(&segment).unwrap().body.as_slice(),
+            b"state"
+        );
+        reopened.accept(&join).unwrap();
+    }
+
+    #[test]
+    fn an_identity_that_holds_no_keys_is_refused_and_kept() {
+        let directory = tempfile::tempdir().unwrap();
+        let identity = directory.path().join(IDENTITY_FILE);
+        fs::replace(&identity, &[1; 100]).unwrap();
+        Account::open(directory.path()).unwrap_err();
+        assert_eq!(
+            fs::read_bytes_if_present(&identity).unwrap(),
+            Some(vec![1; 100]),
+            "an open never makes a new identity over one it cannot read"
+        );
     }
 }

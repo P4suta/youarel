@@ -13,7 +13,6 @@ keywords = ["sync", "end-to-end-encryption", "pairing"]
 categories = ["cryptography"]
 
 [dependencies]
-keyring.workspace = true
 youarel-core.workspace = true
 youarel-crypto.workspace = true
 youarel-protocol.workspace = true

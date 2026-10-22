@@ -1,7 +1,8 @@
 ---
-status: proposed
+status: amended
 date: 2026-10-19
 amends: window-syncs-on-its-own-schedule.md
+amended-by: the-window-publishes-only-its-own-changes.md
 ---
 # The window watches the sync folder
 

@@ -1,6 +1,7 @@
 ---
-status: proposed
+status: amended
 date: 2026-10-16
+amended-by: the-device-keys-live-beside-the-state.md
 ---
 # A recovery key grows into a member that consents to its account
 

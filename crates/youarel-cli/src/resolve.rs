@@ -2,11 +2,15 @@
 //!
 //! A folder is a path of names joined by slashes from the top, where an empty path or a lone slash is the top.
 //! An entry is a shortcut's alias, title, or link, a prefix of its identifier, or a folder path that ends with a slash.
+//! Each kind of name reads the store's indexes, so naming one shortcut reads the shortcuts that share its name.
+//! Only an alias of separators alone, which no index files, reads every shortcut.
 
 use anyhow::{Result, bail};
-use youarel_core::state::{Entry, ItemId, Shortcut, State, Tree};
-use youarel_link::Link;
+use youarel_core::state::{Entry, ItemId, Shortcut};
+use youarel_link::{Link, LinkError};
 use youarel_store::codec::hex;
+use youarel_store::folders::Folders;
+use youarel_store::{Named, Session, StoreError};
 
 /// The shortest identifier prefix that names an entry, which keeps a short word from matching by accident.
 pub const SHORTEST_PREFIX: usize = 6;
@@ -16,18 +20,17 @@ pub const SHORTEST_PREFIX: usize = 6;
 /// # Errors
 ///
 /// Returns an error naming the segment that no folder or more than one folder answers.
-pub fn folder(state: &State, tree: &Tree, path: &str) -> Result<Option<ItemId>> {
+pub fn folder(folders: &Folders, path: &str) -> Result<Option<ItemId>> {
     let mut current: Option<ItemId> = None;
     for segment in path.split('/').filter(|segment| !segment.is_empty()) {
-        let children: Vec<ItemId> = state
-            .entries(tree, current)
-            .into_iter()
-            .filter_map(|entry| match entry {
-                Entry::Folder(id) => state
-                    .folder(id)
-                    .filter(|folder| folder.name.value == segment)
-                    .map(|_| id),
-                Entry::Shortcut(_) => None,
+        let children: Vec<ItemId> = folders
+            .children(current)
+            .iter()
+            .copied()
+            .filter(|id| {
+                folders
+                    .folder(*id)
+                    .is_some_and(|folder| folder.name.value == segment)
             })
             .collect();
         match children.as_slice() {
@@ -39,67 +42,93 @@ pub fn folder(state: &State, tree: &Tree, path: &str) -> Result<Option<ItemId>> 
     Ok(current)
 }
 
-/// The text that names an entry in a message.
+/// The text that names a folder, or a shortcut the store holds as `shortcut`, in a message.
 #[must_use]
-pub fn describe(state: &State, tree: &Tree, entry: Entry) -> String {
+pub fn named(folders: &Folders, entry: Entry, shortcut: Option<&Shortcut>) -> String {
     match entry {
         Entry::Folder(id) => {
-            let mut path = state.path(tree, Some(id)).join("/");
+            let mut path = folders.path(Some(id)).join("/");
             path.push('/');
             path
         }
-        Entry::Shortcut(id) => state.shortcut(id).map_or_else(
+        Entry::Shortcut(id) => shortcut.map_or_else(
             || hex(&id.0),
             |shortcut| format!("{} <{}>", shortcut.title.value, shortcut.link.value),
         ),
     }
 }
 
-/// One kind of name a shortcut answers to, which the resolution tries in order.
-type Tier<'a> = &'a dyn Fn(ItemId, &Shortcut) -> bool;
+/// The text that names an entry in a message, as the store holds it.
+///
+/// # Errors
+///
+/// Returns an error when the store cannot be read.
+pub fn describe(session: &Session, entry: Entry) -> Result<String> {
+    let shortcut = match entry {
+        Entry::Shortcut(id) => session.item(id)?,
+        Entry::Folder(_) => None,
+    };
+    Ok(named(session.folders(), entry, shortcut.as_ref()))
+}
+
+/// One kind of name a shortcut answers to, which the resolution tries in order: the live shortcuts that answer to it.
+type Tier<'a> = &'a dyn Fn() -> Result<Named, StoreError>;
+
+/// The live shortcuts that hold a link as typed or as its normalized form, in the order of their identifiers.
+///
+/// A shortcut holds one link, so the two lookups never find the same shortcut.
+fn linked(
+    session: &Session,
+    reference: &str,
+    normalized: &Result<String, LinkError>,
+) -> Result<Named, StoreError> {
+    let mut found = session.holders(reference)?;
+    if let Ok(link) = normalized
+        && link != reference
+    {
+        found.extend(session.holders(link)?);
+        found.sort_by_key(|(id, _)| *id);
+    }
+    Ok(found)
+}
 
 /// The entry a reference names.
 ///
 /// # Errors
 ///
-/// Returns an error when nothing matches, or when several entries match the first kind of name that matches at all.
-pub fn entry(state: &State, tree: &Tree, reference: &str) -> Result<Entry> {
+/// Returns an error when nothing matches, when several entries match the first kind of name that matches at all, or when the store cannot be read.
+pub fn entry(session: &Session, reference: &str) -> Result<Entry> {
     let normalized = Link::parse(reference).map(|link| link.as_str().to_owned());
+    let folders = session.folders();
     if reference.ends_with('/') && normalized.is_err() {
-        return match folder(state, tree, reference)? {
+        return match folder(folders, reference)? {
             Some(id) => Ok(Entry::Folder(id)),
             None => bail!("the top is not an entry; name a folder or a shortcut"),
         };
     }
-    let live: Vec<(ItemId, &Shortcut)> = state
-        .shortcuts
-        .keys()
-        .filter_map(|id| state.shortcut(*id).map(|shortcut| (*id, shortcut)))
-        .collect();
     let tiers: [Tier<'_>; 4] = [
-        &|_, shortcut| !shortcut.alias.value.is_empty() && shortcut.alias.value == reference,
-        &|_, shortcut| shortcut.title.value == reference,
-        &|_, shortcut| {
-            shortcut.link.value == reference
-                || normalized
-                    .as_ref()
-                    .is_ok_and(|link| *link == shortcut.link.value)
+        &|| session.aliased(reference),
+        &|| session.titled(reference),
+        &|| linked(session, reference, &normalized),
+        &|| {
+            if reference.len() >= SHORTEST_PREFIX {
+                session.spelled(reference)
+            } else {
+                Ok(Vec::new())
+            }
         },
-        &|id, _| reference.len() >= SHORTEST_PREFIX && hex(&id.0).starts_with(reference),
     ];
     for tier in tiers {
-        let found: Vec<Entry> = live
-            .iter()
-            .filter(|(id, shortcut)| tier(*id, shortcut))
-            .map(|(id, _)| Entry::Shortcut(*id))
-            .collect();
+        let found = tier()?;
         match found.as_slice() {
-            [only] => return Ok(*only),
+            [(only, _)] => return Ok(Entry::Shortcut(*only)),
             [] => {}
             [_, ..] => {
                 let names: Vec<String> = found
                     .iter()
-                    .map(|entry| format!("  {}", describe(state, tree, *entry)))
+                    .map(|(id, shortcut)| {
+                        format!("  {}", named(folders, Entry::Shortcut(*id), Some(shortcut)))
+                    })
                     .collect();
                 bail!(
                     "`{reference}` names more than one shortcut:\n{}\nname one by its link or its identifier",
@@ -108,7 +137,7 @@ pub fn entry(state: &State, tree: &Tree, reference: &str) -> Result<Entry> {
             }
         }
     }
-    match folder(state, tree, reference) {
+    match folder(folders, reference) {
         Ok(Some(id)) => Ok(Entry::Folder(id)),
         Ok(None) | Err(_) => bail!("nothing is named `{reference}`"),
     }
@@ -117,15 +146,19 @@ pub fn entry(state: &State, tree: &Tree, reference: &str) -> Result<Entry> {
 #[cfg(test)]
 mod tests {
     use super::{entry, folder};
-    use youarel_core::clock_rules::{DeviceId, Stamp};
-    use youarel_core::state::{Edit, Entry, ItemId, State};
+    use youarel_core::state::{Edit, Entry, ItemId};
+    use youarel_store::Store;
+
+    const NOW: u64 = 1_700_000_000_000;
 
     const fn id(byte: u8) -> ItemId {
         ItemId([byte; 16])
     }
 
-    fn sample() -> State {
-        let mut state = State::default();
+    /// A store with Work holding Infra holding GitHub, two folders named Twin, and two shortcuts titled Same.
+    fn sample() -> (tempfile::TempDir, Store) {
+        let home = tempfile::tempdir().unwrap();
+        let store = Store::new(home.path().to_path_buf());
         let edits = [
             Edit::AddFolder {
                 id: id(1),
@@ -170,57 +203,111 @@ mod tests {
                 alias: "gh".to_owned(),
             },
         ];
-        for (wall, edit) in (1..).zip(edits) {
-            let stamp = Stamp {
-                wall,
-                counter: 0,
-                device: DeviceId([9; 16]),
-            };
-            state.apply(edit, stamp).unwrap();
-        }
-        state
+        store
+            .session(NOW, |session| {
+                edits.into_iter().try_for_each(|edit| session.edit(edit))
+            })
+            .unwrap();
+        (home, store)
     }
 
     #[test]
     fn folder_paths_walk_from_the_top() {
-        let state = sample();
-        let tree = state.tree();
-        assert_eq!(folder(&state, &tree, "").unwrap(), None);
-        assert_eq!(folder(&state, &tree, "/").unwrap(), None);
-        assert_eq!(folder(&state, &tree, "Work/Infra").unwrap(), Some(id(2)));
-        assert_eq!(folder(&state, &tree, "/Work/Infra/").unwrap(), Some(id(2)));
-        let missing = folder(&state, &tree, "Work/Nope").unwrap_err().to_string();
-        assert!(missing.contains("no folder `Nope`"), "{missing}");
-        let twin = folder(&state, &tree, "Twin").unwrap_err().to_string();
-        assert!(twin.contains("more than one folder"), "{twin}");
+        let (_home, store) = sample();
+        store
+            .session(NOW, |session| {
+                let folders = session.folders();
+                assert_eq!(folder(folders, "").unwrap(), None);
+                assert_eq!(folder(folders, "/").unwrap(), None);
+                assert_eq!(folder(folders, "Work/Infra").unwrap(), Some(id(2)));
+                assert_eq!(folder(folders, "/Work/Infra/").unwrap(), Some(id(2)));
+                let missing = folder(folders, "Work/Nope").unwrap_err().to_string();
+                assert!(missing.contains("no folder `Nope`"), "{missing}");
+                let twin = folder(folders, "Twin").unwrap_err().to_string();
+                assert!(twin.contains("more than one folder"), "{twin}");
+                Ok(())
+            })
+            .unwrap();
     }
 
     #[test]
     fn entries_resolve_by_alias_title_link_identifier_or_folder() {
-        let state = sample();
-        let tree = state.tree();
-        let shortcut = Entry::Shortcut(id(3));
-        assert_eq!(entry(&state, &tree, "gh").unwrap(), shortcut);
-        assert_eq!(entry(&state, &tree, "GitHub").unwrap(), shortcut);
-        assert_eq!(
-            entry(&state, &tree, "https://github.com/").unwrap(),
-            shortcut
-        );
-        assert_eq!(
-            entry(&state, &tree, "HTTPS://GitHub.com").unwrap(),
-            shortcut
-        );
-        assert_eq!(entry(&state, &tree, "030303").unwrap(), shortcut);
-        assert_eq!(
-            entry(&state, &tree, "Work/Infra/").unwrap(),
-            Entry::Folder(id(2))
-        );
-        assert_eq!(entry(&state, &tree, "Work").unwrap(), Entry::Folder(id(1)));
-        let ambiguous = entry(&state, &tree, "Same").unwrap_err().to_string();
-        assert!(ambiguous.contains("more than one shortcut"), "{ambiguous}");
-        assert!(ambiguous.contains("gitlab.com"), "{ambiguous}");
-        let nothing = entry(&state, &tree, "0303").unwrap_err().to_string();
-        assert!(nothing.contains("nothing is named"), "{nothing}");
-        entry(&state, &tree, "/").unwrap_err();
+        let (_home, store) = sample();
+        store
+            .session(NOW, |session| {
+                let named = |reference: &str| entry(session, reference);
+                let shortcut = Entry::Shortcut(id(3));
+                assert_eq!(named("gh").unwrap(), shortcut);
+                assert_eq!(named("GitHub").unwrap(), shortcut);
+                assert_eq!(named("https://github.com/").unwrap(), shortcut);
+                assert_eq!(named("HTTPS://GitHub.com").unwrap(), shortcut);
+                assert_eq!(named("030303").unwrap(), shortcut);
+                assert_eq!(named("Work/Infra/").unwrap(), Entry::Folder(id(2)));
+                assert_eq!(named("Work").unwrap(), Entry::Folder(id(1)));
+                let ambiguous = named("Same").unwrap_err().to_string();
+                assert!(ambiguous.contains("more than one shortcut"), "{ambiguous}");
+                assert!(ambiguous.contains("gitlab.com"), "{ambiguous}");
+                let nothing = named("0303").unwrap_err().to_string();
+                assert!(nothing.contains("nothing is named"), "{nothing}");
+                named("/").unwrap_err();
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn a_name_passes_removed_shortcuts_and_finds_an_alias_without_a_word() {
+        let (_home, store) = sample();
+        store
+            .session(NOW, |session| {
+                let edits = [
+                    Edit::Realias {
+                        id: id(4),
+                        alias: "-".to_owned(),
+                    },
+                    Edit::AddShortcut {
+                        id: id(8),
+                        link: "https://github.com/".to_owned(),
+                        title: "Mirror".to_owned(),
+                        folder: None,
+                    },
+                    Edit::AddShortcut {
+                        id: id(9),
+                        link: "https://gone.example/".to_owned(),
+                        title: "Gone".to_owned(),
+                        folder: None,
+                    },
+                    Edit::Realias {
+                        id: id(9),
+                        alias: "gone".to_owned(),
+                    },
+                    Edit::Remove {
+                        entry: Entry::Shortcut(id(9)),
+                    },
+                ];
+                edits.into_iter().try_for_each(|edit| session.edit(edit))
+            })
+            .unwrap();
+        store
+            .session(NOW, |session| {
+                let named = |reference: &str| entry(session, reference);
+                assert_eq!(
+                    named("-").unwrap(),
+                    Entry::Shortcut(id(4)),
+                    "an alias of separators alone"
+                );
+                let twice = named("https://github.com/").unwrap_err().to_string();
+                assert!(twice.contains("more than one shortcut"), "{twice}");
+                assert!(twice.contains("Mirror"), "{twice}");
+                let gone = named("gone").unwrap_err().to_string();
+                assert!(gone.contains("nothing is named"), "{gone}");
+                assert_eq!(
+                    named("0303030").unwrap(),
+                    Entry::Shortcut(id(3)),
+                    "an odd start of an identifier"
+                );
+                Ok(())
+            })
+            .unwrap();
     }
 }

@@ -14,9 +14,17 @@ categories = ["parser-implementations"]
 
 [dependencies]
 lz4_flex.workspace = true
+md-5.workspace = true
 plist.workspace = true
+rusqlite.workspace = true
 serde_json.workspace = true
+tempfile.workspace = true
+youarel-core.workspace = true
 youarel-html.workspace = true
+youarel-link.workspace = true
+
+[dev-dependencies]
+youarel-store.workspace = true
 
 [lints]
 workspace = true

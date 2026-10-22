@@ -1,21 +1,28 @@
 //! A relay that keeps everything in memory, for the tests and a local relay.
 
-use crate::account::{self, AccountStore, Handled};
+use crate::account::{self, AccountStore, Append, Handled, StoredChain};
 use crate::directory::{self, DirectoryStore};
 use crate::mailbox::{self, MailStore};
 use crate::{Reply, Status, StoreError};
 use std::collections::{BTreeMap, VecDeque};
-use youarel_core::relay_rules::Seen;
+use youarel_core::relay_rules::{RetainedSegment, Seen};
+use youarel_core::segment_rules::{Header, Sequence};
 use youarel_protocol::message::Digest;
-use youarel_protocol::relay::{Side, Slot};
+use youarel_protocol::relay::Side;
 
 /// One account's storage.
 #[derive(Clone, Debug, Default)]
 pub struct MemoryAccount {
     genesis: Option<Digest>,
     log: BTreeMap<Digest, Vec<u8>>,
-    slots: BTreeMap<Digest, Slot>,
+    chains: BTreeMap<Digest, (StoredChain, BTreeMap<Sequence, MemorySegment>)>,
     seen: Vec<Seen>,
+}
+
+#[derive(Clone, Debug)]
+struct MemorySegment {
+    header: Header,
+    bytes: Vec<u8>,
 }
 
 impl AccountStore for MemoryAccount {
@@ -37,17 +44,81 @@ impl AccountStore for MemoryAccount {
         Ok(())
     }
 
-    fn slots(&self) -> Result<Vec<Slot>, StoreError> {
-        Ok(self.slots.values().cloned().collect())
+    fn chains(&self) -> Result<Vec<StoredChain>, StoreError> {
+        Ok(self
+            .chains
+            .values()
+            .map(|(chain, _segments)| *chain)
+            .collect())
     }
 
-    fn put_slot(&mut self, slot: Slot) -> Result<(), StoreError> {
-        self.slots.insert(slot.device, slot);
+    fn chain(&self, sender: &Digest) -> Result<Vec<RetainedSegment>, StoreError> {
+        self.chains.get(sender).map_or_else(
+            || Ok(Vec::new()),
+            |(_chain, segments)| {
+                segments
+                    .values()
+                    .map(|segment| {
+                        let bytes =
+                            std::num::NonZeroUsize::new(segment.bytes.len()).ok_or_else(|| {
+                                StoreError(String::from("a retained segment is empty"))
+                            })?;
+                        Ok(RetainedSegment {
+                            header: segment.header,
+                            bytes,
+                        })
+                    })
+                    .collect()
+            },
+        )
+    }
+
+    fn segment(&self, sender: &Digest, sequence: Sequence) -> Result<Option<Vec<u8>>, StoreError> {
+        Ok(self
+            .chains
+            .get(sender)
+            .and_then(|(_chain, segments)| segments.get(&sequence))
+            .map(|segment| segment.bytes.clone()))
+    }
+
+    fn append(&mut self, append: &Append<'_>) -> Result<(), StoreError> {
+        let initial = StoredChain {
+            sender: append.sender,
+            incomplete: youarel_core::relay_rules::incomplete_snapshot(append.header),
+            published: append.published,
+            head: append.head,
+            bytes: 0,
+        };
+        let (chain, segments) = self
+            .chains
+            .entry(append.sender)
+            .or_insert_with(|| (initial, BTreeMap::new()));
+        segments.insert(
+            append.header.sequence(),
+            MemorySegment {
+                header: append.header,
+                bytes: append.bytes.to_vec(),
+            },
+        );
+        segments.retain(|sequence, _segment| *sequence >= append.head.first());
+        *chain = StoredChain {
+            bytes: segments.values().fold(0usize, |total, segment| {
+                total.saturating_add(segment.bytes.len())
+            }),
+            ..initial
+        };
         Ok(())
     }
 
-    fn remove_slot(&mut self, device: &Digest) -> Result<(), StoreError> {
-        self.slots.remove(device);
+    fn renew(&mut self, sender: &Digest, now: u64) -> Result<(), StoreError> {
+        if let Some((chain, _segments)) = self.chains.get_mut(sender) {
+            chain.published = now;
+        }
+        Ok(())
+    }
+
+    fn remove_chain(&mut self, sender: &Digest) -> Result<(), StoreError> {
+        self.chains.remove(sender);
         Ok(())
     }
 

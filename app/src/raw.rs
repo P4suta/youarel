@@ -1,9 +1,9 @@
 //! The Tauri bindings: the window, the tray, the global shortcut, a second start that brings the window forward, and the commands the window calls.
 
 use crate::intent::{Intent, item};
-use crate::library::Library;
+use crate::library::{Job, Library};
 use crate::themes::ThemeOption;
-use crate::view::View;
+use crate::view::{Progress, View};
 use crate::watch::Watch;
 use std::collections::BTreeMap;
 use std::process::ExitCode;
@@ -39,11 +39,20 @@ const TICK: Duration = Duration::from_secs(5);
 const QUIET: Duration = Duration::from_millis(sync_rules::QUIET);
 /// The event that tells the page shortcuts got their icons, so it draws the view again.
 const ICONED: &str = "iconed";
+/// The event that tells the page how far a move or a removal came, which it shows while the job works.
+const PROGRESS: &str = "progress";
 
 type Shared = Mutex<Library>;
+mod device_commands;
+mod local_icons;
 
 fn locked(shared: &Shared) -> MutexGuard<'_, Library> {
     shared.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Carries out the next batch of a job under the library's lock, which it lets go before the next batch.
+fn advance(shared: &Shared, job: &mut Job) -> Option<Progress> {
+    locked(shared).advance(job)
 }
 
 /// Wakes the ticker once the watch notices what may be another device's bundle.
@@ -111,30 +120,158 @@ mod commands {
     )]
 
     use super::{
-        AppHandle, BTreeMap, ClipboardExt, Intent, Link, Shared, ThemeOption, View, gather_icons,
-        item, locked, reported,
+        AppHandle, BTreeMap, ClipboardExt, Emitter as _, Intent, Link, PROGRESS, Shared,
+        ThemeOption, View, advance, gather_icons, item, locked, reported,
     };
-    use crate::library::{Addition, fetch};
-    use tauri::State;
+    use crate::library::{Addition, Begun, fetch};
+    use crate::view::{Choice, EntriesView, RowsView};
+    use tauri::{Manager as _, State};
 
     /// Carries out what the window asks for and answers with the view, then asks the sites of the links it opened for their missing favicons.
+    ///
+    /// A move or a removal runs in batches and lets the library's lock go between them, so the window pages and searches meanwhile and hears how far the job came.
     #[tauri::command(async)]
     pub(super) fn act(
         app: AppHandle,
         shared: State<'_, Shared>,
         intent: Intent,
     ) -> Result<View, String> {
-        let view = locked(&shared)
-            .act(intent)
-            .map_err(|error| reported(&error));
+        let restart_icons = matches!(
+            &intent,
+            Intent::Import { .. } | Intent::ImportBrowser { .. }
+        );
+        let icon_browser = if let Intent::ImportBrowser { browser } = &intent {
+            Some((*browser).into())
+        } else {
+            None
+        };
+        let begun = locked(&shared).begin(intent);
+        let view = match begun {
+            Ok(Begun::Answered(view)) => Ok(*view),
+            Ok(Begun::Working(mut job)) => {
+                while let Some(progress) = advance(&shared, &mut job) {
+                    // A page that misses a step of the progress hears the next one, and the view after the last.
+                    drop(app.emit(PROGRESS, progress));
+                }
+                locked(&shared).finish(&mut job)
+            }
+            Err(error) => Err(error),
+        };
         gather_icons(&app);
-        view
+        if restart_icons {
+            app.state::<crate::local_icons::LocalIcons>()
+                .restart(icon_browser);
+        }
+        if let Ok(view) = &view {
+            app.state::<crate::local_icons::LocalIcons>()
+                .queue_view(view);
+        }
+        super::local_icons::tick(&app);
+        view.map_err(|error| reported(&error))
+    }
+
+    /// Rows of the listing the cards or the list show, from a place on, as the page scrolls.
+    #[tauri::command(async)]
+    pub(super) fn page(
+        app: AppHandle,
+        shared: State<'_, Shared>,
+        first: usize,
+        limit: usize,
+    ) -> Result<RowsView, String> {
+        let page = locked(&shared)
+            .page(first, limit)
+            .map_err(|error| reported(&error))?;
+        app.state::<crate::local_icons::LocalIcons>()
+            .queue_rows(&page.rows);
+        super::local_icons::tick(&app);
+        Ok(page)
+    }
+
+    /// Entries of a column of the folder walk, from a place on, as the page scrolls that column.
+    #[tauri::command(async)]
+    pub(super) fn column_page(
+        app: AppHandle,
+        depth: usize,
+        first: usize,
+        limit: usize,
+    ) -> Result<EntriesView, String> {
+        let page = locked(&app.state::<Shared>())
+            .column_page(depth, first, limit)
+            .map_err(|error| reported(&error))?;
+        app.state::<crate::local_icons::LocalIcons>()
+            .queue_columns(&page.entries);
+        super::local_icons::tick(&app);
+        Ok(page)
+    }
+
+    /// The collections a picker offers for what a person typed, from a place on.
+    #[tauri::command(async)]
+    pub(super) fn choices(
+        shared: State<'_, Shared>,
+        query: String,
+        first: usize,
+        limit: usize,
+    ) -> Result<Vec<Choice>, String> {
+        locked(&shared)
+            .choices(&query, first, limit)
+            .map_err(|error| reported(&error))
     }
 
     /// Answers with the view as it stands, keeping its notice, as after a sync began or ended.
     #[tauri::command(async)]
-    pub(super) fn view(shared: State<'_, Shared>) -> Result<View, String> {
-        locked(&shared).view().map_err(|error| reported(&error))
+    pub(super) fn view(app: AppHandle, shared: State<'_, Shared>) -> Result<View, String> {
+        let view = locked(&shared).view().map_err(|error| reported(&error))?;
+        app.state::<crate::local_icons::LocalIcons>()
+            .queue_view(&view);
+        super::local_icons::tick(&app);
+        Ok(view)
+    }
+
+    /// Refreshes around the entries the page already shows, without moving its selection.
+    #[tauri::command(async)]
+    pub(super) fn view_anchored(
+        app: AppHandle,
+        shared: State<'_, Shared>,
+        anchors: Vec<crate::view::ViewportAnchor>,
+    ) -> Result<View, String> {
+        let view = locked(&shared)
+            .view_anchored(&anchors)
+            .map_err(|error| reported(&error))?;
+        app.state::<crate::local_icons::LocalIcons>()
+            .queue_view(&view);
+        super::local_icons::tick(&app);
+        Ok(view)
+    }
+
+    /// Names the library's undo and redo steps, or offers text editing while a field has focus.
+    #[tauri::command(async)]
+    pub(super) fn history_menu(
+        app: AppHandle,
+        undo: Option<String>,
+        redo: Option<String>,
+        field: bool,
+    ) -> Result<(), String> {
+        let Some(menu) = app.menu() else {
+            return Ok(());
+        };
+        let editing = menu
+            .get("editing")
+            .and_then(|item| item.as_submenu().cloned())
+            .ok_or("the Edit menu is missing")?;
+        for (id, verb, step) in [("undo", "Undo", undo), ("redo", "Redo", redo)] {
+            let item = editing
+                .get(id)
+                .and_then(|item| item.as_menuitem().cloned())
+                .ok_or_else(|| format!("the {verb} menu item is missing"))?;
+            let label = step
+                .as_ref()
+                .filter(|_| !field)
+                .map_or_else(|| verb.to_owned(), |step| format!("{verb} {step}"));
+            item.set_text(label).map_err(|error| error.to_string())?;
+            item.set_enabled(field || step.is_some())
+                .map_err(|error| error.to_string())?;
+        }
+        Ok(())
     }
 
     /// Adds a link to a collection, reading its page for a missing title and for its icon before the store is locked.
@@ -210,6 +347,89 @@ mod commands {
             .map_err(|error| error.to_string())
     }
 
+    /// Copies the selected shortcuts as links and cancels a pending cut after the clipboard accepts them.
+    #[tauri::command(async)]
+    pub(super) fn copy_selection(
+        app: AppHandle,
+        shared: State<'_, Shared>,
+    ) -> Result<View, String> {
+        let text = locked(&shared)
+            .selected_links()
+            .map_err(|error| reported(&error))?;
+        if text.is_empty() {
+            return Err("the selection holds no shortcuts to copy".to_owned());
+        }
+        app.clipboard()
+            .write_text(text)
+            .map_err(|error| error.to_string())?;
+        locked(&shared)
+            .act(Intent::CancelCut)
+            .map_err(|error| reported(&error))
+    }
+
+    /// Moves the cut entries or pastes the clipboard's web links.
+    #[tauri::command(async)]
+    pub(super) fn paste(app: AppHandle, shared: State<'_, Shared>) -> Result<View, String> {
+        let text = if locked(&shared).cutting() {
+            String::new()
+        } else {
+            app.clipboard()
+                .read_text()
+                .map_err(|error| error.to_string())?
+        };
+        act(app, shared, Intent::Paste { text })
+    }
+
+    /// Writes the bookmark export to the operating system's Downloads directory.
+    #[tauri::command(async)]
+    pub(super) fn export_bookmarks(
+        app: AppHandle,
+        shared: State<'_, Shared>,
+    ) -> Result<View, String> {
+        let directory = app
+            .path()
+            .download_dir()
+            .map_err(|error| error.to_string())?;
+        locked(&shared)
+            .export_to(&directory)
+            .map_err(|error| reported(&error))
+    }
+
+    /// Hides the window, as its close button does.
+    #[tauri::command(async)]
+    pub(super) fn close(app: AppHandle) -> Result<(), String> {
+        app.get_webview_window(super::WINDOW)
+            .ok_or("the library window is missing")?
+            .hide()
+            .map_err(|error| error.to_string())
+    }
+
+    /// Freezes the exact entries and links the drag's native payload names.
+    #[tauri::command(async)]
+    pub(super) fn prepare_drag(
+        shared: State<'_, Shared>,
+        target: crate::intent::TargetName,
+    ) -> Result<crate::view::DragMaterial, String> {
+        locked(&shared)
+            .prepare_drag(&target)
+            .map_err(|error| reported(&error))
+    }
+
+    /// Starts or cancels a hover, independently of a view redraw.
+    #[tauri::command(async)]
+    pub(super) fn hover(
+        shared: State<'_, Shared>,
+        token: String,
+        folder: Option<String>,
+    ) -> Result<Option<u64>, String> {
+        let token = item(&token).map_err(|error| reported(&error))?;
+        let folder =
+            crate::intent::optional(folder.as_deref()).map_err(|error| reported(&error))?;
+        locked(&shared)
+            .hover(token, folder)
+            .map_err(|error| reported(&error))
+    }
+
     /// Every theme the window can wear, for the settings to draw.
     #[tauri::command(async)]
     pub(super) fn themes(shared: State<'_, Shared>) -> Vec<ThemeOption> {
@@ -236,9 +456,17 @@ mod commands {
 
 /// Runs the sync the schedule says is due, outside the library's lock, and tells the page before and after.
 ///
-/// A publish writes this device's bundle as `youarel sync` does, and a merge only reads the other devices' bundles.
+/// A publish writes this device's bundle as `youarel sync` does, and a merge only reads the other devices' bundles and says whether this device has something new to publish.
 /// The sync then learns the name of this device's own bundle, whose changes the watch passes over from then on.
 async fn sync_when_due(app: &AppHandle) {
+    if app
+        .state::<device_commands::SharedDevices>()
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .busy()
+    {
+        return;
+    }
     let Ok(began) = youarel_cli::clock::now() else {
         // A clock that cannot be read leaves the sync to the next tick.
         return;
@@ -254,10 +482,14 @@ async fn sync_when_due(app: &AppHandle) {
     drop(app.emit(SYNCED, ()));
     let ran = tauri::async_runtime::spawn_blocking(move || {
         let outcome = match sync {
-            sync_rules::Sync::Publish => youarel_cli::sync::sync(&store, began, &target),
-            sync_rules::Sync::Merge => youarel_cli::sync::merge(&store, began, &target),
+            // A publish carries everything this device held when it read the store.
+            sync_rules::Sync::Publish => {
+                youarel_cli::sync::sync_checked(&store, began, &target).map(|_published| false)
+            }
+            sync_rules::Sync::Merge => youarel_cli::sync::merge(&store, began, &target)
+                .and_then(|merged| merged.checked_pending()),
         };
-        (outcome, youarel_cli::sync::own_bundle(&store))
+        (outcome, youarel_cli::sync::own_chain(&store))
     })
     .await;
     let (outcome, own) = ran.unwrap_or_else(|stopped| {
@@ -377,6 +609,7 @@ fn ticker(app: &AppHandle) {
     tauri::async_runtime::spawn(async move {
         let wake = handle.state::<Wake>();
         loop {
+            local_icons::tick(&handle);
             keep_watch(&handle);
             sync_when_due(&handle).await;
             let nudged = tokio::time::timeout(TICK, wake.0.notified()).await;
@@ -391,7 +624,7 @@ fn ticker(app: &AppHandle) {
 /// The event that hands the page a command a person chose from the app's menu, by its identifier.
 const COMMAND: &str = "command";
 /// The commands of the app's menu that the page carries out, as its keys do.
-const COMMANDS: [&str; 7] = [
+const COMMANDS: [&str; 18] = [
     "settings",
     "new-link",
     "new-collection",
@@ -399,6 +632,17 @@ const COMMANDS: [&str; 7] = [
     "cards",
     "list",
     "columns",
+    "undo",
+    "redo",
+    "cut",
+    "copy",
+    "paste",
+    "select-all",
+    "open",
+    "export",
+    "back",
+    "forward",
+    "show-in-folder",
 ];
 
 /// The app's menu on macOS: the app with its settings, the file commands, editing, the layouts, and the window.
@@ -452,7 +696,10 @@ mod app_menu {
                     Some("Shift+CmdOrCtrl+N"),
                 )?,
                 &Item::separator(app)?,
+                &command(app, "open", "Open", Some("CmdOrCtrl+O"))?,
+                &Item::separator(app)?,
                 &command(app, "import", "Import Bookmark File…", None)?,
+                &command(app, "export", "Export Bookmark File…", None)?,
                 &Item::separator(app)?,
                 &Item::close_window(app, None)?,
             ],
@@ -460,18 +707,19 @@ mod app_menu {
     }
 
     fn edit(app: &AppHandle) -> tauri::Result<Submenu<Wry>> {
-        Submenu::with_items(
+        Submenu::with_id_and_items(
             app,
+            "editing",
             "Edit",
             true,
             &[
-                &Item::undo(app, None)?,
-                &Item::redo(app, None)?,
+                &command(app, "undo", "Undo", Some("CmdOrCtrl+Z"))?,
+                &command(app, "redo", "Redo", Some("Shift+CmdOrCtrl+Z"))?,
                 &Item::separator(app)?,
-                &Item::cut(app, None)?,
-                &Item::copy(app, None)?,
-                &Item::paste(app, None)?,
-                &Item::select_all(app, None)?,
+                &command(app, "cut", "Cut", Some("CmdOrCtrl+X"))?,
+                &command(app, "copy", "Copy", Some("CmdOrCtrl+C"))?,
+                &command(app, "paste", "Paste", Some("CmdOrCtrl+V"))?,
+                &command(app, "select-all", "Select All", Some("CmdOrCtrl+A"))?,
             ],
         )
     }
@@ -485,6 +733,10 @@ mod app_menu {
                 &command(app, "cards", "as Cards", Some("CmdOrCtrl+1"))?,
                 &command(app, "list", "as List", Some("CmdOrCtrl+2"))?,
                 &command(app, "columns", "as Columns", Some("CmdOrCtrl+3"))?,
+                &Item::separator(app)?,
+                &command(app, "back", "Back", Some("CmdOrCtrl+["))?,
+                &command(app, "forward", "Forward", Some("CmdOrCtrl+]"))?,
+                &command(app, "show-in-folder", "Show in Folder", Some("CmdOrCtrl+R"))?,
                 &Item::separator(app)?,
                 &Item::fullscreen(app, None)?,
             ],
@@ -569,6 +821,16 @@ fn context() -> tauri::Context {
     tauri::generate_context!()
 }
 
+fn shortcuts() -> tauri::plugin::TauriPlugin<tauri::Wry> {
+    tauri_plugin_global_shortcut::Builder::new()
+        .with_handler(|app, _shortcut, event| {
+            if event.state() == ShortcutState::Pressed {
+                toggle(app);
+            }
+        })
+        .build()
+}
+
 /// Runs the library until the person quits it from the tray or the menu.
 #[must_use]
 pub fn run() -> ExitCode {
@@ -579,13 +841,6 @@ pub fn run() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let shortcuts = tauri_plugin_global_shortcut::Builder::new()
-        .with_handler(|app, _shortcut, event| {
-            if event.state() == ShortcutState::Pressed {
-                toggle(app);
-            }
-        })
-        .build();
     let built = with_menu(tauri::Builder::default())
         .on_menu_event(|app, event| menu_command(app, event.id().as_ref()))
         .plugin(tauri_plugin_single_instance::init(|app, arguments, _directory| {
@@ -595,18 +850,34 @@ pub fn run() -> ExitCode {
                 show(app);
             }
         }))
-        .plugin(shortcuts)
+        .plugin(shortcuts())
         .plugin(tauri_plugin_clipboard_manager::init())
+        .manage(crate::local_icons::LocalIcons::new(store.clone()))
         .manage(Mutex::new(Library::new(store)))
+        .manage(Mutex::new(crate::devices::Devices::default()))
         .manage(Wake::default())
         .manage(Watching::default())
         .invoke_handler(tauri::generate_handler![
+            device_commands::devices,
+            device_commands::device_action,
+            device_commands::take_recovery_key,
             commands::act,
+            commands::page,
+            commands::column_page,
+            commands::choices,
             commands::view,
+            commands::view_anchored,
+            commands::history_menu,
             commands::add,
             commands::title,
             commands::clipboard,
             commands::copy,
+            commands::copy_selection,
+            commands::paste,
+            commands::export_bookmarks,
+            commands::close,
+            commands::prepare_drag,
+            commands::hover,
             commands::themes,
             commands::emoji,
             commands::icons
@@ -631,17 +902,22 @@ pub fn run() -> ExitCode {
         .build(context());
     match built {
         Ok(app) => {
-            app.run(|handle, event| {
-                if reopened(&event) {
-                    show(handle);
-                }
-            });
+            app.run(|handle, event| handle_event(handle, &event));
             ExitCode::SUCCESS
         }
         Err(error) => {
             eprintln!("youarel-launcher: {error}");
             ExitCode::FAILURE
         }
+    }
+}
+
+fn handle_event(handle: &AppHandle, event: &RunEvent) {
+    if matches!(event, RunEvent::Exit) {
+        handle.state::<crate::local_icons::LocalIcons>().cancel();
+    }
+    if reopened(event) {
+        show(handle);
     }
 }
 

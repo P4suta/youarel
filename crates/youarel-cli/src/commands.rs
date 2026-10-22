@@ -3,12 +3,11 @@
 use crate::resolve::{self, describe};
 use crate::{browsers, icons, web};
 use anyhow::{Context, Result, anyhow};
+use std::collections::BTreeSet;
 use std::io::Write as _;
 use youarel_core::browser_rules::Browser;
 use youarel_core::mark_rules;
-use youarel_core::state::{Edit, Entry, ItemId, Slot, State, Tree};
-use youarel_core::ui_rules::{Row, Ui};
-use youarel_core::view;
+use youarel_core::state::{Edit, Entry, ItemId, Slot};
 use youarel_html::bookmarks::{self, Item};
 use youarel_link::Link;
 use youarel_store::icons::IconId;
@@ -45,6 +44,16 @@ fn session<R>(
     work: impl FnOnce(&mut Session) -> Result<R, StoreError>,
 ) -> Result<R> {
     store.session(now, work).map_err(failed)
+}
+
+/// Runs `work`, which reports any failure, in one session at `now`.
+fn reading<R>(store: &Store, now: u64, work: impl FnOnce(&mut Session) -> Result<R>) -> Result<R> {
+    let mut outcome = None;
+    session(store, now, |session| {
+        outcome = Some(work(session));
+        Ok(())
+    })?;
+    outcome.context("the session ran no work")?
 }
 
 /// What a new shortcut gets from its page: its title, its icon, and what could not be read.
@@ -93,19 +102,14 @@ fn fetched(link: &Link, addition: &Addition) -> Fetched {
 pub fn add(store: &Store, now: u64, link: &str, addition: &Addition) -> Result<String> {
     let link = Link::parse(link).with_context(|| format!("cannot add `{link}`"))?;
     let Fetched { title, icon, notes } = fetched(&link, addition);
-    // The session answers with the shortcut that already holds the link, which refuses the addition.
-    let outcome = session(store, now, |session| {
+    let message = reading(store, now, |session| {
         let folder = match &addition.folder {
             Some(path) => folder_path(session, path)?,
             None => None,
         };
-        let before = session.state().tree();
-        if let Some(held) = session.state().holding(&before, folder, link.as_str()) {
-            return Ok(Err(describe(
-                session.state(),
-                &before,
-                Entry::Shortcut(held),
-            )));
+        if let Some(held) = session.holder(folder, link.as_str())? {
+            let named = describe(session, Entry::Shortcut(held))?;
+            anyhow::bail!("its folder holds it already: {named}");
         }
         let id = session.fresh_id()?;
         session.edit(Edit::AddShortcut {
@@ -123,28 +127,18 @@ pub fn add(store: &Store, now: u64, link: &str, addition: &Addition) -> Result<S
         if let Some(icon) = icon {
             icons::keep(session, &link, icon)?;
         }
-        let tree = session.state().tree();
-        Ok(Ok(format!(
-            "added {}",
-            describe(session.state(), &tree, Entry::Shortcut(id))
-        )))
+        Ok(format!("added {}", describe(session, Entry::Shortcut(id))?))
     })?;
-    let message = outcome.map_err(|held| anyhow!("its folder holds it already: {held}"))?;
     Ok(notes
         .iter()
         .fold(message, |message, note| format!("{message}\n({note})")))
 }
 
-/// The state as it stands, read under the lock.
-fn read(store: &Store, now: u64) -> Result<State> {
-    session(store, now, |session| Ok(session.state().clone()))
-}
-
 /// One line for an entry in a listing.
-fn line(state: &State, tree: &Tree, entry: Entry) -> String {
+fn line(session: &Session, entry: Entry) -> Result<String> {
     match entry {
-        Entry::Folder(_) => describe(state, tree, entry),
-        Entry::Shortcut(id) => state.shortcut(id).map_or_else(String::new, |shortcut| {
+        Entry::Folder(_) => describe(session, entry),
+        Entry::Shortcut(id) => Ok(session.item(id)?.map_or_else(String::new, |shortcut| {
             if shortcut.alias.value.is_empty() {
                 format!("{}  {}", shortcut.title.value, shortcut.link.value)
             } else {
@@ -153,53 +147,39 @@ fn line(state: &State, tree: &Tree, entry: Entry) -> String {
                     shortcut.title.value, shortcut.link.value, shortcut.alias.value
                 )
             }
-        }),
+        })),
     }
 }
 
-/// The lines of a folder's listing.
+/// The lines of the first entries of a folder's listing, at most `limit` of them.
 ///
 /// # Errors
 ///
 /// Returns an error when the folder does not exist or the store fails.
-pub fn list(store: &Store, now: u64, path: Option<&str>) -> Result<Vec<String>> {
-    let state = read(store, now)?;
-    let tree = state.tree();
-    let folder = resolve::folder(&state, &tree, path.unwrap_or_default())?;
-    Ok(state
-        .entries(&tree, folder)
-        .into_iter()
-        .map(|entry| line(&state, &tree, entry))
-        .collect())
+pub fn list(store: &Store, now: u64, path: Option<&str>, limit: usize) -> Result<Vec<String>> {
+    reading(store, now, |session| {
+        let folder = resolve::folder(session.folders(), path.unwrap_or_default())?;
+        session
+            .entries_page(folder, 0, limit)?
+            .into_iter()
+            .map(|entry| line(session, entry))
+            .collect()
+    })
 }
 
-/// The ranked matches of a query.
-fn matches(session: &Session, query: &str) -> Vec<Entry> {
-    let ui = Ui {
-        query: query.to_owned(),
-        ..Ui::default()
-    };
-    view::rows(session.state(), &ui, session.visits(), session.now())
-        .into_iter()
-        .filter_map(|row| match row {
-            Row::Entry(entry) => Some(entry),
-            Row::Parent(_) | Row::Add(_) => None,
-        })
-        .collect()
-}
-
-/// The lines of a search.
+/// The lines of the best matches of a search, at most `limit` of them.
 ///
 /// # Errors
 ///
 /// Returns an error when the store fails.
-pub fn find(store: &Store, now: u64, query: &str) -> Result<Vec<String>> {
-    session(store, now, |session| {
-        let tree = session.state().tree();
-        Ok(matches(session, query)
+pub fn find(store: &Store, now: u64, query: &str, limit: usize) -> Result<Vec<String>> {
+    reading(store, now, |session| {
+        session
+            .find(query)?
             .into_iter()
-            .map(|entry| line(session.state(), &tree, entry))
-            .collect())
+            .take(limit)
+            .map(|entry| line(session, entry))
+            .collect()
     })
 }
 
@@ -210,20 +190,17 @@ pub fn find(store: &Store, now: u64, query: &str) -> Result<Vec<String>> {
 /// Returns an error when no shortcut matches, the browser cannot start, or the store fails.
 pub fn open(store: &Store, now: u64, query: &str) -> Result<String> {
     let found = session(store, now, |session| {
-        let best = matches(session, query)
-            .into_iter()
-            .find_map(|entry| match entry {
-                Entry::Shortcut(id) => session.state().shortcut(id).map(|shortcut| {
-                    (
-                        id,
-                        shortcut.link.value.clone(),
-                        shortcut.title.value.clone(),
-                    )
-                }),
-                Entry::Folder(_) => None,
-            });
+        let mut best = None;
+        for entry in session.find(query)? {
+            if let Entry::Shortcut(id) = entry
+                && let Some(shortcut) = session.item(id)?
+            {
+                best = Some((id, shortcut.link.value, shortcut.title.value));
+                break;
+            }
+        }
         if let Some((id, _, _)) = &best {
-            session.visit(*id);
+            session.visit(*id)?;
         }
         Ok(best)
     })?;
@@ -248,10 +225,9 @@ pub fn open(store: &Store, now: u64, query: &str) -> Result<String> {
 pub fn make_folder(store: &Store, now: u64, path: &str) -> Result<String> {
     session(store, now, |session| {
         let current = folder_path(session, path)?;
-        let tree = session.state().tree();
         Ok(format!(
             "folder {}/",
-            session.state().path(&tree, current).join("/")
+            session.folders().path(current).join("/")
         ))
     })
 }
@@ -278,20 +254,12 @@ fn folder_named(
     parent: Option<ItemId>,
     name: &str,
 ) -> Result<Named, StoreError> {
-    let tree = session.state().tree();
-    let existing =
-        session
-            .state()
-            .entries(&tree, parent)
-            .into_iter()
-            .find_map(|entry| match entry {
-                Entry::Folder(id) => session
-                    .state()
-                    .folder(id)
-                    .filter(|folder| folder.name.value == name)
-                    .map(|_| id),
-                Entry::Shortcut(_) => None,
-            });
+    let folders = session.folders();
+    let existing = folders.children(parent).iter().copied().find(|id| {
+        folders
+            .folder(*id)
+            .is_some_and(|folder| folder.name.value == name)
+    });
     if let Some(id) = existing {
         return Ok(Named { id, created: false });
     }
@@ -304,12 +272,38 @@ fn folder_named(
     Ok(Named { id, created: true })
 }
 
-/// The entry a reference names in the state as it stands.
+/// Runs an edit of the entry a reference names, and reports it with the verb `done`.
 ///
-/// An entry another process removes before the edit then makes the edit refuse it.
-fn resolved(store: &Store, now: u64, reference: &str) -> Result<Entry> {
-    let state = read(store, now)?;
-    resolve::entry(&state, &state.tree(), reference)
+/// An entry another process removes between the resolution and the edit then makes the edit refuse it.
+fn edit_named(
+    store: &Store,
+    now: u64,
+    reference: &str,
+    edit: impl FnOnce(&Session, Entry) -> Result<Edit>,
+) -> Result<String> {
+    reading(store, now, |session| {
+        let entry = resolve::entry(session, reference)?;
+        let made = edit(session, entry)?;
+        let before = describe(session, entry)?;
+        session.edit(made)?;
+        let after = describe(session, entry)?;
+        Ok(match entry {
+            Entry::Shortcut(_) | Entry::Folder(_)
+                if session.item(entry_id(entry))?.is_none()
+                    && !session.folders().holds(entry_id(entry)) =>
+            {
+                before
+            }
+            Entry::Shortcut(_) | Entry::Folder(_) => after,
+        })
+    })
+}
+
+/// The identifier of a folder or a shortcut.
+const fn entry_id(entry: Entry) -> ItemId {
+    match entry {
+        Entry::Folder(id) | Entry::Shortcut(id) => id,
+    }
 }
 
 /// Moves an entry to the end of a folder.
@@ -318,18 +312,14 @@ fn resolved(store: &Store, now: u64, reference: &str) -> Result<Entry> {
 ///
 /// Returns an error when a name resolves to nothing, the move would put a folder into itself, or the store fails.
 pub fn move_entry(store: &Store, now: u64, reference: &str, path: &str) -> Result<String> {
-    let entry = resolved(store, now, reference)?;
-    let state = read(store, now)?;
-    let folder = resolve::folder(&state, &state.tree(), path)?;
-    session(store, now, |session| {
-        session.edit(Edit::Move {
+    let moved = edit_named(store, now, reference, |session, entry| {
+        Ok(Edit::Move {
             entry,
-            folder,
+            folder: resolve::folder(session.folders(), path)?,
             slot: Slot::End,
-        })?;
-        let tree = session.state().tree();
-        Ok(format!("moved {}", describe(session.state(), &tree, entry)))
-    })
+        })
+    })?;
+    Ok(format!("moved {moved}"))
 }
 
 /// Gives a shortcut a new title or a folder a new name.
@@ -338,9 +328,8 @@ pub fn move_entry(store: &Store, now: u64, reference: &str, path: &str) -> Resul
 ///
 /// Returns an error when the name resolves to nothing or the store fails.
 pub fn rename(store: &Store, now: u64, reference: &str, name: &str) -> Result<String> {
-    let entry = resolved(store, now, reference)?;
-    session(store, now, |session| {
-        session.edit(match entry {
+    let renamed = edit_named(store, now, reference, |_, entry| {
+        Ok(match entry {
             Entry::Folder(id) => Edit::RenameFolder {
                 id,
                 name: name.to_owned(),
@@ -349,13 +338,9 @@ pub fn rename(store: &Store, now: u64, reference: &str, name: &str) -> Result<St
                 id,
                 title: name.to_owned(),
             },
-        })?;
-        let tree = session.state().tree();
-        Ok(format!(
-            "renamed {}",
-            describe(session.state(), &tree, entry)
-        ))
-    })
+        })
+    })?;
+    Ok(format!("renamed {renamed}"))
 }
 
 /// Gives a shortcut an alias, or removes its alias when the alias is empty.
@@ -364,28 +349,14 @@ pub fn rename(store: &Store, now: u64, reference: &str, name: &str) -> Result<St
 ///
 /// Returns an error when the name resolves to nothing or to a folder, or the store fails.
 pub fn alias(store: &Store, now: u64, reference: &str, alias: &str) -> Result<String> {
-    let Entry::Shortcut(id) = resolved(store, now, reference)? else {
-        anyhow::bail!("only shortcuts have aliases");
-    };
-    session(store, now, |session| {
-        session.edit(Edit::Realias {
+    let aliased = edit_named(store, now, reference, |_, entry| match entry {
+        Entry::Shortcut(id) => Ok(Edit::Realias {
             id,
             alias: alias.to_owned(),
-        })?;
-        let tree = session.state().tree();
-        Ok(format!(
-            "aliased {}",
-            describe(session.state(), &tree, Entry::Shortcut(id))
-        ))
-    })
-}
-
-/// The shortcut a reference names, refusing a folder for what only shortcuts have.
-fn shortcut_named(store: &Store, now: u64, reference: &str, what: &str) -> Result<ItemId> {
-    match resolved(store, now, reference)? {
-        Entry::Shortcut(id) => Ok(id),
-        Entry::Folder(_) => anyhow::bail!("only shortcuts have {what}"),
-    }
+        }),
+        Entry::Folder(_) => anyhow::bail!("only shortcuts have aliases"),
+    })?;
+    Ok(format!("aliased {aliased}"))
 }
 
 /// Writes a shortcut's note, or clears it with an empty one.
@@ -394,18 +365,14 @@ fn shortcut_named(store: &Store, now: u64, reference: &str, what: &str) -> Resul
 ///
 /// Returns an error when the name resolves to nothing or to a folder, or the store fails.
 pub fn note(store: &Store, now: u64, reference: &str, note: &str) -> Result<String> {
-    let id = shortcut_named(store, now, reference, "notes")?;
-    session(store, now, |session| {
-        session.edit(Edit::SetNote {
+    let noted = edit_named(store, now, reference, |_, entry| match entry {
+        Entry::Shortcut(id) => Ok(Edit::SetNote {
             id,
             note: note.to_owned(),
-        })?;
-        let tree = session.state().tree();
-        Ok(format!(
-            "noted {}",
-            describe(session.state(), &tree, Entry::Shortcut(id))
-        ))
-    })
+        }),
+        Entry::Folder(_) => anyhow::bail!("only shortcuts have notes"),
+    })?;
+    Ok(format!("noted {noted}"))
 }
 
 /// Gives a folder a mark to show in place of its glyph, such as one emoji, or clears it with an empty one.
@@ -414,21 +381,17 @@ pub fn note(store: &Store, now: u64, reference: &str, note: &str) -> Result<Stri
 ///
 /// Returns an error when the name resolves to nothing or to a shortcut, the mark is refused, or the store fails.
 pub fn mark(store: &Store, now: u64, reference: &str, mark: &str) -> Result<String> {
-    let Entry::Folder(id) = resolved(store, now, reference)? else {
-        anyhow::bail!("only folders have marks");
-    };
-    let mark = mark_rules::admit(mark).map_err(|refused| anyhow::anyhow!("{refused}"))?;
-    session(store, now, |session| {
-        session.edit(Edit::MarkFolder {
-            id,
-            mark: mark.to_owned(),
-        })?;
-        let tree = session.state().tree();
-        Ok(format!(
-            "marked {}",
-            describe(session.state(), &tree, Entry::Folder(id))
-        ))
-    })
+    let marked = edit_named(store, now, reference, |_, entry| match entry {
+        Entry::Folder(id) => {
+            let mark = mark_rules::admit(mark).map_err(|refused| anyhow::anyhow!("{refused}"))?;
+            Ok(Edit::MarkFolder {
+                id,
+                mark: mark.to_owned(),
+            })
+        }
+        Entry::Shortcut(_) => anyhow::bail!("only folders have marks"),
+    })?;
+    Ok(format!("marked {marked}"))
 }
 
 /// Removes a shortcut, or a folder with everything it holds.
@@ -437,13 +400,8 @@ pub fn mark(store: &Store, now: u64, reference: &str, mark: &str) -> Result<Stri
 ///
 /// Returns an error when the name resolves to nothing or the store fails.
 pub fn remove(store: &Store, now: u64, reference: &str) -> Result<String> {
-    let entry = resolved(store, now, reference)?;
-    session(store, now, |session| {
-        let tree = session.state().tree();
-        let described = describe(session.state(), &tree, entry);
-        session.edit(Edit::Remove { entry })?;
-        Ok(format!("removed {described}"))
-    })
+    let removed = edit_named(store, now, reference, |_, entry| Ok(Edit::Remove { entry }))?;
+    Ok(format!("removed {removed}"))
 }
 
 /// What an import added and skipped.
@@ -467,10 +425,10 @@ impl core::fmt::Display for Imported {
     }
 }
 
-/// An import in progress: the links the store holds, and what the import did so far.
+/// An import in progress: the links it adds, and what the import did so far.
 #[derive(Debug)]
 struct Importing {
-    held: std::collections::BTreeSet<String>,
+    adding: BTreeSet<String>,
     counts: Imported,
 }
 
@@ -481,13 +439,17 @@ enum Fresh {
     Link { link: Link, title: String },
 }
 
-/// The items an import adds, counting what falls away: links already held, links that are no web links, and every folder left holding nothing.
-fn fresh(items: &[Item], importing: &mut Importing) -> Vec<Fresh> {
+/// The items an import adds, counting what falls away: links the store or the import holds already, links that are no web links, and every folder left holding nothing.
+fn fresh(
+    session: &Session,
+    items: &[Item],
+    importing: &mut Importing,
+) -> Result<Vec<Fresh>, StoreError> {
     let mut kept = Vec::new();
     for item in items {
         match item {
             Item::Folder { name, items: inner } => {
-                let held = fresh(inner, importing);
+                let held = fresh(session, inner, importing)?;
                 if !held.is_empty() {
                     kept.push(Fresh::Folder {
                         name: name.clone(),
@@ -501,7 +463,9 @@ fn fresh(items: &[Item], importing: &mut Importing) -> Vec<Fresh> {
                     counts.refused = counts.refused.saturating_add(1);
                     continue;
                 };
-                if importing.held.insert(link.as_str().to_owned()) {
+                if !session.holds_link(link.as_str())?
+                    && importing.adding.insert(link.as_str().to_owned())
+                {
                     kept.push(Fresh::Link {
                         link,
                         title: title.clone(),
@@ -512,7 +476,7 @@ fn fresh(items: &[Item], importing: &mut Importing) -> Vec<Fresh> {
             }
         }
     }
-    kept
+    Ok(kept)
 }
 
 fn import_items(
@@ -597,39 +561,40 @@ fn nested(path: Option<&str>, items: Vec<Item>) -> Vec<Item> {
 /// Returns an error when the store fails.
 pub fn import_tree(store: &Store, now: u64, items: &[Item]) -> Result<Imported> {
     session(store, now, |session| {
-        let held = session
-            .state()
-            .shortcuts
-            .values()
-            .filter(|shortcut| !shortcut.removed.value)
-            .map(|shortcut| shortcut.link.value.clone())
-            .collect();
         let mut importing = Importing {
-            held,
+            adding: BTreeSet::new(),
             counts: Imported::default(),
         };
-        let adding = fresh(items, &mut importing);
+        let adding = fresh(session, items, &mut importing)?;
         import_items(session, &adding, None, &mut importing.counts)?;
         Ok(importing.counts)
     })
 }
 
 /// The live entries of a folder as bookmark items.
-fn items(state: &State, tree: &Tree, folder: Option<ItemId>) -> Vec<Item> {
-    state
-        .entries(tree, folder)
-        .into_iter()
-        .filter_map(|entry| match entry {
-            Entry::Folder(id) => state.folder(id).map(|found| Item::Folder {
-                name: found.name.value.clone(),
-                items: items(state, tree, Some(id)),
-            }),
-            Entry::Shortcut(id) => state.shortcut(id).map(|shortcut| Item::Link {
-                href: shortcut.link.value.clone(),
-                title: shortcut.title.value.clone(),
-            }),
-        })
-        .collect()
+fn items(session: &Session, folder: Option<ItemId>) -> Result<Vec<Item>, StoreError> {
+    let mut found = Vec::new();
+    for entry in session.entries(folder)? {
+        match entry {
+            Entry::Folder(id) => {
+                if let Some(held) = session.folders().folder(id) {
+                    found.push(Item::Folder {
+                        name: held.name.value.clone(),
+                        items: items(session, Some(id))?,
+                    });
+                }
+            }
+            Entry::Shortcut(id) => {
+                if let Some(shortcut) = session.item(id)? {
+                    found.push(Item::Link {
+                        href: shortcut.link.value,
+                        title: shortcut.title.value,
+                    });
+                }
+            }
+        }
+    }
+    Ok(found)
 }
 
 /// A bookmark item as plain JSON.
@@ -649,9 +614,7 @@ fn json(item: &Item) -> serde_json::Value {
 ///
 /// Returns an error when the store fails.
 pub fn export(store: &Store, now: u64, format: Format) -> Result<String> {
-    let state = read(store, now)?;
-    let tree = state.tree();
-    let exported = items(&state, &tree, None);
+    let exported = session(store, now, |session| items(session, None))?;
     Ok(match format {
         Format::Html => bookmarks::write(&exported),
         Format::Json => {
@@ -678,7 +641,7 @@ pub fn print(lines: &[String]) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Addition, Imported, Item, add, find, import, list, make_folder, mark, note, read};
+    use super::{Addition, Imported, Item, add, find, import, list, make_folder, mark, note};
     use youarel_html::bookmarks;
     use youarel_import::{chrome, firefox};
     use youarel_store::Store;
@@ -701,12 +664,12 @@ mod tests {
         };
         add(&store, NOW, "https://url.spec.whatwg.org/", &addition).unwrap();
         assert_eq!(
-            list(&store, NOW, None).unwrap(),
+            list(&store, NOW, None, usize::MAX).unwrap(),
             ["URL Standard  https://url.spec.whatwg.org/  [url]"]
         );
         let noted = note(&store, NOW, "url", "the parser of record").unwrap();
         assert!(noted.starts_with("noted URL Standard"), "{noted}");
-        assert_eq!(find(&store, NOW, "record").unwrap().len(), 1);
+        assert_eq!(find(&store, NOW, "record", usize::MAX).unwrap().len(), 1);
     }
 
     #[test]
@@ -727,7 +690,21 @@ mod tests {
             ..Addition::default()
         };
         add(&store, NOW, link, &elsewhere).unwrap();
-        assert_eq!(find(&store, NOW, "mozilla").unwrap().len(), 2);
+        assert_eq!(find(&store, NOW, "mozilla", usize::MAX).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn a_listing_and_a_search_stop_at_their_limit() {
+        let home = tempfile::tempdir().unwrap();
+        let store = Store::new(home.path().to_path_buf());
+        for link in [MDN, HTML_STANDARD] {
+            add(&store, NOW, link, &Addition::default()).unwrap();
+        }
+        assert_eq!(list(&store, NOW, None, 1).unwrap().len(), 1);
+        assert_eq!(list(&store, NOW, None, usize::MAX).unwrap().len(), 2);
+        assert_eq!(find(&store, NOW, "https", 1).unwrap().len(), 1);
+        assert_eq!(find(&store, NOW, "https", 0).unwrap(), Vec::<String>::new());
+        assert_eq!(find(&store, NOW, "https", usize::MAX).unwrap().len(), 2);
     }
 
     #[test]
@@ -751,13 +728,16 @@ mod tests {
         make_folder(&store, NOW, "Work").unwrap();
         let marked = mark(&store, NOW, "Work/", " 📚 ").unwrap();
         assert!(marked.starts_with("marked"), "{marked}");
-        let state = read(&store, NOW).unwrap();
-        assert!(
-            state
-                .folders
-                .values()
-                .any(|folder| folder.mark.value == "📚")
-        );
+        let kept = store
+            .session(NOW, |session| {
+                Ok(session
+                    .folders()
+                    .records()
+                    .values()
+                    .any(|folder| folder.mark.value == "📚"))
+            })
+            .unwrap();
+        assert!(kept);
         let spaced = mark(&store, NOW, "Work/", "a b").unwrap_err();
         assert!(spaced.to_string().contains("no space"), "{spaced}");
         let named = Addition {
@@ -795,7 +775,7 @@ mod tests {
             "Edge, Study, and Docs, which the file keeps as its bookmarks bar"
         );
         assert_eq!(
-            list(&store, NOW, Some("Edge/Study/Docs")).unwrap(),
+            list(&store, NOW, Some("Edge/Study/Docs"), usize::MAX).unwrap(),
             ["MDN  https://developer.mozilla.org/"]
         );
         let again = import(&store, NOW, &firefox::encode(&tree).unwrap(), Some("Edge")).unwrap();
@@ -833,16 +813,16 @@ mod tests {
             (0, 0, 1),
             "neither Edge nor its Docs holds anything new"
         );
-        list(&store, NOW, Some("Edge")).unwrap_err();
-        let both = chrome::write(&docs(&[MDN, HTML_STANDARD]));
+        list(&store, NOW, Some("Edge"), usize::MAX).unwrap_err();
+        let both = chrome::write(&docs(&[MDN, HTML_STANDARD, HTML_STANDARD]));
         let added = import(&store, NOW, both.as_bytes(), Some("Brave")).unwrap();
         assert_eq!(
             (added.shortcuts, added.folders, added.duplicates),
-            (1, 0, 1),
-            "a folder of the same name takes the new link"
+            (1, 0, 2),
+            "a folder of the same name takes the new link once"
         );
         assert_eq!(
-            list(&store, NOW, Some("Brave/Docs")).unwrap(),
+            list(&store, NOW, Some("Brave/Docs"), usize::MAX).unwrap(),
             [
                 format!("{MDN}  {MDN}"),
                 format!("{HTML_STANDARD}  {HTML_STANDARD}")

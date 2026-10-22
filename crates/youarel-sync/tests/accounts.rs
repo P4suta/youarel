@@ -2,14 +2,15 @@
 #![cfg(test)]
 
 use std::path::Path;
+use youarel_core::segment_rules::{Header, Kind, Sequence};
 use youarel_crypto::Label;
 use youarel_crypto::kem::KeyPair;
 use youarel_crypto::pairing::Code;
 use youarel_crypto::sign::SigningKeys;
-use youarel_protocol::message::{Action, Bundle, DevicePublic, Operation, operation_digest};
+use youarel_protocol::message::{Action, DevicePublic, Operation, operation_digest};
+use youarel_protocol::segment::Segment;
 use youarel_sync::SyncError;
 use youarel_sync::account::Account;
-use youarel_sync::keystore::KeyStore;
 
 const NOW: u64 = 1_700_000_000_000;
 
@@ -25,31 +26,40 @@ impl Device {
     }
 
     fn account(&self) -> Account {
-        let path = self.directory.path().join("account");
-        Account::open(
-            &path,
-            &KeyStore::File(self.directory.path().join("sealing.key")),
-        )
-        .unwrap()
+        Account::open(&self.directory.path().join("account")).unwrap()
     }
 }
 
-/// Pairs `joiner` into the account `inviter` belongs to, through the four files of the protocol, and returns the inviter's state the joiner received.
+fn snapshot(account: &mut Account, body: &[u8]) -> Result<Vec<u8>, SyncError> {
+    let header = Header::new(
+        Sequence::FIRST,
+        [0; 32],
+        Kind::Snapshot { part: 0, parts: 1 },
+    )
+    .unwrap();
+    account.publish(NOW, header, body)
+}
+
+/// Pairs through the four messages, then fetches the state separately.
 fn pair(inviter: &Device, joiner: &Device, state: &[u8]) -> Vec<u8> {
     let code = inviter.account().invite().unwrap();
     let typed = Code::parse(&code.text()).unwrap();
     let join = joiner.account().join(typed).unwrap();
     let welcome = inviter.account().accept(&join).unwrap();
     let confirmation = joiner.account().confirm(&welcome).unwrap();
-    let entry = inviter.account().admit(NOW, &confirmation, state).unwrap();
-    let received = joiner.account().finish(&entry).unwrap().to_vec();
+    let entry = inviter.account().admit(NOW, &confirmation, None).unwrap();
+    assert_eq!(joiner.account().finish(&entry).unwrap(), None);
     assert!(joiner.account().status().unwrap().member);
-    let first = joiner.account().export(NOW, b"joiner state").unwrap();
-    let imported = inviter.account().import(&first).unwrap();
-    assert_eq!(imported.state.as_slice(), b"joiner state");
-    let rotated = inviter.account().export(NOW, state).unwrap();
-    joiner.account().import(&rotated).unwrap();
-    received
+    let first = snapshot(&mut joiner.account(), b"joiner state").unwrap();
+    let imported = inviter.account().open_segment(&first).unwrap();
+    assert_eq!(imported.body.as_slice(), b"joiner state");
+    let rotated = snapshot(&mut inviter.account(), state).unwrap();
+    joiner
+        .account()
+        .open_segment(&rotated)
+        .unwrap()
+        .body
+        .to_vec()
 }
 
 fn refused(result: Result<impl core::fmt::Debug, SyncError>, reason: &str) {
@@ -58,7 +68,7 @@ fn refused(result: Result<impl core::fmt::Debug, SyncError>, reason: &str) {
 }
 
 #[test]
-fn a_founded_account_reads_its_own_bundle() {
+fn a_founded_account_reads_its_own_segment() {
     let device = Device::new();
     let mut account = device.account();
     assert!(!account.has_account());
@@ -69,11 +79,14 @@ fn a_founded_account_reads_its_own_bundle() {
     assert_eq!(status.members, [account.device()]);
     assert_eq!(status.epoch, 1);
     assert!(status.member);
-    let bundle = account.export(NOW, b"state").unwrap();
+    let segment = snapshot(&mut account, b"state").unwrap();
     let reopened = device.account();
     assert_eq!(reopened.device(), account.device());
     let mut reopened = reopened;
-    assert_eq!(reopened.import(&bundle).unwrap().state.as_slice(), b"state");
+    assert_eq!(
+        reopened.open_segment(&segment).unwrap().body.as_slice(),
+        b"state"
+    );
     refused(reopened.found(NOW), "already");
 }
 
@@ -88,20 +101,20 @@ fn a_paired_device_becomes_a_member_and_follows_the_rotation() {
     assert_eq!(status.members.len(), 2);
     assert_eq!(status.epoch, 2);
     assert_eq!(first.account().status().unwrap().members, status.members);
-    let from_second = second.account().export(NOW, b"second state").unwrap();
+    let from_second = snapshot(&mut second.account(), b"second state").unwrap();
     assert_eq!(
         first
             .account()
-            .import(&from_second)
+            .open_segment(&from_second)
             .unwrap()
-            .state
+            .body
             .as_slice(),
         b"second state"
     );
 }
 
 #[test]
-fn a_removed_device_reads_no_later_bundle_and_its_bundles_are_refused() {
+fn a_removed_device_reads_no_later_segment_and_its_segments_are_refused() {
     let (first, second, third) = (Device::new(), Device::new(), Device::new());
     first.account().found(NOW).unwrap();
     pair(&first, &second, b"a");
@@ -109,24 +122,24 @@ fn a_removed_device_reads_no_later_bundle_and_its_bundles_are_refused() {
     let third_id = third.account().device();
     let mut account = first.account();
     account.remove(NOW, third_id).unwrap();
-    let after = account.export(NOW, b"secret").unwrap();
+    let after = snapshot(&mut account, b"secret").unwrap();
     let epoch = account.status().unwrap().epoch;
-    account.export(NOW, b"again").unwrap();
+    snapshot(&mut account, b"again").unwrap();
     assert_eq!(
         account.status().unwrap().epoch,
         epoch,
         "one rotation follows a removal"
     );
-    second.account().import(&after).unwrap();
-    let from_third = third.account().export(NOW, b"late").unwrap();
-    refused(first.account().import(&from_third), "no member");
-    refused(second.account().import(&from_third), "no member");
+    second.account().open_segment(&after).unwrap();
+    let from_third = snapshot(&mut third.account(), b"late").unwrap();
+    refused(first.account().open_segment(&from_third), "no member");
+    refused(second.account().open_segment(&from_third), "no member");
     refused(
-        third.account().import(&after),
-        "no key of the bundle's epoch",
+        third.account().open_segment(&after),
+        "no key of the segment's epoch",
     );
     refused(
-        third.account().export(NOW, b"later"),
+        snapshot(&mut third.account(), b"later"),
         "no key of the current epoch",
     );
     assert!(!third.account().status().unwrap().member);
@@ -157,25 +170,25 @@ fn the_inviter_seals_nothing_for_a_joiner_that_never_confirmed() {
     let mut forged = joiner.account().confirm(&welcome).unwrap();
     let last = forged.len() - 1;
     forged[last] ^= 1;
-    refused(
-        first.account().admit(NOW, &forged, b"secret"),
-        "does not verify",
-    );
+    refused(first.account().admit(NOW, &forged, None), "does not verify");
     assert_eq!(first.account().status().unwrap().members.len(), 1);
     refused(joiner.account().finish(&welcome), "another kind");
 }
 
 #[test]
-fn a_changed_bundle_or_one_of_another_account_is_refused() {
+fn a_changed_segment_or_one_of_another_account_is_refused() {
     let (first, other) = (Device::new(), Device::new());
     first.account().found(NOW).unwrap();
     other.account().found(NOW).unwrap();
-    let mut bundle = first.account().export(NOW, b"state").unwrap();
-    refused(other.account().import(&bundle), "another account");
-    let last = bundle.len() - 1;
-    bundle[last] ^= 1;
-    refused(first.account().import(&bundle), "signature");
-    refused(first.account().import(b"not a bundle"), "another kind");
+    let mut segment = snapshot(&mut first.account(), b"state").unwrap();
+    refused(other.account().open_segment(&segment), "another account");
+    let last = segment.len() - 1;
+    segment[last] ^= 1;
+    refused(first.account().open_segment(&segment), "signature");
+    refused(
+        first.account().open_segment(b"not a segment"),
+        "another kind",
+    );
 }
 
 /// A carrier slips an addition of its own device into a bundle, naming a member as its author; the signature fails, so the log ignores it.
@@ -191,24 +204,24 @@ fn an_operation_whose_signature_fails_takes_no_part() {
         signing: signing.public().clone(),
         kem: Box::new(*kem.public()),
     };
-    let bundle = Bundle::decode(&first.account().export(NOW, b"s").unwrap()).unwrap();
+    let segment = Segment::decode(&snapshot(&mut first.account(), b"s").unwrap()).unwrap();
     let forged = Operation {
         account: status.account,
-        parents: vec![operation_digest(&bundle.operations[0])],
+        parents: vec![operation_digest(&segment.operations[0])],
         author: status.this_device,
         wall: NOW,
         action: Action::Add(stranger),
         signature: signing.sign(Label::Operation, b"forged").unwrap(),
     };
-    let mut operations = bundle.operations.clone();
+    let mut operations = segment.operations.clone();
     operations.push(forged.encode().unwrap());
     operations.sort_by_key(|bytes| operation_digest(bytes));
-    let tampered = Bundle {
+    let tampered = Segment {
         operations,
-        ..bundle
+        ..segment
     };
     refused(
-        second.account().import(&tampered.encode().unwrap()),
+        second.account().open_segment(&tampered.encode().unwrap()),
         "signature",
     );
     assert_eq!(second.account().status().unwrap().members.len(), 2);
@@ -224,4 +237,67 @@ fn only_a_member_invites_and_only_a_device_without_an_account_joins() {
     let path: &Path = first.directory.path();
     let log = youarel_store::fs::list(&path.join("account").join("log")).unwrap();
     assert_eq!(log.len(), 2, "the genesis and the first rotation");
+}
+
+#[test]
+fn a_late_entry_never_replaces_an_association_created_after_confirmation() {
+    let (inviter, joiner) = (Device::new(), Device::new());
+    inviter.account().found(NOW).unwrap();
+    let code = inviter.account().invite().unwrap();
+    let join = joiner.account().join(code).unwrap();
+    let welcome = inviter.account().accept(&join).unwrap();
+    let confirmation = joiner.account().confirm(&welcome).unwrap();
+    let entry = inviter.account().admit(NOW, &confirmation, None).unwrap();
+    let owned = joiner.account().found(NOW).unwrap();
+    refused(joiner.account().finish(&entry), "already");
+    assert_eq!(joiner.account().status().unwrap().account, owned);
+}
+
+#[test]
+fn an_authenticated_entry_must_actually_admit_the_confirming_device() {
+    use youarel_crypto::{pairing, seal};
+    use youarel_protocol::message::{Admission, Entry, Join, Welcome};
+    let (inviter, joiner) = (Device::new(), Device::new());
+    inviter.account().found(NOW).unwrap();
+    let code = inviter.account().invite().unwrap();
+    let join = Join::decode(&joiner.account().join(code).unwrap()).unwrap();
+    let accepted = pairing::accept(
+        code,
+        &join.pake,
+        join.joiner.kem.as_slice(),
+        &join.joiner.encode(),
+    )
+    .unwrap();
+    let welcome = Welcome {
+        invitation: code.number,
+        pake: accepted.inviter_message,
+        encapsulation: accepted.encapsulation,
+        welcomed: accepted.channel.welcomed(),
+    };
+    joiner
+        .account()
+        .confirm(&welcome.encode().unwrap())
+        .unwrap();
+    let segment = Segment::decode(&snapshot(&mut inviter.account(), b"").unwrap()).unwrap();
+    let admission = Admission {
+        account: segment.account,
+        operations: segment.operations,
+        epochs: Vec::new(),
+        hint: None,
+    };
+    let entry = Entry {
+        invitation: code.number,
+        sealed: seal::seal(
+            accepted.channel.key(),
+            &code.number.to_be_bytes(),
+            &admission.encode().unwrap(),
+        )
+        .unwrap(),
+    };
+    refused(
+        joiner.account().finish(&entry.encode().unwrap()),
+        "does not admit this device",
+    );
+    assert!(!joiner.account().has_account());
+    assert_eq!(joiner.account().operations(), 0);
 }

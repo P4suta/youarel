@@ -4,8 +4,6 @@
 //! The decisions are the core's; this crate checks signatures, seals and opens, and keeps the account's files.
 
 pub mod account;
-pub mod keystore;
-pub mod sealed;
 
 use youarel_crypto::CryptoError;
 use youarel_protocol::wire::WireError;
@@ -17,10 +15,6 @@ pub enum SyncError {
     File(FileError),
     Wire(WireError),
     Crypto(CryptoError),
-    /// The credential store refused.
-    KeyStore(String),
-    /// A variable holds a value youarel does not know.
-    Setting(String),
     /// The step does not fit the account's state, such as a bundle of another account.
     Refused(String),
 }
@@ -31,8 +25,7 @@ impl core::fmt::Display for SyncError {
             Self::File(error) => write!(formatter, "{error}"),
             Self::Wire(error) => write!(formatter, "{error}"),
             Self::Crypto(error) => write!(formatter, "{error}"),
-            Self::KeyStore(reason) => write!(formatter, "the credential store refused: {reason}"),
-            Self::Setting(reason) | Self::Refused(reason) => formatter.write_str(reason),
+            Self::Refused(reason) => formatter.write_str(reason),
         }
     }
 }
@@ -43,7 +36,7 @@ impl std::error::Error for SyncError {
             Self::File(error) => std::error::Error::source(error),
             Self::Wire(error) => Some(error),
             Self::Crypto(error) => Some(error),
-            Self::KeyStore(_) | Self::Setting(_) | Self::Refused(_) => None,
+            Self::Refused(_) => None,
         }
     }
 }

@@ -5,6 +5,7 @@
 //! The resolution breaks each cycle at the folder whose declaration is the most recent, which moves to the top, and keeps every other declaration.
 //! A parent that is gone, or out of range, leaves its folder at the top.
 //! The result depends on the declarations alone, so every replica that merged the same writes draws the same tree.
+//! A folder in the trash hides itself and every folder inside it, which [`hidden`] reads from the resolved tree.
 
 use alloc::vec::Vec;
 use core::cmp::Ordering;
@@ -66,16 +67,60 @@ fn recency<K: Ord>(declared: &[Declared<K>], left: usize, right: usize) -> Order
     key(left).cmp(&key(right)).then(left.cmp(&right))
 }
 
-/// The properties Kani proves over every declaration of up to [`proofs::FOLDER_BOUND`] folders.
+/// Which folders the trash hides, by index into `parents`: each folder in the trash, as `trashed` marks it, and each folder inside one.
+///
+/// A walk up from each folder passes at most as many folders as the list holds, so parents that run into a cycle or out of range end the walk too.
+#[must_use]
+pub fn hidden(parents: &[Option<usize>], trashed: &[bool]) -> Vec<bool> {
+    let count = parents.len();
+    (0..count)
+        .map(|index| {
+            let mut current = Some(index);
+            for _ in 0..count {
+                let Some(node) = current else {
+                    return false;
+                };
+                if trashed.get(node).copied().unwrap_or_default() {
+                    return true;
+                }
+                current = parents.get(node).copied().flatten();
+            }
+            false
+        })
+        .collect()
+}
+
+/// The properties Kani proves over every declaration of up to [`proofs::FOLDER_BOUND`] folders, and over every tree of that many folders with every set of them in the trash.
 #[cfg(any(test, kani))]
 mod proofs {
+    #[cfg(kani)]
+    use super::hidden;
     use super::{Declared, recency, resolve};
 
     /// The most folders the harness draws.
     pub(super) const FOLDER_BOUND: usize = 4;
 
+    /// What `hidden` promises for a tree without a cycle: a folder hides exactly when it waits in the trash or its parent hides, and the answer names every folder once.
+    ///
+    /// A tree without a cycle reaches the top from every folder, so the folders nearest the top settle first and the rule decides every other folder in turn.
+    pub(super) fn hiding_holds(
+        parents: &[Option<usize>],
+        trashed: &[bool],
+        hides: &[bool],
+    ) -> bool {
+        hides.len() == parents.len()
+            && parents.iter().enumerate().all(|(index, parent)| {
+                let own = trashed.get(index).copied().unwrap_or_default();
+                let over = parent
+                    .and_then(|parent| hides.get(parent))
+                    .copied()
+                    .unwrap_or_default();
+                hides.get(index).copied() == Some(own || over)
+            })
+    }
+
     /// Whether following `parents` from `start` reaches the top within as many steps as there are folders.
-    fn reaches_top(parents: &[Option<usize>], start: usize) -> bool {
+    pub(super) fn reaches_top(parents: &[Option<usize>], start: usize) -> bool {
         let mut current = Some(start);
         for _ in 0..parents.len() {
             current = current.and_then(|node| parents.get(node).copied().flatten());
@@ -197,6 +242,44 @@ mod proofs {
         );
     }
 
+    /// Every tree of four folders without a cycle, each folder at the top, under a folder, or under one out of range, and every set of them in the trash: a folder hides exactly when it or a folder over it waits there.
+    #[cfg(kani)]
+    #[kani::proof]
+    #[kani::unwind(6)]
+    fn a_folder_hides_exactly_when_it_or_a_folder_over_it_waits_in_the_trash() {
+        let drawn: [u8; FOLDER_BOUND] = kani::any();
+        let trashed: [bool; FOLDER_BOUND] = kani::any();
+        let parents = drawn.map(parent);
+        kani::assume((0..FOLDER_BOUND).all(|start| reaches_top(&parents, start)));
+        let hides = hidden(&parents, &trashed);
+        kani::assert(
+            hiding_holds(&parents, &trashed, &hides),
+            "a folder hides exactly when it or its parent does",
+        );
+        kani::cover!(
+            hides
+                .iter()
+                .zip(trashed)
+                .filter(|(hides, trashed)| **hides && !*trashed)
+                .count()
+                == 3,
+            "a trashed folder hides a chain of three"
+        );
+        kani::cover!(
+            trashed.iter().all(|trashed| *trashed) && hides.iter().all(|hides| *hides),
+            "every folder in the trash"
+        );
+    }
+
+    /// A folder inside one in the trash must hide with it; this probe claims it shows and must fail.
+    #[cfg(kani)]
+    #[kani::proof]
+    #[kani::unwind(4)]
+    fn rejects_a_folder_shown_inside_the_trash() {
+        let hides = hidden(&[None, Some(0)], &[true, false]);
+        kani::assert(hides.get(1) == Some(&false), "NEGATIVE_TREE_CONTROL");
+    }
+
     /// Two folders that declare each other must not stay a cycle; this probe claims they do and must fail.
     #[cfg(kani)]
     #[kani::proof]
@@ -219,9 +302,72 @@ mod proofs {
 
 #[cfg(test)]
 mod tests {
-    use super::proofs::{FOLDER_BOUND, spec};
-    use super::{Declared, resolve};
+    use super::proofs::{FOLDER_BOUND, hiding_holds, reaches_top, spec};
+    use super::{Declared, hidden, resolve};
     use alloc::vec::Vec;
+
+    #[test]
+    fn a_folder_in_the_trash_hides_every_folder_inside_it() {
+        let parents = [None, Some(0), Some(1), None, Some(9)];
+        assert_eq!(
+            hidden(&parents, &[false, true, false, false, false]),
+            [false, true, true, false, false]
+        );
+        assert_eq!(
+            hidden(&parents, &[false; 5]),
+            [false; 5],
+            "nothing in the trash hides nothing"
+        );
+        assert_eq!(hidden(&[], &[]), Vec::<bool>::new());
+        assert_eq!(
+            hidden(&[Some(1), Some(0)], &[false, false]),
+            [false, false],
+            "a cycle that no trash reaches ends its walk"
+        );
+        assert_eq!(hidden(&[Some(1), Some(0)], &[false, true]), [true, true]);
+        assert_eq!(
+            hidden(&[None], &[]),
+            [false],
+            "a folder the marks leave out waits in no trash"
+        );
+    }
+
+    #[test]
+    fn the_hiding_specification_agrees_over_every_small_tree() {
+        let choices = [None, Some(0), Some(1), Some(2), Some(9)];
+        let mut trees: Vec<Vec<Option<usize>>> = alloc::vec![Vec::new()];
+        for _ in 0..3 {
+            let longer: Vec<Vec<Option<usize>>> = trees
+                .iter()
+                .flat_map(|tree| {
+                    choices.iter().map(move |parent| {
+                        let mut next = tree.clone();
+                        next.push(*parent);
+                        next
+                    })
+                })
+                .collect();
+            trees.extend(longer);
+        }
+        let mut acyclic = 0_usize;
+        for parents in &trees {
+            if !(0..parents.len()).all(|start| reaches_top(parents, start)) {
+                continue;
+            }
+            acyclic += 1;
+            for mask in 0..8_u8 {
+                let trashed: Vec<bool> = (0..parents.len())
+                    .map(|place| mask >> place & 1 == 1)
+                    .collect();
+                let hides = hidden(parents, &trashed);
+                assert!(
+                    hiding_holds(parents, &trashed, &hides),
+                    "{parents:?} {trashed:?}"
+                );
+            }
+        }
+        assert!(acyclic > 1 && trees.iter().all(|tree| tree.len() <= FOLDER_BOUND));
+    }
 
     const fn folder(parent: Option<usize>, recency: u8) -> Declared<u8> {
         Declared { parent, recency }

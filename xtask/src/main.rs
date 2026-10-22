@@ -5,7 +5,7 @@ use std::process::ExitCode;
 
 const USAGE_EXIT_CODE: u8 = 2;
 
-const USAGE: &str = "usage: cargo xtask check [--staged | --platform] | push-check | structure | commit-msg FILE | proofs [--ci] [--only STEP] [--without STEP] [--inside], where STEP is kani|quint|proverif|miri|fuzz|mutants | proof-source SOURCE | fuzz TARGET RUNS | worker | app-linux | contain TASK... | gen [--check] | ci plan [BASE]|cache app|run JOB|check|test|proofs|assurance|gate NAME | release STEP...";
+const USAGE: &str = "usage: cargo xtask check [--staged | --platform] | push-check | structure | bench [--shortcuts N] [--folders F] [--seed S] [--dry-run] | commit-msg FILE | proofs [--ci] [--only STEP] [--without STEP] [--inside], where STEP is kani|quint|proverif|miri|fuzz|mutants | proof-source SOURCE | fuzz TARGET RUNS | worker | app-linux | contain TASK... | gen [--check | --model NAME --native-quint PATH] | ci plan [BASE]|cache app|run JOB|check|test|proofs|assurance|gate NAME | release STEP...";
 
 fn report(task: &str, result: anyhow::Result<()>) -> ExitCode {
     match result {
@@ -19,6 +19,11 @@ fn report(task: &str, result: anyhow::Result<()>) -> ExitCode {
 
 fn dispatch(root: &Path, words: &[&str]) -> ExitCode {
     match words {
+        ["bench", options @ ..] => report(
+            "bench",
+            xtask::bench::Options::from_words(options)
+                .and_then(|options| xtask::bench::run(root, options)),
+        ),
         ["check"] => report(
             "check",
             xtask::check::run(root, xtask::check::Scope::Everything),
@@ -60,6 +65,10 @@ fn dispatch(root: &Path, words: &[&str]) -> ExitCode {
         }
         ["gen"] => report("gen", xtask::check::generate(root)),
         ["gen", "--check"] => report("gen", xtask::check::generated(root)),
+        ["gen", "--model", model, "--native-quint", executable] => report(
+            "gen",
+            xtask::quint::generate_native(root, model, Path::new(executable)),
+        ),
         ["ci", rest @ ..] if !rest.is_empty() => report("ci", xtask::ci::run(root, rest)),
         ["release", rest @ ..] if !rest.is_empty() => {
             report("release", xtask::release::run(root, rest))

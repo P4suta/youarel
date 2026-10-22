@@ -1,4 +1,4 @@
-//! The one owner of the wall clock, which the shell reads once per action and passes to every decision as a value.
+//! The one owner of wall and monotonic clocks, whose readings reach decisions as values.
 
 use anyhow::{Result, anyhow};
 
@@ -6,13 +6,46 @@ mod raw {
     #![expect(
         clippy::disallowed_methods,
         clippy::disallowed_types,
-        reason = "the shell's one clock owner reads the wall clock in a single statement"
+        reason = "the clock owner forwards wall and monotonic readings through these calls"
     )]
 
-    use std::time::{Duration, SystemTime, SystemTimeError, UNIX_EPOCH};
+    use std::time::{Duration, Instant, SystemTime, SystemTimeError, UNIX_EPOCH};
+
+    #[derive(Clone, Copy, Debug)]
+    pub(super) struct Started(Instant);
+
+    pub(super) fn start() -> Started {
+        Started(Instant::now())
+    }
+
+    pub(super) fn elapsed(started: Started) -> Duration {
+        started.0.elapsed()
+    }
 
     pub(super) fn since_epoch() -> Result<Duration, SystemTimeError> {
         SystemTime::now().duration_since(UNIX_EPOCH)
+    }
+}
+
+/// A process-local monotonic duration, independent of wall-clock corrections.
+#[derive(Clone, Copy, Debug)]
+pub struct Stopwatch(raw::Started);
+
+impl Stopwatch {
+    /// Starts measuring elapsed time at this instant.
+    #[must_use]
+    pub fn start() -> Self {
+        Self(raw::start())
+    }
+
+    /// The elapsed milliseconds.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the duration exceeds what 64-bit milliseconds hold.
+    pub fn elapsed(self) -> Result<u64> {
+        u64::try_from(raw::elapsed(self.0).as_millis())
+            .map_err(|error| anyhow!("the duration exceeds 64-bit milliseconds: {error}"))
     }
 }
 

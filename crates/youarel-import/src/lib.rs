@@ -5,6 +5,7 @@
 
 pub mod chrome;
 pub mod firefox;
+pub mod icons;
 pub mod safari;
 
 pub use youarel_html::bookmarks::Item;

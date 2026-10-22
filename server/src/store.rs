@@ -2,13 +2,35 @@
 
 use std::collections::BTreeMap;
 use worker::{SqlStorage, SqlStorageValue};
+use youarel_core::relay_rules::RetainedSegment;
 use youarel_core::relay_rules::{NONCE, Seen};
+use youarel_core::segment_rules::Sequence;
 use youarel_protocol::message::Digest;
-use youarel_protocol::relay::{Side, Slot};
+use youarel_protocol::relay::Side;
 use youarel_relay::StoreError;
-use youarel_relay::account::AccountStore;
+use youarel_relay::account::{AccountStore, Append, StoredChain};
 use youarel_relay::directory::DirectoryStore;
 use youarel_relay::mailbox::MailStore;
+
+mod mail;
+mod segments;
+
+const CHUNK_BYTES: usize = 1024 * 1024;
+
+fn refuse_table(sql: &SqlStorage, table: &str) -> Result<(), StoreError> {
+    if !rows(
+        sql,
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
+        vec![table.into()],
+    )?
+    .is_empty()
+    {
+        return Err(StoreError(String::from(
+            "this object uses the retired bundle storage format; preserve it and use a fresh object",
+        )));
+    }
+    Ok(())
+}
 
 /// The key under which an account's database keeps its genesis.
 const GENESIS: &str = "genesis";
@@ -60,6 +82,7 @@ fn array<const N: usize>(value: &SqlStorageValue) -> Result<[u8; N], StoreError>
 fn integer(value: &SqlStorageValue) -> Result<u64, StoreError> {
     match value {
         SqlStorageValue::Integer(number) => {
+            SqlStorageValue::try_from_i64(*number).map_err(|error| failed(&error))?;
             u64::try_from(*number).map_err(|error| StoreError(error.to_string()))
         }
         _ => Err(StoreError(String::from("a column holds no integer"))),
@@ -91,10 +114,13 @@ impl SqlAccount {
     ///
     /// Returns a [`StoreError`] when a table cannot be made.
     pub fn open(sql: SqlStorage) -> Result<Self, StoreError> {
+        refuse_table(&sql, "slots")?;
         for table in [
             "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value BLOB NOT NULL)",
             "CREATE TABLE IF NOT EXISTS log (digest BLOB PRIMARY KEY, bytes BLOB NOT NULL)",
-            "CREATE TABLE IF NOT EXISTS slots (device BLOB PRIMARY KEY, published INTEGER NOT NULL, bundle BLOB NOT NULL)",
+            "CREATE TABLE IF NOT EXISTS chains (device BLOB PRIMARY KEY, published INTEGER NOT NULL, head BLOB NOT NULL)",
+            "CREATE TABLE IF NOT EXISTS segments (device BLOB NOT NULL, sequence TEXT NOT NULL, previous BLOB NOT NULL, part INTEGER NOT NULL, parts INTEGER NOT NULL, size INTEGER NOT NULL, PRIMARY KEY (device, sequence))",
+            "CREATE TABLE IF NOT EXISTS segment_parts (device BLOB NOT NULL, sequence TEXT NOT NULL, part INTEGER NOT NULL, bytes BLOB NOT NULL, PRIMARY KEY (device, sequence, part))",
             "CREATE TABLE IF NOT EXISTS seen (nonce BLOB PRIMARY KEY, stamped INTEGER NOT NULL)",
         ] {
             run(&sql, table, Vec::new())?;
@@ -145,42 +171,32 @@ impl AccountStore for SqlAccount {
         )
     }
 
-    fn slots(&self) -> Result<Vec<Slot>, StoreError> {
-        rows(
-            &self.sql,
-            "SELECT device, published, bundle FROM slots",
-            Vec::new(),
-        )?
-        .iter()
-        .map(|row| {
-            let [device, published, bundle] = columns(row)?;
-            Ok(Slot {
-                device: array(device)?,
-                published: integer(published)?,
-                bundle: blob(bundle)?,
-            })
-        })
-        .collect()
+    fn chains(&self) -> Result<Vec<StoredChain>, StoreError> {
+        segments::chains(&self.sql)
     }
 
-    fn put_slot(&mut self, slot: Slot) -> Result<(), StoreError> {
+    fn chain(&self, sender: &Digest) -> Result<Vec<RetainedSegment>, StoreError> {
+        segments::chain(&self.sql, sender)
+    }
+
+    fn segment(&self, sender: &Digest, sequence: Sequence) -> Result<Option<Vec<u8>>, StoreError> {
+        segments::segment(&self.sql, sender, sequence)
+    }
+
+    fn append(&mut self, append: &Append<'_>) -> Result<(), StoreError> {
+        segments::append(&self.sql, append)
+    }
+
+    fn renew(&mut self, sender: &Digest, now: u64) -> Result<(), StoreError> {
         run(
             &self.sql,
-            "INSERT OR REPLACE INTO slots (device, published, bundle) VALUES (?, ?, ?)",
-            vec![
-                slot.device.to_vec().into(),
-                stored(slot.published)?,
-                slot.bundle.into(),
-            ],
+            "UPDATE chains SET published = ? WHERE device = ?",
+            vec![stored(now)?, sender.to_vec().into()],
         )
     }
 
-    fn remove_slot(&mut self, device: &Digest) -> Result<(), StoreError> {
-        run(
-            &self.sql,
-            "DELETE FROM slots WHERE device = ?",
-            vec![device.to_vec().into()],
-        )
+    fn remove_chain(&mut self, sender: &Digest) -> Result<(), StoreError> {
+        segments::remove(&self.sql, sender)
     }
 
     fn seen(&self) -> Result<Vec<Seen>, StoreError> {
@@ -209,7 +225,7 @@ impl AccountStore for SqlAccount {
     }
 
     fn erase(&mut self) -> Result<(), StoreError> {
-        for table in ["meta", "log", "slots", "seen"] {
+        for table in ["meta", "log", "chains", "segments", "segment_parts", "seen"] {
             run(&self.sql, &format!("DELETE FROM {table}"), Vec::new())?;
         }
         Ok(())
@@ -279,9 +295,11 @@ impl SqlMail {
     ///
     /// Returns a [`StoreError`] when a table cannot be made.
     pub fn open(sql: SqlStorage) -> Result<Self, StoreError> {
+        refuse_table(&sql, "messages")?;
         for table in [
             "CREATE TABLE IF NOT EXISTS mailboxes (nameplate INTEGER PRIMARY KEY, opened INTEGER NOT NULL)",
-            "CREATE TABLE IF NOT EXISTS messages (id INTEGER PRIMARY KEY AUTOINCREMENT, nameplate INTEGER NOT NULL, side INTEGER NOT NULL, message BLOB NOT NULL)",
+            "CREATE TABLE IF NOT EXISTS mail_messages (id INTEGER PRIMARY KEY AUTOINCREMENT, nameplate INTEGER NOT NULL, side INTEGER NOT NULL, size INTEGER NOT NULL)",
+            "CREATE TABLE IF NOT EXISTS mail_parts (message INTEGER NOT NULL, part INTEGER NOT NULL, bytes BLOB NOT NULL, PRIMARY KEY (message, part))",
         ] {
             run(&sql, table, Vec::new())?;
         }
@@ -317,7 +335,12 @@ impl MailStore for SqlMail {
     fn close_mailbox(&mut self, nameplate: u16) -> Result<(), StoreError> {
         run(
             &self.sql,
-            "DELETE FROM messages WHERE nameplate = ?",
+            "DELETE FROM mail_parts WHERE message IN (SELECT id FROM mail_messages WHERE nameplate = ?)",
+            vec![i64::from(nameplate).into()],
+        )?;
+        run(
+            &self.sql,
+            "DELETE FROM mail_messages WHERE nameplate = ?",
             vec![i64::from(nameplate).into()],
         )?;
         run(
@@ -330,7 +353,7 @@ impl MailStore for SqlMail {
     fn held(&self, nameplate: u16) -> Result<usize, StoreError> {
         let found = rows(
             &self.sql,
-            "SELECT COALESCE(SUM(LENGTH(message)), 0) FROM messages WHERE nameplate = ?",
+            "SELECT COALESCE(SUM(size), 0) FROM mail_messages WHERE nameplate = ?",
             vec![i64::from(nameplate).into()],
         )?;
         let Some(row) = found.first() else {
@@ -341,32 +364,10 @@ impl MailStore for SqlMail {
     }
 
     fn push(&mut self, nameplate: u16, to: Side, message: &[u8]) -> Result<(), StoreError> {
-        run(
-            &self.sql,
-            "INSERT INTO messages (nameplate, side, message) VALUES (?, ?, ?)",
-            vec![
-                i64::from(nameplate).into(),
-                side(to).into(),
-                message.to_vec().into(),
-            ],
-        )
+        mail::push(&self.sql, nameplate, to, message)
     }
 
     fn pop(&mut self, nameplate: u16, to: Side) -> Result<Option<Vec<u8>>, StoreError> {
-        let found = rows(
-            &self.sql,
-            "SELECT id, message FROM messages WHERE nameplate = ? AND side = ? ORDER BY id LIMIT 1",
-            vec![i64::from(nameplate).into(), side(to).into()],
-        )?;
-        let Some(row) = found.first() else {
-            return Ok(None);
-        };
-        let [id, message] = columns(row)?;
-        run(
-            &self.sql,
-            "DELETE FROM messages WHERE id = ?",
-            vec![id.clone()],
-        )?;
-        Ok(Some(blob(message)?))
+        mail::pop(&self.sql, nameplate, to)
     }
 }

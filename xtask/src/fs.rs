@@ -22,6 +22,14 @@ mod raw {
         std::fs::read(path)
     }
 
+    pub(super) fn metadata(path: &Path) -> std::io::Result<std::fs::Metadata> {
+        std::fs::metadata(path)
+    }
+
+    pub(super) fn available_space(path: &Path) -> std::io::Result<u64> {
+        fs4::available_space(path)
+    }
+
     pub(super) fn write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
         std::fs::write(path, bytes)
     }
@@ -88,6 +96,50 @@ const PRIVATE_MODE: u32 = 0o600;
 /// The mode of a program's file: its owner may write it, and everyone may read and run it.
 #[cfg(unix)]
 const EXECUTABLE_MODE: u32 = 0o755;
+
+#[derive(Debug)]
+pub struct RunLock {
+    _file: std::fs::File,
+}
+
+/// # Errors
+///
+/// Refuses another active run or an unreadable lock file.
+pub fn lock_run(path: &Path) -> Result<RunLock> {
+    let file = raw::append(path).with_context(|| format!("open {}", path.display()))?;
+    file.try_lock()
+        .with_context(|| format!("another run holds {}", path.display()))?;
+    Ok(RunLock { _file: file })
+}
+
+/// # Errors
+///
+/// Reports unreadable metadata; an absent synthetic file has no bytes yet.
+pub fn file_bytes_if_present(path: &Path) -> Result<u64> {
+    match raw::metadata(path) {
+        Ok(metadata) => Ok(metadata.len()),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(0),
+        Err(error) => Err(error).with_context(|| format!("measure {}", path.display())),
+    }
+}
+
+/// # Errors
+///
+/// Reports a failed filesystem space query.
+pub fn available_space(path: &Path) -> Result<u64> {
+    raw::available_space(path)
+        .with_context(|| format!("read available space at {}", path.display()))
+}
+
+/// # Errors
+///
+/// Reports a failed creation of an owned temporary workspace.
+pub fn temporary_in(path: &Path) -> Result<tempfile::TempDir> {
+    tempfile::Builder::new()
+        .prefix("run-")
+        .tempdir_in(path)
+        .with_context(|| format!("create a temporary workspace at {}", path.display()))
+}
 
 /// Appends bytes to a file, creating it when it is absent.
 ///
@@ -274,6 +326,16 @@ fn collect(directory: &Path, suffix: &str, found: &mut Vec<PathBuf>) -> Result<(
 #[cfg(test)]
 mod tests {
     use super::{Kind, entries, files_with_suffix, kind, read_to_string, remove_dir_all, write};
+
+    #[test]
+    fn a_campaign_lock_refuses_overlap_and_releases_on_drop() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("run.lock");
+        let first = super::lock_run(&path).unwrap();
+        super::lock_run(&path).unwrap_err();
+        drop(first);
+        let _second = super::lock_run(&path).unwrap();
+    }
 
     #[test]
     fn files_are_written_read_listed_and_removed() {

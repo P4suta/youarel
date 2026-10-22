@@ -1,9 +1,10 @@
 //! Text is a key that reads back as itself or is refused, and between two keys of any length, or past either end, there is another key.
+//! A key past one end is at most one symbol longer than the longer of its bound and the longest integer.
 //!
 //! The input is two texts split at the first `|`; a text that is not a key stands for the open end on its side.
 #![no_main]
 
-use youarel_core::position_rules::{Key, Unordered, between};
+use youarel_core::position_rules::{Key, LONGEST_INTEGER, Unordered, between};
 
 libfuzzer_sys::fuzz_target!(|data: &[u8]| {
     let Ok(text) = std::str::from_utf8(data) else {
@@ -37,6 +38,12 @@ libfuzzer_sys::fuzz_target!(|data: &[u8]| {
                 high.as_ref().is_none_or(|high| made < *high),
                 "the key is below its upper bound"
             );
+            if let (Some(bound), None) | (None, Some(bound)) = (&low, &high) {
+                assert!(
+                    made.as_str().len() <= bound.as_str().len().max(LONGEST_INTEGER) + 1,
+                    "a key past one bound grows by one symbol at most"
+                );
+            }
         }
         Err(Unordered) => assert!(!ordered, "ordered bounds always make a key"),
     }

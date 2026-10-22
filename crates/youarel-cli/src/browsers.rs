@@ -12,6 +12,8 @@ use youarel_html::bookmarks;
 use youarel_import::{Item, LONGEST_FILE, chrome, firefox, safari};
 use youarel_store::fs;
 
+pub mod cache;
+
 /// A browser as the command line and the window name it.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, clap::ValueEnum)]
 pub enum BrowserName {

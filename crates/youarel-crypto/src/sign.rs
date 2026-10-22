@@ -194,7 +194,7 @@ mod tests {
             keys.public()
                 .verify(Label::Operation, b"payload", &signature)
         );
-        assert!(!keys.public().verify(Label::Bundle, b"payload", &signature));
+        assert!(!keys.public().verify(Label::Segment, b"payload", &signature));
         assert!(
             !keys
                 .public()
@@ -222,8 +222,8 @@ mod tests {
         let keys = SigningKeys::generate().unwrap();
         let (ed25519, ml_dsa) = keys.secret();
         let restored = SigningKeys::from_secret(&ed25519, &ml_dsa, keys.public().clone()).unwrap();
-        let signature = restored.sign(Label::Bundle, b"x").unwrap();
-        assert!(keys.public().verify(Label::Bundle, b"x", &signature));
+        let signature = restored.sign(Label::Segment, b"x").unwrap();
+        assert!(keys.public().verify(Label::Segment, b"x", &signature));
         let stranger = SigningKeys::generate().unwrap();
         SigningKeys::from_secret(&ed25519, &ml_dsa, stranger.public().clone()).unwrap_err();
         SigningKeys::from_secret(&ed25519[1..], &ml_dsa, keys.public().clone()).unwrap_err();

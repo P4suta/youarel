@@ -15,6 +15,9 @@ use std::fmt::Write as _;
 use std::path::Path;
 use std::process::Output;
 
+mod native;
+pub use native::generate as generate_native;
+
 /// The Quint release the image's lockfile pins.
 pub const QUINT_VERSION: &str = "0.33.0";
 
@@ -285,8 +288,8 @@ impl Session<'_> {
         let report = String::from_utf8_lossy(&checked.stdout);
         let found = distinct_states(&report)?;
         ensure!(
-            checked.status.success() && found == Some(quint.distinct_states),
-            "the model checker found {found:?} distinct states of {} and ended with {}, while {} records {}; review the model change, then record the new count:\n{report}{}",
+            checked.status.success() && quint.accepts_state_count(found),
+            "the model checker found {found:?} distinct states of {} and ended with {}, while {} records {:?}; review the model change, then record the measured complete count:\n{report}{}",
             quint.main,
             checked.status,
             obligations::MANIFEST,

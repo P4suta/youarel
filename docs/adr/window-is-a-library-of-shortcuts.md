@@ -1,7 +1,8 @@
 ---
-status: proposed
+status: amended
 date: 2026-10-18
 supersedes: window-launcher-renders-the-terminal-launchers-machine.md
+amended-by: the-window-draws-a-page-of-the-library.md, the-window-behaves-like-the-finder.md
 ---
 # The window is a library of shortcuts
 

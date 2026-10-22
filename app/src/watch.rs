@@ -1,7 +1,7 @@
 //! The watch of the shared folder, through the operating system's notices: FSEvents on macOS, ReadDirectoryChangesW on Windows, and inotify on Linux.
 //!
 //! Each notice reaches the window as what the core reads: a read, the name of a file that changed, or a rescan.
-//! The watch compares no whole path, since FSEvents names the folder by its canonical path and Windows joins names with backslashes.
+//! The watch resolves its root before comparing paths and tells relative names with forward slashes on every platform.
 
 use notify::event::{EventKind, RemoveKind};
 use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher as _};
@@ -23,7 +23,7 @@ pub struct Watch {
 }
 
 impl Watch {
-    /// Starts watching `folder` itself, not its subfolders, and tells `tell` of each change on the watch's own thread.
+    /// Watches `folder` and every peer directory, and tells `tell` of each change on the watch's own thread.
     ///
     /// # Errors
     ///
@@ -31,8 +31,12 @@ impl Watch {
     pub fn start(folder: &Path, tell: impl Fn(Seen<'_>) + Send + 'static) -> notify::Result<Self> {
         let lost = Arc::new(AtomicBool::new(false));
         let marked = Arc::clone(&lost);
-        let mut watcher = notify::recommended_watcher(move |event| report(event, &marked, &tell))?;
-        watcher.watch(folder, RecursiveMode::NonRecursive)?;
+        let canonical = youarel_store::fs::canonicalize(folder)
+            .map_err(|error| notify::Error::io(error.source).add_path(error.path))?;
+        let root = canonical.clone();
+        let mut watcher =
+            notify::recommended_watcher(move |event| report(event, &root, &marked, &tell))?;
+        watcher.watch(&canonical, RecursiveMode::Recursive)?;
         Ok(Self {
             folder: folder.to_path_buf(),
             lost,
@@ -56,7 +60,12 @@ impl Watch {
 /// Tells of one notice: a failure or a removed folder as a rescan that marks the watch lost, a notice of lost events as a rescan, a read as a read, and any other change by the name of each file, or as a rescan when it names none.
 ///
 /// FSEvents joins the kinds of changes in one notice, so every kind but a read counts as a change.
-fn report(event: notify::Result<Event>, lost: &AtomicBool, tell: &impl Fn(Seen<'_>)) {
+fn report(
+    event: notify::Result<Event>,
+    folder: &Path,
+    lost: &AtomicBool,
+    tell: &impl Fn(Seen<'_>),
+) {
     let event = match event {
         Ok(event) if !matches!(event.kind, EventKind::Remove(RemoveKind::Folder)) => event,
         // A failed watch, or one whose folder or a folder inside it went away, may miss what follows, so the window starts it again.
@@ -74,12 +83,24 @@ fn report(event: notify::Result<Event>, lost: &AtomicBool, tell: &impl Fn(Seen<'
         tell(Seen::Rescan);
     } else {
         for path in &event.paths {
-            // Every bundle's name is Unicode, so a name that is not names no bundle.
-            if let Some(name) = path.file_name().and_then(|name| name.to_str()) {
-                tell(Seen::Touched(name));
+            if let Some(name) = relative(folder, path) {
+                tell(Seen::Touched(&name));
+            } else {
+                tell(Seen::Rescan);
             }
         }
     }
+}
+
+fn relative(folder: &Path, path: &Path) -> Option<String> {
+    let Ok(path) = path.strip_prefix(folder) else {
+        return None;
+    };
+    let components = path
+        .components()
+        .map(|part| part.as_os_str().to_str())
+        .collect::<Option<Vec<_>>>()?;
+    (!components.is_empty()).then(|| components.join("/"))
 }
 
 #[cfg(test)]
@@ -173,6 +194,19 @@ mod tests {
     }
 
     #[test]
+    fn a_head_inside_an_existing_peer_directory_is_told_by_its_relative_path() {
+        const PEER: &str = "2222222222222222222222222222222222222222222222222222222222222222";
+        let folder = tempfile::tempdir().unwrap();
+        let peer = folder.path().join(PEER);
+        youarel_store::fs::create_dir_all(&peer).unwrap();
+        let Some((_watch, told)) = started(folder.path()) else {
+            return;
+        };
+        youarel_store::fs::replace(&peer.join("head"), b"a committed head").unwrap();
+        assert!(tells_of(&told, &format!("{PEER}/head")));
+    }
+
+    #[test]
     fn a_folder_that_does_not_exist_has_no_watch() {
         let folder = tempfile::tempdir().unwrap();
         let error = Watch::start(&folder.path().join("missing"), |_| {}).unwrap_err();
@@ -183,7 +217,7 @@ mod tests {
     fn reported(event: notify::Result<Event>) -> (Vec<Told>, bool) {
         let lost = AtomicBool::new(false);
         let told = RefCell::new(Vec::new());
-        report(event, &lost, &|seen: Seen<'_>| {
+        report(event, Path::new("shared"), &lost, &|seen: Seen<'_>| {
             told.borrow_mut().push(Told::from(seen));
         });
         (told.into_inner(), lost.into_inner())

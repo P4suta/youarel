@@ -41,10 +41,9 @@ const APP_TARGET: &str = "target";
 /// Every crate of the lockfile, for every target, was searched for a use of the unsound iterator, and only `glib` itself names it.
 /// Reconsider both when Tauri leaves GTK 3.
 ///
-/// The launcher's Linux build reaches `zbus` 5 through the credential store and through `tauri-plugin-single-instance`, whose newest 2.x release still requires it.
+/// The launcher's Linux build reaches `zbus` 5 through `tauri-plugin-single-instance`, whose newest 2.x release still requires it, and no build for macOS or Windows holds it.
 /// `zbus` 6 took in `zvariant`, `zbus_names`, and `zvariant_derive`, which left their own crates without maintenance, and their advisories name no flaw.
-/// `.cargo/audit.toml` accepts them for every lockfile because of the credential store, and this list keeps them for the plugin.
-/// Reconsider them when the plugin or the credential store releases on a maintained `zbus`, or an advisory names a vulnerability.
+/// Reconsider them when the plugin releases on a maintained `zbus`, or an advisory names a vulnerability.
 const APP_ACCEPTED_ADVISORIES: [(&str, &str); 5] = [
     (
         "RUSTSEC-2024-0370",
@@ -96,12 +95,22 @@ fn rustfmt(root: &Path, files: Option<&[&str]>) -> Result<()> {
                 .args(files),
             "rustfmt --check",
         ),
-        None => succeed(
-            Tool::Cargo
-                .command(root)
-                .args(["fmt", "--all", "--", "--check"]),
-            "cargo fmt --check",
-        ),
+        None => {
+            for manifest in ["Cargo.toml", "fuzz/Cargo.toml"] {
+                succeed(
+                    Tool::Cargo.command(root).args([
+                        "fmt",
+                        "--manifest-path",
+                        manifest,
+                        "--all",
+                        "--",
+                        "--check",
+                    ]),
+                    "cargo fmt --check",
+                )?;
+            }
+            Ok(())
+        }
     }
 }
 

@@ -1,4 +1,6 @@
-//! The Windows half of replacing a program: Windows keeps the file of a running program, so the old one moves aside instead of being overwritten.
+//! The Windows half of replacing a program.
+//!
+//! Windows keeps the file of a running program, so the old one moves aside instead of being overwritten.
 
 use super::{FileError, failed, raw};
 use std::fs::File;

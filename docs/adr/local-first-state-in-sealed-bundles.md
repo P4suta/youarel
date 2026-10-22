@@ -1,7 +1,7 @@
 ---
 status: amended
 date: 2026-10-15
-amended-by: icons-stay-on-the-device.md
+amended-by: icons-stay-on-the-device.md, state-travels-as-sealed-segment-chains.md
 ---
 # Local-first state exchanged as sealed bundles
 

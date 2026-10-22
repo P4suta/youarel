@@ -38,7 +38,7 @@ jobs:
           install_args: rust
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          shared-key: youarel-ci-v2
+          shared-key: youarel-plan-v3
           cache-bin: false
       - id: plan
         run: cargo xtask ci plan
@@ -49,6 +49,8 @@ jobs:
     timeout-minutes: 30
     env:
       CI_PLAN: ${{ needs.plan.outputs.plan }}
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+      CARGO_PROFILE_TEST_DEBUG: line-tables-only
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -59,7 +61,7 @@ jobs:
           install_args: rust node npm:typescript taplo typos actionlint zizmor aqua:EmbarkStudios/cargo-deny aqua:rustsec/rustsec/cargo-audit aqua:nextest-rs/nextest/cargo-nextest
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          shared-key: youarel-ci-v2
+          shared-key: youarel-check-v3
           cache-bin: false
       - run: cargo xtask ci run check
 
@@ -168,7 +170,7 @@ jobs:
           install_args: rust
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          shared-key: youarel-ci-v2
+          shared-key: youarel-plan-v3
           cache-bin: false
       - name: Require every selected job
         env:

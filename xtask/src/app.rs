@@ -34,6 +34,7 @@ cargo nextest run --locked --no-tests=fail --manifest-path app/Cargo.toml
 Xvfb :99 -screen 0 1280x800x24 >/tmp/xvfb.log 2>&1 &
 export DISPLAY=:99
 dbus-run-session -- cargo nextest run --locked --no-tests=fail --manifest-path app/Cargo.toml --run-ignored only --test window
+chown --recursive --reference=/checkout /work/target
 ";
 
 /// Lints and tests the window launcher on Linux in the pinned container.

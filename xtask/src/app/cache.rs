@@ -106,6 +106,7 @@ pub(super) fn publish(root: &Path, image: &str) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use super::super::{IMAGE_DIRECTORY, IMAGE_INPUTS, REPOSITORY};
     use super::CompilerCache;
     use crate::fs;
     use std::path::{Path, PathBuf};
@@ -206,5 +207,30 @@ mod tests {
         fs::write(&marker, b"compiler output").unwrap();
         other.prepare().unwrap();
         assert_eq!(fs::read(&marker).unwrap(), b"compiler output");
+    }
+
+    #[test]
+    #[ignore = "requires the successful hosted Linux window build"]
+    fn hosted_compiler_outputs_are_readable_by_the_runner() {
+        fn readable_files(directory: &Path) -> usize {
+            std::fs::read_dir(directory)
+                .unwrap()
+                .map(|entry| {
+                    let entry = entry.unwrap();
+                    if entry.file_type().unwrap().is_dir() {
+                        readable_files(&entry.path())
+                    } else {
+                        std::fs::File::open(entry.path()).unwrap();
+                        1
+                    }
+                })
+                .sum()
+        }
+
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let image =
+            crate::quint::pinned_image(root, IMAGE_DIRECTORY, &IMAGE_INPUTS, REPOSITORY).unwrap();
+        let cache = CompilerCache::from_environment(root, &image).unwrap();
+        assert!(readable_files(&output_path(&cache)) > 0);
     }
 }

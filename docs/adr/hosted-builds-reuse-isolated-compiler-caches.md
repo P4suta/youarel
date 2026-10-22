@@ -19,6 +19,7 @@ Its name uses the same canonical checkout and pinned-image digest as the local v
 The cache action adds the runner's operating system, architecture, and app lockfile digest.
 A restore prefix keeps the same checkout and image while allowing Cargo to reuse dependencies across lockfile updates.
 Native owner-side runs retain their named volumes.
+After successful checks, the container returns compiler-output ownership to the checkout owner so the host can archive private incremental files without widening their permissions.
 
 The descriptor validates absolute existing directories and UTF-8 output fields before starting Docker.
 Its core byte contract rejects line delimiters and the quote that would end a Docker CSV field.
@@ -40,6 +41,9 @@ Filesystem canonicalization, Docker CSV mounts, and GitHub cache restoration cro
 Native tests exercise the production descriptor, actual Docker argument builder, path refusals, canonical aliases, identity separation, file collisions, and preservation of existing compiler data.
 The native substitute command is `cargo nextest run --locked --package xtask --lib -E 'test(app::cache::tests) | test(app::tests)'`, also covered by `just check`.
 Those tests don't establish a hosted cache hit or a runtime improvement; hosted runs supply those observations.
+The first hosted run passed its checks but failed to save root-owned incremental lock files.
+The container now restores output ownership before a successful exit, and the hosted cache action verifies that archive boundary.
+A hosted-only regression test opens every completed compiler file as the runner before the cache action can save it.
 Revisit this boundary if the adapter replaces filesystem canonicalization or Docker's mount interface, or if cache contents ever influence assurance admission.
 
 ## Consequences

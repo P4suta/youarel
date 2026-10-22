@@ -230,6 +230,7 @@ pub fn run(root: &Path, words: &[&str]) -> Result<()> {
     match words {
         ["plan"] => plan(root, None),
         ["plan", base] => plan(root, Some(base)),
+        ["cache", "app"] => crate::app::prepare_cache(root),
         ["run", job] => run_selected(root, job),
         ["assurance"] => {
             check::run(root, check::Scope::Hosted)?;
@@ -267,7 +268,9 @@ pub fn run(root: &Path, words: &[&str]) -> Result<()> {
         ),
         ["gate", name] => gate(root, name),
         _ => {
-            bail!("usage: cargo xtask ci plan [BASE]|run JOB|check|test|proofs|assurance|gate NAME")
+            bail!(
+                "usage: cargo xtask ci plan [BASE]|cache app|run JOB|check|test|proofs|assurance|gate NAME"
+            )
         }
     }
 }

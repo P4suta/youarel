@@ -1,0 +1,42 @@
+name: warm-ci-caches
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: warm-ci-caches-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  MISE_AUTO_INSTALL: "false"
+  MISE_TASK_RUN_AUTO_INSTALL: "false"
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+  CARGO_PROFILE_TEST_DEBUG: line-tables-only
+
+jobs:
+  warm:
+    if: github.ref_name == github.event.repository.default_branch
+    runs-on: ubuntu-26.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: jdx/mise-action@9b200bcecbfd6303e69a4a261b2e09e3757440a7 # v5.2.0
+        with:
+          install_args: rust
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: youarel-check-v3
+          cache-bin: false
+      - id: app-cache
+        run: cargo xtask ci cache app
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ steps.app-cache.outputs.path }}
+          key: ${{ runner.os }}-${{ runner.arch }}-${{ steps.app-cache.outputs.key }}-${{ hashFiles('app/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-${{ runner.arch }}-${{ steps.app-cache.outputs.key }}-
+      - run: cargo xtask app-linux

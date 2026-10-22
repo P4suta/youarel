@@ -122,9 +122,34 @@ pub const fn accepts(selected: Selection, job: Job, outcome: Outcome) -> bool {
         || (!selected.includes(job) && matches!(outcome, Outcome::Skipped))
 }
 
+/// Whether a byte preserves an output line and a quoted Docker mount field.
+#[must_use]
+pub const fn cache_field_byte(byte: u8) -> bool {
+    !matches!(byte, b'\r' | b'\n' | b'"')
+}
+
 #[cfg(kani)]
 mod proofs {
     use super::*;
+
+    #[kani::proof]
+    fn cache_fields_preserve_line_and_quote_boundaries() {
+        let byte: u8 = kani::any();
+        if cache_field_byte(byte) {
+            assert_ne!(byte, b'\r');
+            assert_ne!(byte, b'\n');
+            assert_ne!(byte, b'"');
+        } else {
+            assert!(matches!(byte, b'\r' | b'\n' | b'"'));
+        }
+        kani::cover!(cache_field_byte(byte));
+        kani::cover!(!cache_field_byte(byte));
+    }
+
+    #[kani::proof]
+    fn rejects_a_quoted_cache_field() {
+        kani::assert(cache_field_byte(b'"'), "NEGATIVE_CACHE_FIELD_CONTROL");
+    }
 
     #[kani::proof]
     fn selection_preserves_affected_jobs_and_requires_a_check() {

@@ -9,6 +9,9 @@ use anyhow::{Context, Result};
 use std::path::Path;
 use std::process::Command;
 
+mod cache;
+use cache::CompilerCache;
+
 /// The directory that defines the image, the files whose bytes name it, and its repository.
 const IMAGE_DIRECTORY: &str = "xtask/proofs/app-linux";
 const IMAGE_INPUTS: [&str; 3] = ["Dockerfile", "package.json", "package-lock.json"];
@@ -41,15 +44,21 @@ dbus-run-session -- cargo nextest run --locked --no-tests=fail --manifest-path a
 pub fn linux(root: &Path) -> Result<()> {
     let root = std::fs::canonicalize(root).context("resolve the checkout")?;
     let image = quint::pinned_image(&root, IMAGE_DIRECTORY, &IMAGE_INPUTS, REPOSITORY)?;
+    let cache = CompilerCache::from_environment(&root, &image)?;
+    cache.prepare()?;
     quint::build_pinned(&root, IMAGE_DIRECTORY, &image)?;
     tool::succeed(
-        &mut command(&root, &image)?,
+        &mut command(&root, &image, &cache),
         "the window launcher's Linux check",
     )
 }
 
-fn command(root: &Path, image: &str) -> Result<Command> {
-    let target_volume = container::compiler_volume(root, image, TARGET_VOLUME)?;
+pub(crate) fn prepare_cache(root: &Path) -> Result<()> {
+    let image = quint::pinned_image(root, IMAGE_DIRECTORY, &IMAGE_INPUTS, REPOSITORY)?;
+    cache::publish(root, &image)
+}
+
+fn command(root: &Path, image: &str, cache: &CompilerCache) -> Command {
     let mut docker = Tool::Docker.command(root);
     docker
         .args([
@@ -65,9 +74,9 @@ fn command(root: &Path, image: &str) -> Result<Command> {
             "--mount",
         ])
         .arg(quint::mount(root, "/checkout", true))
+        .args(["--mount"])
+        .arg(cache.mount())
         .args([
-            "--mount",
-            &format!("type=volume,source={target_volume},target=/work/target"),
             "--mount",
             &format!("type=volume,source={REGISTRY_VOLUME},target=/usr/local/cargo/registry"),
             "--workdir",
@@ -77,26 +86,28 @@ fn command(root: &Path, image: &str) -> Result<Command> {
             "-c",
             &format!("{}\n{TASK}", container::copy_script()),
         ]);
-    Ok(docker)
+    docker
 }
 
 #[cfg(test)]
 mod tests {
-    use super::command;
+    use super::{CompilerCache, command};
     use std::path::Path;
 
     #[test]
     fn compiler_outputs_belong_to_the_checkout_and_image() {
         let volume = |root: &Path, image: &str| {
-            command(root, image)
-                .unwrap()
+            let cache = CompilerCache::from_facts(root, image, None).unwrap();
+            command(root, image, &cache)
                 .get_args()
                 .find(|argument| argument.to_string_lossy().ends_with(",target=/work/target"))
                 .unwrap()
                 .to_os_string()
         };
-        let first = volume(Path::new("/first"), "image:a");
-        assert_ne!(first, volume(Path::new("/second"), "image:a"));
-        assert_ne!(first, volume(Path::new("/first"), "image:b"));
+        let first_checkout = tempfile::tempdir().unwrap();
+        let second_checkout = tempfile::tempdir().unwrap();
+        let first = volume(first_checkout.path(), "image:a");
+        assert_ne!(first, volume(second_checkout.path(), "image:a"));
+        assert_ne!(first, volume(first_checkout.path(), "image:b"));
     }
 }

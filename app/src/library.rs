@@ -17,8 +17,10 @@ use anyhow::{Context as _, Result, bail};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::PathBuf;
 use youarel_cli::browsers;
 use youarel_cli::{clock, commands, icons, web};
+use youarel_core::folder_rules::Seen;
 use youarel_core::library_rules::{
     self, Counts, Facts, Grouping, Layout, Move, Period, Query, Scope, added, column_moved,
     grouped, grouped_moved, period,
@@ -26,6 +28,7 @@ use youarel_core::library_rules::{
 use youarel_core::mark_rules;
 use youarel_core::rank_rules::Visits;
 use youarel_core::state::{Edit, EditError, Entry, IconId, ItemId, Slot, State, Tree};
+use youarel_core::sync_rules;
 use youarel_link::Link;
 use youarel_store::settings::{Column, HIDEABLE, Imported, Settings, ThemeChoice};
 use youarel_store::{Store, StoreError, codec};
@@ -194,12 +197,39 @@ impl Library {
         matches!(youarel_cli::sync::has_account(&self.store), Ok(true))
     }
 
-    /// The target of a sync due at `now`, which this call marks begun, or none.
-    pub fn begin_sync(&mut self, now: u64) -> Option<String> {
+    /// The sync due at `now` and its target, which this call marks begun, or none.
+    pub fn begin_sync(&mut self, now: u64) -> Option<(sync_rules::Sync, String)> {
         let has_account = self.has_account();
-        self.syncing
-            .begin(&self.settings.sync, has_account, now)
-            .then(|| self.settings.sync.target.clone())
+        let sync = self.syncing.begin(&self.settings.sync, has_account, now)?;
+        Some((sync, self.settings.sync.target.clone()))
+    }
+
+    /// Notes what the watch of the shared folder saw at `now`, and answers whether it may bring another device's bundle, which wakes the window to merge.
+    pub fn noticed(&mut self, seen: Seen<'_>, now: u64) -> bool {
+        self.syncing.noticed(seen, now)
+    }
+
+    /// Learns the name of this device's own bundle, whose changes the watch then passes over.
+    pub fn learned_own(&mut self, own: String) {
+        self.syncing.learned(own);
+    }
+
+    /// Records whether the window watches the shared folder, which the settings show.
+    pub const fn watching(&mut self, watched: bool) {
+        self.syncing.watching(watched);
+    }
+
+    /// Whether a sync failed since the last call, so the window starts its watch again.
+    pub const fn rewatch(&mut self) -> bool {
+        self.syncing.rewatch()
+    }
+
+    /// The folder the window watches: the shared folder while the window syncs through one, and none while it syncs through a relay or not at all.
+    #[must_use]
+    pub fn watch_wanted(&self) -> Option<PathBuf> {
+        let sync = &self.settings.sync;
+        (sync.enabled && !sync.target.is_empty() && !youarel_cli::sync::is_relay(&sync.target))
+            .then(|| PathBuf::from(&sync.target))
     }
 
     /// Records how a sync that began at `began` ended.

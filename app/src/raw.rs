@@ -4,6 +4,7 @@ use crate::intent::{Intent, item};
 use crate::library::Library;
 use crate::themes::ThemeOption;
 use crate::view::View;
+use crate::watch::Watch;
 use std::collections::BTreeMap;
 use std::process::ExitCode;
 use std::sync::{Mutex, MutexGuard, PoisonError};
@@ -13,6 +14,9 @@ use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Emitter, Manager, RunEvent, WebviewWindow, WindowEvent};
 use tauri_plugin_clipboard_manager::ClipboardExt;
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
+use tokio::sync::Notify;
+use youarel_core::folder_rules::Seen;
+use youarel_core::sync_rules;
 use youarel_link::Link;
 use youarel_store::Store;
 
@@ -31,6 +35,8 @@ const SUMMONED: &str = "summoned";
 const SYNCED: &str = "synced";
 /// How often the window asks whether a sync is due.
 const TICK: Duration = Duration::from_secs(5);
+/// How long the shared folder rests after a notice before the window asks, the span the core's schedule waits for.
+const QUIET: Duration = Duration::from_millis(sync_rules::QUIET);
 /// The event that tells the page shortcuts got their icons, so it draws the view again.
 const ICONED: &str = "iconed";
 /// How many sites a tick asks for an icon, one after another, which keeps a tick short.
@@ -40,6 +46,25 @@ type Shared = Mutex<Library>;
 
 fn locked(shared: &Shared) -> MutexGuard<'_, Library> {
     shared.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Wakes the ticker once the watch notices what may be another device's bundle.
+#[derive(Debug, Default)]
+struct Wake(Notify);
+
+/// The watch of the shared folder, held apart from the library so that it drops with no lock of the library held.
+#[derive(Debug, Default)]
+struct Watching(Mutex<Held>);
+
+/// The watch the window holds, and why its last start failed, which the log names once.
+#[derive(Debug, Default)]
+struct Held {
+    watch: Option<Watch>,
+    refused: Option<String>,
+}
+
+fn held(watching: &Watching) -> MutexGuard<'_, Held> {
+    watching.0.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 /// Brings the window forward with the keyboard.
@@ -205,28 +230,114 @@ mod commands {
     }
 }
 
-/// Runs one sync when the schedule says it is due, outside the library's lock, and tells the page before and after.
+/// Runs the sync the schedule says is due, outside the library's lock, and tells the page before and after.
+///
+/// A publish writes this device's bundle as `youarel sync` does, and a merge only reads the other devices' bundles.
+/// The sync then learns the name of this device's own bundle, whose changes the watch passes over from then on.
 async fn sync_when_due(app: &AppHandle) {
     let Ok(began) = youarel_cli::clock::now() else {
         // A clock that cannot be read leaves the sync to the next tick.
         return;
     };
     let shared = app.state::<Shared>();
-    let (target, store) = {
+    let (due, store) = {
         let mut library = locked(&shared);
         (library.begin_sync(began), library.store())
     };
-    let Some(target) = target else {
+    let Some((sync, target)) = due else {
         return;
     };
     drop(app.emit(SYNCED, ()));
     let ran = tauri::async_runtime::spawn_blocking(move || {
-        youarel_cli::sync::sync(&store, began, &target)
+        let outcome = match sync {
+            sync_rules::Sync::Publish => youarel_cli::sync::sync(&store, began, &target),
+            sync_rules::Sync::Merge => youarel_cli::sync::merge(&store, began, &target),
+        };
+        (outcome, youarel_cli::sync::own_bundle(&store))
     })
     .await;
-    let outcome = ran.unwrap_or_else(|stopped| Err(anyhow::anyhow!("the sync stopped: {stopped}")));
-    locked(&shared).end_sync(began, outcome);
+    let (outcome, own) = ran.unwrap_or_else(|stopped| {
+        let reason = format!("the sync stopped: {stopped}");
+        (
+            Err(anyhow::anyhow!("{reason}")),
+            Err(anyhow::anyhow!(reason)),
+        )
+    });
+    {
+        let mut library = locked(&shared);
+        match own {
+            Ok(own) => library.learned_own(own),
+            // An account that cannot be opened names no bundle of its own yet, and the sync's outcome says why.
+            Err(_unopened) => {}
+        }
+        library.end_sync(began, outcome);
+    }
     drop(app.emit(SYNCED, ()));
+}
+
+/// What the watch does with each change it sees: the library notes it, and one that may bring another device's bundle wakes the ticker.
+fn tell(app: &AppHandle) -> impl Fn(Seen<'_>) + Send + 'static {
+    let handle = app.clone();
+    move |seen| {
+        // A clock that cannot be read leaves the change to the next scheduled sync.
+        let Ok(now) = youarel_cli::clock::now() else {
+            return;
+        };
+        if locked(&handle.state::<Shared>()).noticed(seen, now) {
+            handle.state::<Wake>().0.notify_one();
+        }
+    }
+}
+
+/// Keeps the watch on the folder the settings name: starts it, starts it again once it is lost or a sync failed, and stops one no longer wanted.
+///
+/// The old watch drops with no lock held, since dropping it waits for its thread, which may wait for the library's lock to tell of a change.
+fn keep_watch(app: &AppHandle) {
+    let shared = app.state::<Shared>();
+    let (wanted, again) = {
+        let mut library = locked(&shared);
+        (library.watch_wanted(), library.rewatch())
+    };
+    let watching = app.state::<Watching>();
+    let stale = {
+        let mut held = held(&watching);
+        let kept = held.watch.as_ref().is_some_and(|watch| {
+            !again && !watch.lost() && Some(watch.folder()) == wanted.as_deref()
+        });
+        if kept {
+            return;
+        }
+        held.watch.take()
+    };
+    drop(stale);
+    let started = wanted.map(|folder| {
+        Watch::start(&folder, tell(app))
+            .map_err(|error| format!("cannot watch {}: {error}", folder.display()))
+    });
+    let watched = matches!(started, Some(Ok(_)));
+    {
+        let mut held = held(&watching);
+        match started {
+            Some(Ok(watch)) => {
+                eprintln!(
+                    "youarel-launcher: watching {} for the other devices' bundles",
+                    watch.folder().display()
+                );
+                held.watch = Some(watch);
+                held.refused = None;
+            }
+            Some(Err(reason)) => {
+                if held.refused.as_ref() != Some(&reason) {
+                    eprintln!(
+                        "youarel-launcher: {reason}; the window checks the folder on its schedule"
+                    );
+                    held.refused = Some(reason);
+                }
+            }
+            None => held.refused = None,
+        }
+    }
+    locked(&shared).watching(watched);
 }
 
 /// Fetches the icons of a few shortcuts that show none, outside the library's lock, as an import leaves its links without them.
@@ -269,15 +380,20 @@ async fn fill_icons(app: &AppHandle) {
     drop(app.emit(ICONED, ()));
 }
 
-/// Asks at every tick whether a sync is due and fetches a few missing icons, for as long as the library runs.
+/// Keeps the watch in step with the settings, asks whether a sync is due, and fetches a few missing icons, at every tick and once the folder rests after a notice, for as long as the library runs.
 fn ticker(app: &AppHandle) {
     let handle = app.clone();
     tauri::async_runtime::spawn(async move {
-        let mut ticks = tokio::time::interval(TICK);
+        let wake = handle.state::<Wake>();
         loop {
-            ticks.tick().await;
+            keep_watch(&handle);
             sync_when_due(&handle).await;
             fill_icons(&handle).await;
+            let nudged = tokio::time::timeout(TICK, wake.0.notified()).await;
+            if nudged.is_ok() {
+                // A bundle that another device or its cloud drive still writes settles while the folder rests.
+                tokio::time::sleep(QUIET).await;
+            }
         }
     });
 }
@@ -492,6 +608,8 @@ pub fn run() -> ExitCode {
         .plugin(shortcuts)
         .plugin(tauri_plugin_clipboard_manager::init())
         .manage(Mutex::new(Library::new(store)))
+        .manage(Wake::default())
+        .manage(Watching::default())
         .invoke_handler(tauri::generate_handler![
             commands::act,
             commands::view,

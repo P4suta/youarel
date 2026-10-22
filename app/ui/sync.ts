@@ -14,6 +14,7 @@ const enabled = find("sync-enabled", HTMLInputElement);
 const form = find("sync-form", HTMLFormElement);
 const target = find("sync-target", HTMLInputElement);
 const line = find("sync-line", HTMLElement);
+const paceLine = find("sync-pace", HTMLElement);
 
 /** How long ago a moment was, in words. */
 export function ago(time: number): string {
@@ -66,13 +67,23 @@ function long(sync: SyncView): string {
   }
 }
 
+/** How soon a change from another device arrives, which only a window that syncs can say. */
+function pace(sync: SyncView): string {
+  if (sync.state === "off" || sync.state === "noAccount") {
+    return "";
+  }
+  return sync.watched
+    ? "The folder is watched, so a change from another device arrives within seconds."
+    : "The window checks every five minutes.";
+}
+
 let editing = false;
 
 /** Draws the syncing, and wires its controls to send what a person chooses. */
 export function drawSync(sync: SyncView, send: (intent: Intent) => void): void {
   state.replaceChildren(icon("sync"), el("span", "", short(sync)));
   state.classList.toggle("failed", sync.state === "failed");
-  state.title = long(sync);
+  state.title = [long(sync), pace(sync)].filter((sentence) => sentence !== "").join(" ");
   state.onclick = () => send({ kind: "syncNow" });
   enabled.checked = sync.enabled;
   enabled.onchange = () => send({ kind: "syncSettings", enabled: enabled.checked, target: target.value });
@@ -92,4 +103,6 @@ export function drawSync(sync: SyncView, send: (intent: Intent) => void): void {
   };
   line.textContent = long(sync);
   line.classList.toggle("error-line", sync.state === "failed");
+  paceLine.textContent = pace(sync);
+  paceLine.hidden = paceLine.textContent === "";
 }

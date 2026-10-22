@@ -20,6 +20,7 @@ extern crate alloc;
 
 pub mod browser_rules;
 pub mod clock_rules;
+pub mod folder_rules;
 pub mod home_rules;
 pub mod host_rules;
 pub mod library_rules;

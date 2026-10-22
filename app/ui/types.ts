@@ -178,6 +178,8 @@ export interface SyncView {
   readonly state: "off" | "noAccount" | "waiting" | "syncing" | "synced" | "failed";
   readonly last: number | null;
   readonly error: string | null;
+  /** Whether the window watches the shared folder, so a change from another device arrives within seconds. */
+  readonly watched: boolean;
 }
 
 export type Browser = "safari" | "chrome" | "firefox";

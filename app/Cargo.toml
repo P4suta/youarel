@@ -23,13 +23,15 @@ tauri-build = { version = "2.7.3", features = [] }
 [dependencies]
 anyhow = "1"
 base64 = "0.22"
+# The operating system's notices of changes in the shared folder, through FSEvents, ReadDirectoryChangesW, or inotify.
+notify = "8.2"
 serde = { version = "1", features = ["derive"] }
 tauri = { version = "2.12.4", features = ["tray-icon"] }
 tauri-plugin-clipboard-manager = "2"
 tauri-plugin-global-shortcut = "2.4.1"
 tauri-plugin-single-instance = "2.5.4"
-# Tauri runs on Tokio, whose timer paces the window's own syncs.
-tokio = { version = "1", features = ["time"] }
+# Tauri runs on Tokio, whose timer paces the window's own syncs and whose notification wakes them for a notice.
+tokio = { version = "1", features = ["sync", "time"] }
 youarel-cli = { path = "../crates/youarel-cli" }
 youarel-core = { path = "../crates/youarel-core" }
 youarel-icon = { path = "../crates/youarel-icon" }

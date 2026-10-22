@@ -5,7 +5,10 @@ use crate::intent::{
 };
 use crate::syncing::SyncState;
 use crate::view::View;
+use std::path::PathBuf;
+use youarel_core::folder_rules::Seen;
 use youarel_core::state::{Edit, IconId, ItemId};
+use youarel_core::sync_rules::{BACKOFF, QUIET, Sync};
 use youarel_link::Link;
 use youarel_store::Store;
 
@@ -1145,7 +1148,10 @@ fn the_window_syncs_only_when_chosen_and_keeps_the_time_of_its_last_success() {
     let account = home.path().join(youarel_cli::sync::ACCOUNT_DIRECTORY);
     youarel_store::fs::create_dir_all(&account).unwrap();
     youarel_store::fs::replace(&account.join(youarel_sync::account::GENESIS), b"named").unwrap();
-    assert_eq!(library.begin_sync(NOW), Some(target.clone()));
+    assert_eq!(
+        library.begin_sync(NOW),
+        Some((Sync::Publish, target.clone()))
+    );
     assert_eq!(library.view().unwrap().sync.state, SyncState::Syncing);
     library.end_sync(NOW, Err(anyhow::anyhow!("unreachable")));
     let failed = library.view().unwrap().sync;
@@ -1153,7 +1159,7 @@ fn the_window_syncs_only_when_chosen_and_keeps_the_time_of_its_last_success() {
     act(&mut library, Intent::SyncNow);
     assert_eq!(
         library.begin_sync(NOW + 1),
-        Some(target.clone()),
+        Some((Sync::Publish, target.clone())),
         "a request skips the backoff"
     );
     library.end_sync(NOW + 1, Ok(Vec::new()));
@@ -1175,6 +1181,86 @@ fn the_window_syncs_only_when_chosen_and_keeps_the_time_of_its_last_success() {
     );
     assert_eq!(library.view().unwrap().sync.state, SyncState::Off);
     assert_eq!(library.begin_sync(NOW + 2), None, "off, no sync");
+}
+
+/// A library that syncs through `target` for a device that belongs to an account, and whose first sync, a publish, began at `now` and succeeded.
+fn synced_library(target: &str, now: u64) -> (tempfile::TempDir, Library) {
+    let (home, mut library) = library();
+    let account = home.path().join(youarel_cli::sync::ACCOUNT_DIRECTORY);
+    youarel_store::fs::create_dir_all(&account).unwrap();
+    youarel_store::fs::replace(&account.join(youarel_sync::account::GENESIS), b"named").unwrap();
+    act(
+        &mut library,
+        Intent::SyncSettings {
+            enabled: true,
+            target: target.to_owned(),
+        },
+    );
+    assert_eq!(
+        library.begin_sync(now),
+        Some((Sync::Publish, target.to_owned()))
+    );
+    library.end_sync(now, Ok(Vec::new()));
+    (home, library)
+}
+
+#[test]
+fn another_device_s_bundle_brings_a_merge_once_the_folder_rests_and_never_the_device_s_own() {
+    const NOW: u64 = 1_700_000_000_000;
+    let (_home, mut library) = synced_library("/shared", NOW);
+    library.learned_own("mine.youarel".to_owned());
+    assert!(!library.noticed(Seen::Touched("mine.youarel"), NOW + 1));
+    assert!(!library.noticed(Seen::Read, NOW + 1));
+    assert_eq!(library.begin_sync(NOW + 1 + QUIET), None, "its own write");
+    assert!(library.noticed(Seen::Touched("other.youarel"), NOW + 1));
+    assert_eq!(
+        library.begin_sync(NOW + QUIET),
+        None,
+        "the folder rests first"
+    );
+    assert_eq!(
+        library.begin_sync(NOW + 1 + QUIET),
+        Some((Sync::Merge, "/shared".to_owned()))
+    );
+    library.end_sync(NOW + 1 + QUIET, Err(anyhow::anyhow!("unreachable")));
+    assert!(library.rewatch(), "a failed sync starts the watch again");
+    assert!(library.noticed(Seen::Touched("other.youarel"), NOW + 2 + QUIET));
+    assert_eq!(
+        library.begin_sync(NOW + 2 + 2 * QUIET),
+        None,
+        "no merge during a backoff"
+    );
+    assert_eq!(
+        library.begin_sync(NOW + 1 + QUIET + BACKOFF),
+        Some((Sync::Publish, "/shared".to_owned()))
+    );
+}
+
+#[test]
+fn the_window_watches_a_shared_folder_and_no_relay() {
+    const NOW: u64 = 1_700_000_000_000;
+    let (_home, mut library) = synced_library("/shared", NOW);
+    assert_eq!(library.watch_wanted(), Some(PathBuf::from("/shared")));
+    library.watching(true);
+    assert!(library.view().unwrap().sync.watched);
+    library.watching(false);
+    assert!(!library.view().unwrap().sync.watched);
+    act(
+        &mut library,
+        Intent::SyncSettings {
+            enabled: true,
+            target: "https://relay.example".to_owned(),
+        },
+    );
+    assert_eq!(library.watch_wanted(), None, "a relay has no folder");
+    act(
+        &mut library,
+        Intent::SyncSettings {
+            enabled: false,
+            target: "/shared".to_owned(),
+        },
+    );
+    assert_eq!(library.watch_wanted(), None, "no sync, no watch");
 }
 
 #[test]

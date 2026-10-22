@@ -1,11 +1,13 @@
-//! The icons of shortcuts as the launchers and the command line fetch them: the page's own icon, or else its site's favicon, drawn as one small square PNG.
+//! The icons of shortcuts: the page's own icon, or else its site's favicon, drawn as one small square PNG and kept on this device under the site's host.
+//!
+//! A device gathers an icon only when a person acts: an addition reads the page anyway, and an opening reaches the site through the browser anyway.
 
 use crate::web::{self, Page};
 use anyhow::{Context, Result, anyhow};
-use youarel_core::state::{Edit, IconId, ItemId};
 use youarel_crypto::{Label, digest};
 use youarel_link::Link;
-use youarel_store::Store;
+use youarel_store::icons::IconId;
+use youarel_store::{Session, Store, StoreError};
 
 /// The icon every site may keep at its root, which a page that names no icon still has.
 const FAVICON: &str = "/favicon.ico";
@@ -56,56 +58,53 @@ pub fn fetch(link: &Link, page: &Page) -> Result<(IconId, Vec<u8>)> {
     Err(last)
 }
 
-/// Fetches the icon of every live shortcut that shows none, one by one, and reports each outcome.
+/// The favicon of the site of `link`, drawn, with its identifier; the page itself is not read.
 ///
 /// # Errors
 ///
-/// Returns an error when the store cannot be read or written.
-pub fn fill(store: &Store, now: u64) -> Result<Vec<String>> {
-    let missing: Vec<(ItemId, String)> = store
-        .session(now, |session| {
-            Ok(session
-                .state()
-                .shortcuts
-                .iter()
-                .filter(|(_, shortcut)| !shortcut.removed.value && shortcut.icon.value.is_none())
-                .map(|(id, shortcut)| (*id, shortcut.link.value.clone()))
-                .collect())
-        })
-        .map_err(|error| anyhow!(error))?;
-    if missing.is_empty() {
-        return Ok(vec![String::from("every shortcut shows an icon already")]);
+/// Returns the failure when the site offers no favicon that draws.
+pub fn favicon(link: &Link) -> Result<(IconId, Vec<u8>)> {
+    fetch(link, &Page::default())
+}
+
+/// Keeps an icon on this device for the host of the link it came for.
+///
+/// # Errors
+///
+/// Returns [`StoreError::Image`] for an image larger than the device keeps.
+pub fn keep(
+    session: &mut Session,
+    link: &Link,
+    (image, bytes): (IconId, Vec<u8>),
+) -> Result<(), StoreError> {
+    session.keep_icon(link.host(), image, bytes)
+}
+
+/// Whether this device keeps no icon for the host of `link`.
+///
+/// # Errors
+///
+/// Returns an error when the store cannot be read.
+pub fn lacking(store: &Store, now: u64, link: &Link) -> Result<bool> {
+    Ok(store.session(now, |session| {
+        Ok(!session.icons().contains_key(link.host()))
+    })?)
+}
+
+/// Gathers the favicon of the site of a link a person opened, when this device keeps no icon for its host.
+///
+/// # Errors
+///
+/// Returns an error when the store cannot be read or written; a site that offers no favicon is no error, and its host keeps its tile until the next opening asks again.
+pub fn opened(store: &Store, now: u64, link: &Link) -> Result<()> {
+    if !lacking(store, now, link)? {
+        return Ok(());
     }
-    let mut lines = Vec::new();
-    let mut found: usize = 0;
-    for (id, text) in &missing {
-        let icon = Link::parse(text)
-            .map_err(|error| anyhow!(error))
-            .and_then(|link| {
-                // A page that cannot be read still leaves its site's favicon to try.
-                let page = web::fetch_page(&link).unwrap_or_else(|_unread| Page::default());
-                fetch(&link, &page)
-            });
-        match icon {
-            Ok(icon) => {
-                store
-                    .session(now, |session| {
-                        session.edit(Edit::SetIcon {
-                            id: *id,
-                            icon: Some(icon),
-                        })
-                    })
-                    .map_err(|error| anyhow!(error))?;
-                found = found.saturating_add(1);
-            }
-            Err(error) => lines.push(format!("no icon for {text}: {error:#}")),
-        }
+    match favicon(link) {
+        Ok(icon) => Ok(store.session(now, |session| keep(session, link, icon))?),
+        // A site without a favicon keeps its tile, and the next opening asks it again.
+        Err(_no_favicon) => Ok(()),
     }
-    lines.push(format!(
-        "fetched {found} of {} missing icons",
-        missing.len()
-    ));
-    Ok(lines)
 }
 
 #[cfg(test)]
@@ -139,7 +138,21 @@ mod tests {
                 "https://example.com/favicon.ico",
             ]
         );
+        assert_eq!(
+            candidates(&link, &Page::default())
+                .iter()
+                .map(Link::as_str)
+                .collect::<Vec<_>>(),
+            ["https://example.com/favicon.ico"],
+            "a site's favicon stands alone without a page"
+        );
         assert_ne!(identify(b"one"), identify(b"two"));
         assert_eq!(identify(b"one"), identify(b"one"));
+    }
+
+    #[test]
+    fn a_drawn_icon_fits_what_the_device_keeps() {
+        let longest = u64::try_from(youarel_icon::LONGEST_ICON).unwrap();
+        assert!(longest <= youarel_store::icons::LONGEST_IMAGE);
     }
 }

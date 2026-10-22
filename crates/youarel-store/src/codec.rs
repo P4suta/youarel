@@ -1,14 +1,18 @@
 //! The JSON form of the state, which a device writes to its own disk.
 //!
 //! Decoding accepts only what encoding writes: known fields, identifiers of thirty-two hexadecimal digits, position keys, and admitted links.
+//! A document from before icons left the state still names an icon for its shortcuts and holds their images, which decoding hands to the store rather than to the state.
 
+use crate::icons::{IconId, LONGEST_IMAGE};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use youarel_core::clock_rules::{DeviceId, Stamp};
 use youarel_core::merge_rules::Register;
 use youarel_core::position_rules::Key;
-use youarel_core::state::{Folder, IconId, ItemId, LONGEST_ICON, Shortcut, State};
+use youarel_core::state::{Folder, ItemId, Shortcut, State};
+use youarel_core::wire_rules::WireError;
 use youarel_link::Link;
 
 /// The format version this codec writes and reads.
@@ -31,12 +35,14 @@ pub enum DecodeError {
     Duplicate(String),
     /// An icon has no identifier of thirty-two bytes, or no image that fits.
     Icon(String),
+    /// The bytes are not the binary records of a state.
+    Records(WireError),
 }
 
 impl core::fmt::Display for DecodeError {
     fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            Self::Json(_) => formatter.write_str("not a youarel state"),
+            Self::Json(_) | Self::Records(_) => formatter.write_str("not a youarel state"),
             Self::Format(format) => write!(
                 formatter,
                 "the state has format {format}, but this youarel reads format {FORMAT}"
@@ -54,6 +60,7 @@ impl std::error::Error for DecodeError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Json(error) => Some(error),
+            Self::Records(error) => Some(error),
             Self::Format(_)
             | Self::Identifier(_)
             | Self::Position(_)
@@ -64,14 +71,32 @@ impl std::error::Error for DecodeError {
     }
 }
 
+/// What a document holds: the state, and the icon that each live shortcut of a document from before icons left the state showed.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct Decoded {
+    pub state: State,
+    pub icons: Vec<Shown>,
+}
+
+/// The icon that a live shortcut of a document from before icons left the state showed.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Shown {
+    /// The shortcut's link, whose host the icon belongs to.
+    pub link: String,
+    /// The stamp of the write that chose the icon.
+    pub chosen: Stamp,
+    pub image: IconId,
+    pub bytes: Vec<u8>,
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct Document {
     format: u32,
     shortcuts: Vec<ShortcutDocument>,
     folders: Vec<FolderDocument>,
-    /// The images of the icons, which a document from before icons lacks.
-    #[serde(default)]
+    /// The images of the icons, which only a document from before icons left the state holds.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     icons: Vec<IconDocument>,
 }
 
@@ -108,8 +133,8 @@ struct ShortcutDocument {
     folder: RegisterDocument<Option<String>>,
     position: RegisterDocument<String>,
     removed: RegisterDocument<bool>,
-    /// The shortcut's icon, which a document from before icons lacks, and which then reads as never written.
-    #[serde(default)]
+    /// The shortcut's icon, which only a document from before icons left the state names.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     icon: Option<RegisterDocument<Option<String>>>,
     /// The shortcut's note, which a document from before notes lacks, and which then reads as never written.
     #[serde(default)]
@@ -145,7 +170,7 @@ const NEVER: Stamp = Stamp {
 };
 
 /// Bytes as lowercase hexadecimal digits, two to a byte.
-fn hex_digits(bytes: &[u8]) -> String {
+pub(crate) fn hex_digits(bytes: &[u8]) -> String {
     let mut text = String::with_capacity(bytes.len().saturating_mul(DIGITS_PER_BYTE));
     for byte in bytes {
         for nibble in [byte.wrapping_shr(NIBBLE_BITS), byte & LOW_NIBBLE] {
@@ -164,7 +189,7 @@ pub fn hex(bytes: &[u8; 16]) -> String {
 }
 
 /// The `N` bytes that exactly two lowercase hexadecimal digits a byte spell.
-fn from_hex<const N: usize>(text: &str) -> Option<[u8; N]> {
+pub(crate) fn from_hex<const N: usize>(text: &str) -> Option<[u8; N]> {
     let digits = text.as_bytes();
     if digits.len() != N.saturating_mul(DIGITS_PER_BYTE) {
         return None;
@@ -235,9 +260,7 @@ pub fn encode(state: &State) -> Result<String, serde_json::Error> {
             folder: register_document(&shortcut.folder, |folder| folder.map(id_text)),
             position: register_document(&shortcut.position, |key| String::from(key.as_str())),
             removed: register_document(&shortcut.removed, |removed| *removed),
-            icon: Some(register_document(&shortcut.icon, |icon| {
-                icon.map(icon_name)
-            })),
+            icon: None,
             note: Some(register_document(&shortcut.note, String::clone)),
         })
         .collect();
@@ -253,19 +276,11 @@ pub fn encode(state: &State) -> Result<String, serde_json::Error> {
             removed: register_document(&folder.removed, |removed| *removed),
         })
         .collect();
-    let icons = state
-        .icons
-        .iter()
-        .map(|(id, image)| IconDocument {
-            id: hex_digits(&id.0),
-            image: BASE64.encode(image),
-        })
-        .collect();
     let document = Document {
         format: FORMAT,
         shortcuts,
         folders,
-        icons,
+        icons: Vec::new(),
     };
     let mut text = serde_json::to_string_pretty(&document)?;
     text.push('\n');
@@ -312,36 +327,26 @@ fn position(document: RegisterDocument<String>) -> Result<Register<Key>, DecodeE
 }
 
 /// The icon that sixty-four hexadecimal digits name.
-///
-/// # Errors
-///
-/// Returns [`DecodeError::Icon`] for any other text.
-pub fn icon_id(text: &str) -> Result<IconId, DecodeError> {
+fn icon_id(text: &str) -> Result<IconId, DecodeError> {
     from_hex(text)
         .map(IconId)
         .ok_or_else(|| DecodeError::Icon(text.to_owned()))
 }
 
-/// An icon's name as sixty-four lowercase hexadecimal digits, which [`icon_id`] reads back.
-#[must_use]
-pub fn icon_name(icon: IconId) -> String {
-    hex_digits(&icon.0)
-}
-
-/// A shortcut's icon, or one that no device wrote when the document predates icons.
+/// The icon a shortcut of a document from before icons left the state chose, and the stamp of its choice, or none.
 fn icon(
     document: Option<RegisterDocument<Option<String>>>,
-) -> Result<Register<Option<IconId>>, DecodeError> {
+) -> Result<Option<(IconId, Stamp)>, DecodeError> {
     let Some(document) = document else {
-        return Ok(Register {
-            value: None,
-            stamp: NEVER,
-        });
+        return Ok(None);
     };
-    Ok(Register {
-        value: document.value.as_deref().map(icon_id).transpose()?,
-        stamp: stamp(&document.stamp)?,
-    })
+    let chosen = stamp(&document.stamp)?;
+    Ok(document
+        .value
+        .as_deref()
+        .map(icon_id)
+        .transpose()?
+        .map(|icon| (icon, chosen)))
 }
 
 /// A shortcut's note or a folder's mark, or an empty one that no device wrote when the document predates it.
@@ -359,12 +364,25 @@ fn text_or_unwritten(
     )
 }
 
-/// An icon's image, which holds no more than [`LONGEST_ICON`] bytes.
+/// An icon's image, which holds no more than [`LONGEST_IMAGE`] bytes.
 fn image(document: &IconDocument) -> Result<Vec<u8>, DecodeError> {
     match BASE64.decode(&document.image) {
-        Ok(image) if image.len() <= LONGEST_ICON => Ok(image),
+        Ok(image) if u64::try_from(image.len()).is_ok_and(|length| length <= LONGEST_IMAGE) => {
+            Ok(image)
+        }
         Ok(_) | Err(_) => Err(DecodeError::Icon(document.id.clone())),
     }
+}
+
+/// The images of a document from before icons left the state, by their identifiers.
+fn images(documents: &[IconDocument]) -> Result<BTreeMap<IconId, Vec<u8>>, DecodeError> {
+    let mut images = BTreeMap::new();
+    for held in documents {
+        if images.insert(icon_id(&held.id)?, image(held)?).is_some() {
+            return Err(DecodeError::Duplicate(held.id.clone()));
+        }
+    }
+    Ok(images)
 }
 
 fn link(document: RegisterDocument<String>) -> Result<Register<String>, DecodeError> {
@@ -374,17 +392,19 @@ fn link(document: RegisterDocument<String>) -> Result<Register<String>, DecodeEr
     }
 }
 
-/// The state a document holds.
+/// The state a document holds, and the icon each of its live shortcuts showed when the document is from before icons left the state.
 ///
 /// # Errors
 ///
 /// Returns a [`DecodeError`] naming the first field that the codec would not have written.
-pub fn decode(text: &str) -> Result<State, DecodeError> {
+pub fn decode(text: &str) -> Result<Decoded, DecodeError> {
     let document: Document = serde_json::from_str(text).map_err(DecodeError::Json)?;
     if document.format != FORMAT {
         return Err(DecodeError::Format(document.format));
     }
+    let images = images(&document.icons)?;
     let mut state = State::default();
+    let mut icons = Vec::new();
     for shortcut in document.shortcuts {
         let id = item(&shortcut.id)?;
         let decoded = Shortcut {
@@ -394,17 +414,22 @@ pub fn decode(text: &str) -> Result<State, DecodeError> {
             folder: optional_item(&shortcut.folder)?,
             position: position(shortcut.position)?,
             removed: register(shortcut.removed)?,
-            icon: icon(shortcut.icon)?,
             note: text_or_unwritten(shortcut.note)?,
         };
+        let chosen = icon(shortcut.icon)?;
+        if let Some((image, chosen)) = chosen
+            && !decoded.removed.value
+            && let Some(bytes) = images.get(&image)
+        {
+            icons.push(Shown {
+                link: decoded.link.value.clone(),
+                chosen,
+                image,
+                bytes: bytes.clone(),
+            });
+        }
         if state.shortcuts.insert(id, decoded).is_some() {
             return Err(DecodeError::Duplicate(shortcut.id));
-        }
-    }
-    for held in &document.icons {
-        let id = icon_id(&held.id)?;
-        if state.icons.insert(id, image(held)?).is_some() {
-            return Err(DecodeError::Duplicate(held.id.clone()));
         }
     }
     for folder in document.folders {
@@ -420,15 +445,24 @@ pub fn decode(text: &str) -> Result<State, DecodeError> {
             return Err(DecodeError::Duplicate(folder.id));
         }
     }
-    Ok(state)
+    Ok(Decoded { state, icons })
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{DecodeError, FORMAT, decode, encode, hex, unhex};
+    use super::{BASE64, DecodeError, Decoded, FORMAT, Shown, decode, encode, hex, unhex};
+    use crate::icons::{IconId, LONGEST_IMAGE};
     use base64::Engine as _;
     use youarel_core::clock_rules::{DeviceId, Stamp};
-    use youarel_core::state::{Edit, IconId, ItemId, LONGEST_ICON, State};
+    use youarel_core::state::{Edit, Entry, ItemId, State};
+
+    const fn at(wall: u64) -> Stamp {
+        Stamp {
+            wall,
+            counter: 0,
+            device: DeviceId([7; 16]),
+        }
+    }
 
     fn sample() -> State {
         let mut state = State::default();
@@ -461,16 +495,76 @@ mod tests {
         state
     }
 
+    /// The document an earlier build wrote for `state`: each shortcut chose the icon `chosen` at wall time three, and the document holds the images of `held`.
+    fn legacy(state: &State, chosen: Option<IconId>, held: &[(IconId, &[u8])]) -> String {
+        let mut document: serde_json::Value =
+            serde_json::from_str(&encode(state).unwrap()).unwrap();
+        let register = serde_json::json!({
+            "value": chosen.map(IconId::name),
+            "stamp": { "wall": 3, "counter": 0, "device": "07".repeat(16) },
+        });
+        for shortcut in document["shortcuts"].as_array_mut().unwrap() {
+            let fields = shortcut.as_object_mut().unwrap();
+            fields.insert("icon".to_owned(), register.clone());
+        }
+        let images: Vec<serde_json::Value> = held
+            .iter()
+            .map(
+                |(id, image)| serde_json::json!({ "id": id.name(), "image": BASE64.encode(image) }),
+            )
+            .collect();
+        let fields = document.as_object_mut().unwrap();
+        fields.insert("icons".to_owned(), serde_json::Value::from(images));
+        serde_json::to_string_pretty(&document).unwrap()
+    }
+
     #[test]
     fn a_state_reads_back_from_its_document() {
         let state = sample();
         let text = encode(&state).unwrap();
-        assert_eq!(decode(&text).unwrap(), state);
-        assert_eq!(encode(&decode(&text).unwrap()).unwrap(), text);
+        let decoded = decode(&text).unwrap();
+        assert_eq!((decoded.state, decoded.icons), (state, Vec::new()));
+        assert_eq!(encode(&decode(&text).unwrap().state).unwrap(), text);
         assert_eq!(
             decode(&encode(&State::default()).unwrap()).unwrap(),
-            State::default()
+            Decoded::default()
         );
+    }
+
+    #[test]
+    fn a_document_from_before_icons_left_the_state_hands_over_its_live_shortcuts_icons() {
+        let image: &[u8] = b"\x89PNG image";
+        let nine = IconId([9; 32]);
+        let decoded = decode(&legacy(&sample(), Some(nine), &[(nine, image)])).unwrap();
+        assert_eq!(decoded.state, sample(), "the state holds no icon");
+        assert_eq!(
+            decoded.icons,
+            [Shown {
+                link: "https://example.com/".to_owned(),
+                chosen: Stamp {
+                    wall: 3,
+                    counter: 0,
+                    device: DeviceId([7; 16]),
+                },
+                image: nine,
+                bytes: image.to_vec(),
+            }]
+        );
+        let written = encode(&decoded.state).unwrap();
+        assert!(!written.contains("icon"), "{written}");
+        let mut removed = sample();
+        let gone = Edit::Remove {
+            entry: Entry::Shortcut(ItemId([2; 16])),
+        };
+        removed.apply(gone, at(4)).unwrap();
+        let unshown = [
+            legacy(&removed, Some(nine), &[(nine, image)]),
+            legacy(&sample(), None, &[(nine, image)]),
+            legacy(&sample(), Some(nine), &[(IconId([8; 32]), image)]),
+        ];
+        for text in unshown {
+            assert_eq!(decode(&text).unwrap().icons, [], "{text}");
+        }
     }
 
     #[test]
@@ -478,10 +572,6 @@ mod tests {
         let bytes = [0xab; 16];
         assert_eq!(hex(&bytes), "ab".repeat(16));
         assert_eq!(unhex(&hex(&bytes)).unwrap(), bytes);
-        let icon = IconId([0xcd; 32]);
-        assert_eq!(super::icon_name(icon), "cd".repeat(32));
-        assert_eq!(super::icon_id(&super::icon_name(icon)).unwrap(), icon);
-        assert!(matches!(super::icon_id("cd"), Err(DecodeError::Icon(_))));
         for text in [
             "",
             "ab",
@@ -530,45 +620,6 @@ mod tests {
         assert!(matches!(decode(&text), Err(DecodeError::Duplicate(_))));
     }
 
-    fn with_icon() -> State {
-        let mut state = sample();
-        state
-            .apply(
-                Edit::SetIcon {
-                    id: ItemId([2; 16]),
-                    icon: Some((IconId([9; 32]), b"\x89PNG image".to_vec())),
-                },
-                Stamp {
-                    wall: 3,
-                    counter: 0,
-                    device: DeviceId([7; 16]),
-                },
-            )
-            .unwrap();
-        state
-    }
-
-    #[test]
-    fn icons_read_back_and_a_document_from_before_icons_reads_without_them() {
-        let state = with_icon();
-        let text = encode(&state).unwrap();
-        assert_eq!(decode(&text).unwrap(), state);
-        assert_eq!(encode(&decode(&text).unwrap()).unwrap(), text);
-        let mut older: serde_json::Value =
-            serde_json::from_str(&encode(&sample()).unwrap()).unwrap();
-        let document = older.as_object_mut().unwrap();
-        document.remove("icons");
-        for shortcut in document["shortcuts"].as_array_mut().unwrap() {
-            shortcut.as_object_mut().unwrap().remove("icon");
-        }
-        let without = older.to_string();
-        assert!(!without.contains("icon"), "{without}");
-        let read = decode(&without).unwrap();
-        let shortcut = read.shortcuts.values().next().unwrap();
-        assert_eq!(shortcut.icon.value, None);
-        assert_eq!(shortcut.icon.stamp, super::NEVER);
-    }
-
     fn annotated() -> State {
         let mut state = sample();
         let stamp = |wall| Stamp {
@@ -592,8 +643,8 @@ mod tests {
     fn a_note_reads_back_and_a_document_from_before_notes_reads_without_one() {
         let state = annotated();
         let text = encode(&state).unwrap();
-        assert_eq!(decode(&text).unwrap(), state);
-        assert_eq!(encode(&decode(&text).unwrap()).unwrap(), text);
+        assert_eq!(decode(&text).unwrap().state, state);
+        assert_eq!(encode(&decode(&text).unwrap().state).unwrap(), text);
         let mut older: serde_json::Value =
             serde_json::from_str(&encode(&sample()).unwrap()).unwrap();
         for shortcut in older["shortcuts"].as_array_mut().unwrap() {
@@ -601,7 +652,7 @@ mod tests {
         }
         let without = older.to_string();
         assert!(!without.contains("note"), "{without}");
-        let read = decode(&without).unwrap();
+        let read = decode(&without).unwrap().state;
         let shortcut = read.shortcuts.values().next().unwrap();
         assert_eq!(shortcut.note.value, "");
         assert_eq!(shortcut.note.stamp, super::NEVER);
@@ -625,7 +676,7 @@ mod tests {
             )
             .unwrap();
         let text = encode(&state).unwrap();
-        assert_eq!(decode(&text).unwrap(), state);
+        assert_eq!(decode(&text).unwrap().state, state);
         let mut older: serde_json::Value =
             serde_json::from_str(&encode(&sample()).unwrap()).unwrap();
         for folder in older["folders"].as_array_mut().unwrap() {
@@ -633,7 +684,7 @@ mod tests {
         }
         let without = older.to_string();
         assert!(!without.contains("mark"), "{without}");
-        let read = decode(&without).unwrap();
+        let read = decode(&without).unwrap().state;
         let folder = read.folders.values().next().unwrap();
         assert_eq!(
             (folder.mark.value.as_str(), folder.mark.stamp),
@@ -643,15 +694,19 @@ mod tests {
 
     #[test]
     fn a_malformed_or_oversized_icon_is_refused() {
-        let text = encode(&with_icon()).unwrap();
-        let id = "09".repeat(32);
-        let image = super::BASE64.encode(b"\x89PNG image");
-        let oversized = super::BASE64.encode(vec![0; LONGEST_ICON + 1]);
+        let image: &[u8] = b"\x89PNG image";
+        let nine = IconId([9; 32]);
+        let text = legacy(&sample(), Some(nine), &[(nine, image)]);
+        let encoded = BASE64.encode(image);
+        let longest = usize::try_from(LONGEST_IMAGE).unwrap();
         let refusals = [
-            text.replace(&format!("\"id\": \"{id}\""), "\"id\": \"0909\""),
-            text.replacen(&format!("\"value\": \"{id}\""), "\"value\": \"zz\"", 1),
-            text.replace(&image, "not base64!"),
-            text.replace(&image, &oversized),
+            text.replace(&format!("\"id\": \"{}\"", nine.name()), "\"id\": \"0909\""),
+            text.replace(
+                &format!("\"value\": \"{}\"", nine.name()),
+                "\"value\": \"zz\"",
+            ),
+            text.replace(&encoded, "not base64!"),
+            text.replace(&encoded, &BASE64.encode(vec![0; longest + 1])),
         ];
         for refused in refusals {
             assert!(
@@ -659,16 +714,24 @@ mod tests {
                 "{refused}"
             );
         }
-        let held = super::BASE64.encode(vec![0; LONGEST_ICON]);
-        let largest = decode(&text.replace(&image, &held)).unwrap();
+        let largest = decode(&text.replace(&encoded, &BASE64.encode(vec![0; longest]))).unwrap();
         assert_eq!(
-            largest.icons.values().next().map(Vec::len),
-            Some(LONGEST_ICON)
+            largest.icons.first().map(|shown| shown.bytes.len()),
+            Some(longest)
         );
-        let twice = text.replace(
-            "\"icons\": [",
-            &format!("\"icons\": [\n    {{\n      \"id\": \"{id}\",\n      \"image\": \"{image}\"\n    }},"),
-        );
+        let twice = legacy(&sample(), Some(nine), &[(nine, image), (nine, image)]);
         assert!(matches!(decode(&twice), Err(DecodeError::Duplicate(_))));
+    }
+
+    /// Writes a document from before icons left the state into the seed corpus of the state's fuzz target, which `cargo nextest run --run-ignored only seeds` regenerates.
+    #[test]
+    #[ignore = "writes the committed seeds of the fuzz corpus; run it to regenerate them"]
+    fn seeds() {
+        let corpus =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fuzz/corpus/state_decode");
+        let nine = IconId([9; 32]);
+        let text = legacy(&sample(), Some(nine), &[(nine, b"\x89PNG image")]);
+        assert_eq!(decode(&text).unwrap().icons.len(), 1);
+        crate::fs::replace(&corpus.join("iconed"), text.as_bytes()).unwrap();
     }
 }

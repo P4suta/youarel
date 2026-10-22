@@ -39,8 +39,6 @@ const TICK: Duration = Duration::from_secs(5);
 const QUIET: Duration = Duration::from_millis(sync_rules::QUIET);
 /// The event that tells the page shortcuts got their icons, so it draws the view again.
 const ICONED: &str = "iconed";
-/// How many sites a tick asks for an icon, one after another, which keeps a tick short.
-const ICONS_PER_TICK: usize = 4;
 
 type Shared = Mutex<Library>;
 
@@ -113,18 +111,24 @@ mod commands {
     )]
 
     use super::{
-        AppHandle, BTreeMap, ClipboardExt, Intent, Link, Shared, ThemeOption, View, item, locked,
-        reported,
+        AppHandle, BTreeMap, ClipboardExt, Intent, Link, Shared, ThemeOption, View, gather_icons,
+        item, locked, reported,
     };
     use crate::library::{Addition, fetch};
     use tauri::State;
 
-    /// Carries out what the window asks for and answers with the view.
+    /// Carries out what the window asks for and answers with the view, then asks the sites of the links it opened for their missing favicons.
     #[tauri::command(async)]
-    pub(super) fn act(shared: State<'_, Shared>, intent: Intent) -> Result<View, String> {
-        locked(&shared)
+    pub(super) fn act(
+        app: AppHandle,
+        shared: State<'_, Shared>,
+        intent: Intent,
+    ) -> Result<View, String> {
+        let view = locked(&shared)
             .act(intent)
-            .map_err(|error| reported(&error))
+            .map_err(|error| reported(&error));
+        gather_icons(&app);
+        view
     }
 
     /// Answers with the view as it stands, keeping its notice, as after a sync began or ended.
@@ -340,47 +344,34 @@ fn keep_watch(app: &AppHandle) {
     locked(&shared).watching(watched);
 }
 
-/// Fetches the icons of a few shortcuts that show none, outside the library's lock, as an import leaves its links without them.
-async fn fill_icons(app: &AppHandle) {
-    let shared = app.state::<Shared>();
-    // A store that cannot be read now leaves the icons to the next tick.
-    let Ok(wanted) = locked(&shared).wanting_icons(ICONS_PER_TICK) else {
-        return;
-    };
+/// Fetches the favicons of the sites whose links a person just opened and whose hosts show no icon, outside the library's lock, and tells the page once one arrives.
+///
+/// The browser reaches each site at that moment anyway, and the window reaches no other site on its own.
+fn gather_icons(app: &AppHandle) {
+    let wanted = locked(&app.state::<Shared>()).icons_wanted();
     if wanted.is_empty() {
         return;
     }
-    let fetched = tauri::async_runtime::spawn_blocking(move || {
-        wanted
-            .into_iter()
-            .filter_map(|(id, link)| {
-                // A page that cannot be read still leaves its site's favicon to try.
-                let page = youarel_cli::web::fetch_page(&link)
-                    .unwrap_or_else(|_unread| youarel_cli::web::Page::default());
-                match youarel_cli::icons::fetch(&link, &page) {
-                    Ok(icon) => Some((id, icon)),
-                    // A site without an icon keeps its tile, and the window asks it no more.
-                    Err(_no_icon) => None,
-                }
-            })
-            .collect::<Vec<_>>()
-    })
-    .await
-    .unwrap_or_else(|_stopped| Vec::new());
-    if fetched.is_empty() {
-        return;
-    }
-    {
-        let library = locked(&shared);
-        for (id, icon) in fetched {
-            // A shortcut removed meanwhile takes no icon, and the others still do.
-            drop(library.set_icon(id, icon));
+    let handle = app.clone();
+    drop(tauri::async_runtime::spawn_blocking(move || {
+        let mut kept = false;
+        for link in wanted {
+            // A site without a favicon keeps its tile, and the next opening asks it again.
+            let Ok(icon) = youarel_cli::icons::favicon(&link) else {
+                continue;
+            };
+            // A store that cannot keep the icon now leaves it to the next opening too.
+            kept |= locked(&handle.state::<Shared>())
+                .keep_icon(&link, icon)
+                .is_ok();
         }
-    }
-    drop(app.emit(ICONED, ()));
+        if kept {
+            drop(handle.emit(ICONED, ()));
+        }
+    }));
 }
 
-/// Keeps the watch in step with the settings, asks whether a sync is due, and fetches a few missing icons, at every tick and once the folder rests after a notice, for as long as the library runs.
+/// Keeps the watch in step with the settings and asks whether a sync is due, at every tick and once the folder rests after a notice, for as long as the library runs.
 fn ticker(app: &AppHandle) {
     let handle = app.clone();
     tauri::async_runtime::spawn(async move {
@@ -388,7 +379,6 @@ fn ticker(app: &AppHandle) {
         loop {
             keep_watch(&handle);
             sync_when_due(&handle).await;
-            fill_icons(&handle).await;
             let nudged = tokio::time::timeout(TICK, wake.0.notified()).await;
             if nudged.is_ok() {
                 // A bundle that another device or its cloud drive still writes settles while the folder rests.

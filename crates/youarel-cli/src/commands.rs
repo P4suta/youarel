@@ -6,11 +6,12 @@ use anyhow::{Context, Result, anyhow};
 use std::io::Write as _;
 use youarel_core::browser_rules::Browser;
 use youarel_core::mark_rules;
-use youarel_core::state::{Edit, Entry, IconId, ItemId, Slot, State, Tree};
+use youarel_core::state::{Edit, Entry, ItemId, Slot, State, Tree};
 use youarel_core::ui_rules::{Row, Ui};
 use youarel_core::view;
 use youarel_html::bookmarks::{self, Item};
 use youarel_link::Link;
+use youarel_store::icons::IconId;
 use youarel_store::{Session, Store, StoreError};
 
 /// The formats `youarel export` writes.
@@ -120,10 +121,7 @@ pub fn add(store: &Store, now: u64, link: &str, addition: &Addition) -> Result<S
             })?;
         }
         if let Some(icon) = icon {
-            session.edit(Edit::SetIcon {
-                id,
-                icon: Some(icon),
-            })?;
+            icons::keep(session, &link, icon)?;
         }
         let tree = session.state().tree();
         Ok(Ok(format!(
@@ -205,7 +203,7 @@ pub fn find(store: &Store, now: u64, query: &str) -> Result<Vec<String>> {
     })
 }
 
-/// Opens the best shortcut for a query and counts the visit.
+/// Opens the best shortcut for a query and counts the visit, then gathers its site's favicon when this device keeps no icon for its host.
 ///
 /// # Errors
 ///
@@ -231,7 +229,15 @@ pub fn open(store: &Store, now: u64, query: &str) -> Result<String> {
     })?;
     let (_, link, title) = found.with_context(|| format!("no shortcut matches `{query}`"))?;
     web::open(&link)?;
-    Ok(format!("opened {title} <{link}>"))
+    let opened = format!("opened {title} <{link}>");
+    // The browser reaches the site now anyway, so a host this device keeps no icon for may give it one.
+    let gathered = Link::parse(&link)
+        .map_err(|error| anyhow!(error))
+        .and_then(|link| icons::opened(store, now, &link));
+    Ok(match gathered {
+        Ok(()) => opened,
+        Err(error) => format!("{opened}\n(no icon kept: {error:#})"),
+    })
 }
 
 /// Creates the folders of a path that do not exist yet.

@@ -1,16 +1,17 @@
 //! The icons youarel shows: an image a page offers, in any common format, decoded within bounds and drawn again as one small PNG.
 //!
 //! The image comes from the network, so the decoder runs under limits on the bytes it reads, the sides it accepts, and the memory it allocates.
-//! Every icon leaves as a square PNG of [`SIDE`] pixels, so each device shows the same pixels and the state carries no more than [`LONGEST_ICON`] bytes for it.
+//! Every icon leaves as a square PNG of [`SIDE`] pixels, so a device shows the same pixels for one image and keeps no more than [`LONGEST_ICON`] bytes for it.
 
 use image::codecs::png::{CompressionType, FilterType as PngFilter, PngEncoder};
 use image::imageops::{self, FilterType};
 use image::{DynamicImage, ExtendedColorType, ImageEncoder as _, ImageReader, Limits, RgbaImage};
 use std::io::Cursor;
-use youarel_core::state::LONGEST_ICON;
 
 /// The side of every icon, in pixels.
 pub const SIDE: u32 = 64;
+/// The most bytes a drawn icon holds, which a square of [`SIDE`] pixels fits many times over.
+pub const LONGEST_ICON: usize = 32 * 1024;
 /// The most bytes of an image the adapter decodes.
 pub const LONGEST_SOURCE: usize = 512 * 1024;
 /// The widest and the tallest image the adapter decodes.
@@ -119,7 +120,7 @@ pub fn normalize(bytes: &[u8]) -> Result<Vec<u8>, IconError> {
     within_limit(png)
 }
 
-/// An icon that the state may hold: no more than [`LONGEST_ICON`] bytes.
+/// An icon that a device may keep: no more than [`LONGEST_ICON`] bytes.
 fn within_limit(png: Vec<u8>) -> Result<Vec<u8>, IconError> {
     if png.len() > LONGEST_ICON {
         return Err(IconError::TooLarge);

@@ -13,7 +13,7 @@ use youarel_protocol::relay::{
     self, Collected, Locate, Mail, Side, Verb, read_located, read_nameplate,
 };
 use youarel_relay::Status;
-use youarel_store::{Store, codec, fs};
+use youarel_store::{Store, fs, records};
 use youarel_sync::account::Account;
 use youarel_sync::keystore::KeyStore;
 use youarel_sync::{SyncError, hex};
@@ -37,21 +37,19 @@ fn account(store: &Store) -> Result<Account> {
     Account::open(&directory, &keys).map_err(sync_error)
 }
 
-/// The store's state in its JSON form.
+/// The store's state as its records.
 fn state(store: &Store, now: u64) -> Result<Vec<u8>> {
     store
         .session(now, |session| {
-            codec::encode(session.state()).map_err(youarel_store::StoreError::Encode)
+            records::encode(session.state()).map_err(youarel_store::StoreError::Records)
         })
-        .map(String::into_bytes)
         .map_err(|error| anyhow!(error))
 }
 
-/// Merges a state in its JSON form into the store.
+/// Merges a received state into the store, as its records or in the JSON form of a build from before the records, whose icons stay behind.
 fn merge_state(store: &Store, now: u64, state: &[u8]) -> Result<()> {
-    let text = core::str::from_utf8(state).context("the received state is not text")?;
-    let received =
-        codec::decode(text).map_err(|error| anyhow!("the received state is malformed: {error}"))?;
+    let received = records::decode_received(state)
+        .map_err(|error| anyhow!("the received state is malformed: {error}"))?;
     store
         .session(now, |session| {
             session.merge(&received);
@@ -674,4 +672,50 @@ pub fn join_through(store: &Store, code: &str, relay: &str) -> Result<Vec<String
     let state = account(store)?.finish(&entry).map_err(sync_error)?;
     merge_state(store, clock::now()?, &state)?;
     Ok(vec![String::from("joined the account")])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{merge_state, state};
+    use youarel_core::state::{Edit, State};
+    use youarel_store::{Store, codec};
+
+    /// A time for the stores' sessions.
+    const NOW: u64 = 1_700_000_000_000;
+
+    fn held(store: &Store) -> State {
+        store
+            .session(NOW, |session| Ok(session.state().clone()))
+            .unwrap()
+    }
+
+    #[test]
+    fn a_received_state_merges_as_records_or_in_the_json_form_of_an_older_build() {
+        let sending = tempfile::tempdir().unwrap();
+        let sender = Store::new(sending.path().to_path_buf());
+        sender
+            .session(NOW, |session| {
+                let id = session.fresh_id()?;
+                session.edit(Edit::AddShortcut {
+                    id,
+                    link: String::from("https://example.com/"),
+                    title: String::from("Example"),
+                    folder: None,
+                })
+            })
+            .unwrap();
+        let sent = held(&sender);
+        let older = codec::encode(&sent).unwrap().into_bytes();
+        for received in [state(&sender, NOW).unwrap(), older] {
+            let receiving = tempfile::tempdir().unwrap();
+            let receiver = Store::new(receiving.path().to_path_buf());
+            merge_state(&receiver, NOW, &received).unwrap();
+            assert_eq!(held(&receiver), sent);
+        }
+        let receiving = tempfile::tempdir().unwrap();
+        let receiver = Store::new(receiving.path().to_path_buf());
+        let error = merge_state(&receiver, NOW, b"\xffnot a state").unwrap_err();
+        assert!(error.to_string().contains("malformed"), "{error}");
+        assert_eq!(held(&receiver), State::default());
+    }
 }

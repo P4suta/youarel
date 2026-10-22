@@ -5,24 +5,71 @@ import type { Choice, EmojiGroup, Fields, Item } from "./types.js";
 
 /** How long the add sheet waits after the last keystroke in the link before it reads the page's title. */
 const TITLE_DELAY_MS = 600;
+/** How long a collection picker waits after the last keystroke in its search before it asks the library. */
+const PICK_DELAY_MS = 150;
 
-/** Fills a collection picker with every collection and none, choosing `chosen`. */
-function collections(select: HTMLSelectElement, choices: readonly Choice[], chosen: string | null): void {
-  const none = el("option", "", "No collection");
-  none.value = "";
-  select.replaceChildren(
-    none,
-    ...choices.map((choice) => {
-      const option = el("option", "", choice.path);
-      option.value = choice.id;
-      return option;
-    }),
-  );
-  select.value = chosen ?? "";
+/** The collections a search finds from a place on, as the library answers them, best first. */
+export type PickCollections = (query: string, first: number) => Promise<readonly Choice[]>;
+
+function option(label: string, value: string): HTMLOptionElement {
+  const made = el("option", "", label);
+  made.value = value;
+  return made;
 }
 
-function chosen(select: HTMLSelectElement): string | null {
-  return select.value === "" ? null : select.value;
+/** A collection picker: a search over a select of the collections it finds, which keeps the one chosen even when a search does not find it. */
+export class Picker {
+  private chosen: Choice | null = null;
+  private timer: number | undefined;
+  /** The search in flight, so a slower answer to an older one draws nothing. */
+  private asked = 0;
+
+  /** A picker over `search` and `select` that names no collection `none` and calls `changed` once a person picks another. */
+  constructor(
+    private readonly search: HTMLInputElement,
+    private readonly select: HTMLSelectElement,
+    private readonly pick: PickCollections,
+    private readonly none = "No collection",
+    changed: () => void = () => undefined,
+  ) {
+    search.addEventListener("input", () => {
+      window.clearTimeout(this.timer);
+      this.timer = window.setTimeout(() => void this.find(), PICK_DELAY_MS);
+    });
+    select.addEventListener("change", () => {
+      const label = select.selectedOptions[0]?.textContent ?? "";
+      this.chosen = select.value === "" ? null : { id: select.value, path: label };
+      changed();
+    });
+  }
+
+  /** Shows the collections from the first on, with `chosen` chosen. */
+  async open(chosen: Choice | null): Promise<void> {
+    this.chosen = chosen;
+    this.search.value = "";
+    await this.find();
+  }
+
+  private async find(): Promise<void> {
+    this.asked += 1;
+    const asked = this.asked;
+    const found = await this.pick(this.search.value, 0);
+    if (asked !== this.asked) {
+      return;
+    }
+    const chosen = this.chosen;
+    const options = found.map((choice) => option(choice.path, choice.id));
+    if (chosen !== null && !found.some((choice) => choice.id === chosen.id)) {
+      options.unshift(option(chosen.path, chosen.id));
+    }
+    this.select.replaceChildren(option(this.none, ""), ...options);
+    this.select.value = chosen?.id ?? "";
+  }
+
+  /** The collection chosen, or null for none. */
+  get value(): string | null {
+    return this.select.value === "" ? null : this.select.value;
+  }
 }
 
 /** Closes a sheet from each of its buttons marked to close it. */
@@ -45,7 +92,7 @@ export class AddSheet {
   private readonly form = find("add-form", HTMLFormElement);
   private readonly link = find("add-link", HTMLInputElement);
   private readonly title = find("add-title", HTMLInputElement);
-  private readonly collection = find("add-collection", HTMLSelectElement);
+  private readonly collection: Picker;
   private readonly clipped = find("add-from-clipboard", HTMLElement);
   private readonly submit = find("add-submit", HTMLButtonElement);
   private typedTitle = false;
@@ -53,7 +100,11 @@ export class AddSheet {
   /** The link whose title the sheet asked for last, so an older answer never overwrites a newer one. */
   private asked = "";
 
-  constructor(private readonly adding: Adding) {
+  constructor(
+    private readonly adding: Adding,
+    pick: PickCollections,
+  ) {
+    this.collection = new Picker(find("add-collection-search", HTMLInputElement), find("add-collection", HTMLSelectElement), pick);
     closable(this.dialog);
     this.title.addEventListener("input", () => {
       this.typedTitle = this.title.value !== "";
@@ -69,9 +120,9 @@ export class AddSheet {
     });
   }
 
-  /** Opens the sheet with a link dropped on the window, or the one on the clipboard. */
-  async open(choices: readonly Choice[], collection: string | null, dropped: string | null): Promise<void> {
-    collections(this.collection, choices, collection);
+  /** Opens the sheet over a collection with a link dropped on the window, or the one on the clipboard. */
+  async open(collection: Choice | null, dropped: string | null): Promise<void> {
+    void this.collection.open(collection);
     this.link.value = dropped ?? "";
     this.title.value = "";
     this.typedTitle = false;
@@ -111,7 +162,7 @@ export class AddSheet {
 
   private async send(): Promise<void> {
     this.submit.disabled = true;
-    const added = await this.adding.add(this.link.value, this.title.value, chosen(this.collection));
+    const added = await this.adding.add(this.link.value, this.title.value, this.collection.value);
     this.submit.disabled = false;
     if (added) {
       this.dialog.close();
@@ -126,12 +177,14 @@ export class EditSheet {
   private readonly title = find("edit-title", HTMLInputElement);
   private readonly link = find("edit-link", HTMLElement);
   private readonly alias = find("edit-alias", HTMLInputElement);
-  private readonly collection = find("edit-collection", HTMLSelectElement);
+  private readonly collection: Picker;
   private readonly note = find("edit-note", HTMLTextAreaElement);
   private readonly remove = find("edit-remove", HTMLButtonElement);
   private id = "";
 
-  constructor(save: (fields: Fields) => void, removed: (id: string) => void) {
+  /** The sheet that saves every field with `save` and moves the shortcut to the trash with `trashed`. */
+  constructor(save: (fields: Fields) => void, trashed: (id: string) => void, pick: PickCollections) {
+    this.collection = new Picker(find("edit-collection-search", HTMLInputElement), find("edit-collection", HTMLSelectElement), pick);
     closable(this.dialog);
     this.form.addEventListener("submit", (event) => {
       event.preventDefault();
@@ -140,23 +193,24 @@ export class EditSheet {
         title: this.title.value,
         alias: this.alias.value.trim(),
         note: this.note.value,
-        collection: chosen(this.collection),
+        collection: this.collection.value,
       });
       this.dialog.close();
     });
     this.remove.addEventListener("click", () => {
       this.dialog.close();
-      removed(this.id);
+      trashed(this.id);
     });
   }
 
   /** Opens the sheet over a shortcut. */
-  open(item: Item, choices: readonly Choice[]): void {
+  open(item: Item): void {
     this.id = item.id;
     this.title.value = item.title;
     this.link.textContent = item.link;
     this.alias.value = item.alias;
-    collections(this.collection, choices, item.collectionId);
+    const home = item.collectionId === null || item.collection === null ? null : { id: item.collectionId, path: item.collection };
+    void this.collection.open(home);
     this.note.value = item.note;
     this.dialog.showModal();
     this.title.select();
@@ -170,6 +224,7 @@ export interface Question {
   readonly action: string;
   /** The answer it starts from, or none for a confirmation without a field. */
   readonly answer: string | null;
+  readonly secret?: boolean;
 }
 
 /** The sheet that asks for a name or a confirmation. */
@@ -194,6 +249,7 @@ export class AskSheet {
   private finish(answer: string | null): void {
     const settle = this.settle;
     this.settle = undefined;
+    this.input.value = "";
     if (this.dialog.open) {
       this.dialog.close();
     }
@@ -210,6 +266,7 @@ export class AskSheet {
     this.submit.className = question.answer === null ? "danger" : "primary";
     this.input.hidden = question.answer === null;
     this.input.value = question.answer ?? "";
+    this.input.type = question.secret === true ? "password" : "text";
     return new Promise((resolve) => {
       this.settle = resolve;
       this.dialog.showModal();

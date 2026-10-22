@@ -3,7 +3,7 @@
 //! It reads keys, asks [`step`] what they mean, has [`shell::carry_out`] carry out the effect, and draws the rows again.
 //! It decides nothing the machine decides.
 
-use crate::shell::{self, Kind, Outcome, Screen};
+use crate::shell::{self, Kind, Outcome, RowText, Screen};
 use anyhow::{Context, Result};
 use ratatui::crossterm::event::{
     self, DisableBracketedPaste, EnableBracketedPaste, KeyCode, KeyEvent, KeyEventKind,
@@ -15,8 +15,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{List, ListItem, ListState, Paragraph};
 use ratatui::{DefaultTerminal, Frame};
-use youarel_core::state::State;
-use youarel_core::ui_rules::{Effect, Event, Key, Row, Ui, step};
+use youarel_core::ui_rules::{Effect, Event, Key, Ui, step};
 use youarel_store::Store;
 
 /// Runs the launcher until the person leaves it.
@@ -57,7 +56,7 @@ fn drive(store: &Store, terminal: &mut DefaultTerminal) -> Result<()> {
         if let Effect::Add(_) = &effect {
             terminal.draw(|frame| draw(frame, &ui, &screen, Some(shell::READING_TITLE)))?;
         }
-        match shell::carry_out(store, &ui, &screen, effect) {
+        match shell::carry_out(store, &ui, effect) {
             Outcome::Continue(message) => notice = message,
             Outcome::Leave => return Ok(()),
         }
@@ -115,10 +114,10 @@ fn key(pressed: KeyEvent) -> Option<Key> {
     })
 }
 
-/// The line of one row.
-fn row_line(state: &State, row: &Row) -> Line<'static> {
+/// The line of one row, from its texts.
+fn row_line(text: &RowText) -> Line<'static> {
     let dim = Style::default().add_modifier(Modifier::DIM);
-    let text = shell::row_text(state, row);
+    let text = text.clone();
     match text.kind {
         Kind::Parent => Line::from(Span::styled(text.name, dim)),
         Kind::Add => Line::from(vec![Span::raw("+ add "), Span::raw(text.detail)]),
@@ -146,19 +145,19 @@ fn draw(frame: &mut Frame<'_>, ui: &Ui, screen: &Screen, notice: Option<&str>) {
     ])
     .areas(frame.area());
     frame.render_widget(
-        Paragraph::new(shell::header(ui, &screen.state))
+        Paragraph::new(shell::header(ui, screen))
             .style(Style::default().add_modifier(Modifier::BOLD)),
         header,
     );
-    let line = Line::from(shell::prompt(ui, &screen.state));
+    let line = Line::from(shell::prompt(ui, screen));
     // The cursor stands after the typed text, where an input method opens its candidates, and never past the line.
     let offset = u16::try_from(line.width()).map_or(input.width, |width| width.min(input.width));
     frame.render_widget(Paragraph::new(line), input);
     frame.set_cursor_position(Position::new(input.x.saturating_add(offset), input.y));
     let items: Vec<ListItem<'_>> = screen
-        .rows
+        .texts
         .iter()
-        .map(|row| ListItem::new(row_line(&screen.state, row)))
+        .map(|text| ListItem::new(row_line(text)))
         .collect();
     let mut selection = ListState::default();
     if !screen.rows.is_empty() {

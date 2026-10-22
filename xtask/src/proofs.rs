@@ -47,7 +47,9 @@ pub const TIMEOUT_CEILING: u64 = 0;
 const HARNESS_TIMEOUT: &str = "300s";
 const MUTANT_JOBS: &str = "2";
 const MUTANT_TEST_THREADS: &str = "1";
-const MAX_REPORT_BYTES: u64 = 16 * 1024 * 1024;
+/// The largest Kani report the gate reads.
+/// The report describes every check of every harness, and it passed 16 MiB once the harnesses of the paged listings joined.
+const MAX_REPORT_BYTES: u64 = 64 * 1024 * 1024;
 const MIRI_TARGET: &str = "target/miri";
 /// The nextest profile Miri runs under, which bounds the time of each test.
 const MIRI_PROFILE: &str = "miri";

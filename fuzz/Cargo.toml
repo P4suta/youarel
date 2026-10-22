@@ -11,6 +11,7 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4.13"
+tempfile = "3"
 youarel-core = { path = "../crates/youarel-core" }
 youarel-html = { path = "../crates/youarel-html" }
 youarel-icon = { path = "../crates/youarel-icon" }
@@ -23,15 +24,15 @@ youarel-protocol = { path = "../crates/youarel-protocol" }
 youarel-theme = { path = "../crates/youarel-theme" }
 
 [[bin]]
-name = "link_parse"
-path = "fuzz_targets/link_parse.rs"
+name = "browser_icons"
+path = "fuzz_targets/browser_icons.rs"
 test = false
 doc = false
 bench = false
 
 [[bin]]
-name = "state_decode"
-path = "fuzz_targets/state_decode.rs"
+name = "link_parse"
+path = "fuzz_targets/link_parse.rs"
 test = false
 doc = false
 bench = false
@@ -86,6 +87,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "folder_name"
+path = "fuzz_targets/folder_name.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "invitation_code"
 path = "fuzz_targets/invitation_code.rs"
 test = false
@@ -128,8 +136,8 @@ doc = false
 bench = false
 
 [[bin]]
-name = "icon_index_decode"
-path = "fuzz_targets/icon_index_decode.rs"
+name = "icon_name"
+path = "fuzz_targets/icon_name.rs"
 test = false
 doc = false
 bench = false

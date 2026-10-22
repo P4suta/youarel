@@ -1,9 +1,12 @@
 //! The replicated state: shortcuts and folders whose fields are registers, the edits a device makes, and the views it reads.
 //!
 //! An edit writes registers under one stamp, which the shell takes from the device's clock after it observed [`State::latest`].
-//! Removal writes a tombstone, so a removal on one device and an edit on another merge to the removal or the edit by their stamps.
+//! An item's presence is a register too: it shows, it waits in the trash, or it is gone for good.
+//! A folder in the trash hides everything inside it, and putting it back shows everything again.
+//! An item gone for good keeps its record as a tombstone, so a removal on one device and an edit on another merge to the removal or the edit by their stamps.
 
 use crate::clock_rules::{DeviceId, Stamp};
+use crate::index_rules::{self, Standing};
 use crate::merge_rules::{Register, merge_sorted};
 use crate::position_rules::{self, Key, Unordered};
 use crate::tree_rules::{self, Declared};
@@ -62,6 +65,20 @@ impl ItemId {
     }
 }
 
+/// Whether an item shows where it sits, waits in the trash, or is gone for good.
+///
+/// Between two writes of one stamp, which no two devices make, the later of these wins the merge.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Ord, PartialOrd, Hash)]
+pub enum Presence {
+    /// It shows where it sits, unless a folder over it waits in the trash.
+    #[default]
+    Live,
+    /// It waits in the trash, and a folder there hides everything inside it.
+    Trashed,
+    /// It is gone for good, and its record stays only for the merge.
+    Purged,
+}
+
 /// A link the launcher opens.
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub struct Shortcut {
@@ -74,7 +91,7 @@ pub struct Shortcut {
     pub folder: Register<Option<ItemId>>,
     /// Its place among the folder's entries.
     pub position: Register<Key>,
-    pub removed: Register<bool>,
+    pub presence: Register<Presence>,
     /// The note a person keeps on the shortcut, empty when there is none.
     pub note: Register<String>,
 }
@@ -89,7 +106,7 @@ pub struct Folder {
     pub parent: Register<Option<ItemId>>,
     /// Its place among the parent's entries.
     pub position: Register<Key>,
-    pub removed: Register<bool>,
+    pub presence: Register<Presence>,
 }
 
 impl Shortcut {
@@ -106,7 +123,7 @@ impl Shortcut {
             alias: register(String::new(), stamp),
             folder: register(folder, stamp),
             position: register(position, stamp),
-            removed: register(false, stamp),
+            presence: register(Presence::Live, stamp),
             note: register(String::new(), stamp),
         }
     }
@@ -120,20 +137,21 @@ impl Shortcut {
             alias: self.alias.merge(&other.alias),
             folder: self.folder.merge(&other.folder),
             position: self.position.merge(&other.position),
-            removed: self.removed.merge(&other.removed),
+            presence: self.presence.merge(&other.presence),
             note: self.note.merge(&other.note),
         }
     }
 
     /// The stamp of every register.
-    const fn stamps(&self) -> [Stamp; 7] {
+    #[must_use]
+    pub const fn stamps(&self) -> [Stamp; 7] {
         [
             self.link.stamp,
             self.title.stamp,
             self.alias.stamp,
             self.folder.stamp,
             self.position.stamp,
-            self.removed.stamp,
+            self.presence.stamp,
             self.note.stamp,
         ]
     }
@@ -152,18 +170,19 @@ impl Folder {
             mark: self.mark.merge(&other.mark),
             parent: self.parent.merge(&other.parent),
             position: self.position.merge(&other.position),
-            removed: self.removed.merge(&other.removed),
+            presence: self.presence.merge(&other.presence),
         }
     }
 
     /// The stamp of every register.
-    const fn stamps(&self) -> [Stamp; 5] {
+    #[must_use]
+    pub const fn stamps(&self) -> [Stamp; 5] {
         [
             self.name.stamp,
             self.mark.stamp,
             self.parent.stamp,
             self.position.stamp,
-            self.removed.stamp,
+            self.presence.stamp,
         ]
     }
 
@@ -172,11 +191,12 @@ impl Folder {
     }
 }
 
-/// Every shortcut and folder a replica holds, removed ones included.
+/// Every shortcut and folder a replica holds, those in the trash and those gone for good included.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct State {
     pub shortcuts: BTreeMap<ItemId, Shortcut>,
     pub folders: BTreeMap<ItemId, Folder>,
+    pub devices: BTreeMap<crate::device_rules::MemberId, Register<String>>,
 }
 
 /// An entry of a folder or of a search result.
@@ -200,6 +220,10 @@ pub enum Slot {
 /// One change a device makes.
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub enum Edit {
+    NameDevice {
+        id: crate::device_rules::MemberId,
+        name: String,
+    },
     AddShortcut {
         id: ItemId,
         link: String,
@@ -234,7 +258,21 @@ pub enum Edit {
         folder: Option<ItemId>,
         slot: Slot,
     },
-    /// Removes a shortcut, or a folder with everything it holds.
+    /// Restores an entry's saved folder and position, with the same admission as a move.
+    RestorePlace {
+        entry: Entry,
+        folder: Option<ItemId>,
+        position: Key,
+    },
+    /// Puts an entry in the trash, where a folder hides everything inside it.
+    Trash {
+        entry: Entry,
+    },
+    /// Takes an entry out of the trash, back to where it sat.
+    PutBack {
+        entry: Entry,
+    },
+    /// Removes an entry for good, shown or in the trash, and a folder with everything inside it.
     Remove {
         entry: Entry,
     },
@@ -245,10 +283,33 @@ pub enum Edit {
     },
 }
 
+impl Edit {
+    /// The entry the edit reads or creates.
+    #[must_use]
+    pub const fn entry(&self) -> Option<Entry> {
+        Some(match self {
+            Self::NameDevice { .. } => return None,
+            Self::AddShortcut { id, .. }
+            | Self::Retitle { id, .. }
+            | Self::Realias { id, .. }
+            | Self::SetNote { id, .. } => Entry::Shortcut(*id),
+            Self::AddFolder { id, .. }
+            | Self::RenameFolder { id, .. }
+            | Self::MarkFolder { id, .. } => Entry::Folder(*id),
+            Self::Move { entry, .. }
+            | Self::RestorePlace { entry, .. }
+            | Self::Trash { entry }
+            | Self::PutBack { entry }
+            | Self::Remove { entry } => *entry,
+        })
+    }
+}
+
 /// Why an edit was refused.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub enum EditError {
-    /// The edit names an entry the state does not hold, or holds as removed.
+    DeviceName,
+    /// The edit names an entry the state does not hold in the presence it needs: live for most edits, in the trash for a put back, and not gone for good for a removal.
     Unknown(Entry),
     /// The edit adds an identifier the state already holds.
     Exists(Entry),
@@ -258,31 +319,51 @@ pub enum EditError {
     Position(Unordered),
 }
 
-/// The folder tree every replica agrees on: the effective parent of every live folder.
+/// The folder tree every replica agrees on: the effective parent of every folder not gone for good, and the folders the trash hides.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Tree {
     parents: BTreeMap<ItemId, Option<ItemId>>,
+    /// The folders in the trash and every folder inside one.
+    hidden: BTreeSet<ItemId>,
 }
 
 impl Tree {
-    /// Whether the folder is live.
+    /// Whether the tree holds the folder: it shows or the trash hides it, and it is not gone for good.
     #[must_use]
     pub fn holds(&self, folder: ItemId) -> bool {
         self.parents.contains_key(&folder)
     }
 
-    /// The effective parent of a live folder, or `None` for the top and for a folder the tree does not hold.
+    /// Whether the folder shows: the tree holds it, and neither it nor a folder over it waits in the trash.
+    #[must_use]
+    pub fn shows(&self, folder: ItemId) -> bool {
+        self.holds(folder) && !self.hidden.contains(&folder)
+    }
+
+    /// Where a folder stands: shown, hidden by the trash, or gone.
+    #[must_use]
+    pub fn standing(&self, folder: ItemId) -> Standing {
+        if !self.holds(folder) {
+            Standing::Gone
+        } else if self.hidden.contains(&folder) {
+            Standing::Hidden
+        } else {
+            Standing::Shown
+        }
+    }
+
+    /// The effective parent of a folder the tree holds, or `None` for the top and for a folder the tree does not hold.
     #[must_use]
     pub fn parent(&self, folder: ItemId) -> Option<ItemId> {
         self.parents.get(&folder).copied().flatten()
     }
 
-    /// The live folders from the top down to `folder`, which is last, or nothing for the top.
+    /// The folders the tree holds from the top down to `folder`, which is last, or nothing for the top.
     #[must_use]
     pub fn lineage(&self, folder: Option<ItemId>) -> Vec<ItemId> {
         let mut lineage = Vec::new();
         let mut current = folder.filter(|folder| self.holds(*folder));
-        // The tree has no cycle, so a walk up meets each live folder at most once.
+        // The tree has no cycle, so a walk up meets each folder at most once.
         for _ in 0..self.parents.len() {
             let Some(node) = current else {
                 break;
@@ -299,6 +380,66 @@ impl Tree {
     pub fn within(&self, folder: ItemId, ancestor: ItemId) -> bool {
         self.lineage(Some(folder)).contains(&ancestor)
     }
+
+    /// Each folder the tree holds with its effective parent, in the order of their identifiers.
+    pub fn folders(&self) -> impl Iterator<Item = (ItemId, Option<ItemId>)> + '_ {
+        self.parents
+            .iter()
+            .map(|(folder, parent)| (*folder, *parent))
+    }
+}
+
+/// The folder tree of the folders among `folders` that are not gone for good, as every replica resolves it from the parents they declare, with the folders the trash hides.
+#[must_use]
+pub fn tree_of(folders: &BTreeMap<ItemId, Folder>) -> Tree {
+    let held: Vec<(ItemId, &Folder)> = folders
+        .iter()
+        .filter(|(_, folder)| folder.presence.value != Presence::Purged)
+        .map(|(id, folder)| (*id, folder))
+        .collect();
+    let index: BTreeMap<ItemId, usize> = held
+        .iter()
+        .enumerate()
+        .map(|(place, (id, _))| (*id, place))
+        .collect();
+    let declared: Vec<Declared<Stamp>> = held
+        .iter()
+        .map(|(_, folder)| Declared {
+            parent: folder
+                .parent
+                .value
+                .and_then(|parent| index.get(&parent).copied()),
+            recency: folder.parent.stamp,
+        })
+        .collect();
+    let resolved = tree_rules::resolve(&declared);
+    let trashed: Vec<bool> = held
+        .iter()
+        .map(|(_, folder)| folder.presence.value == Presence::Trashed)
+        .collect();
+    let hides = tree_rules::hidden(&resolved, &trashed);
+    let hidden = held
+        .iter()
+        .zip(&hides)
+        .filter(|(_, hides)| **hides)
+        .map(|((id, _), _)| *id)
+        .collect();
+    let parents = held
+        .iter()
+        .zip(resolved)
+        .map(|((child, _), parent)| {
+            let parent = parent.and_then(|place| held.get(place).map(|(id, _)| *id));
+            (*child, parent)
+        })
+        .collect();
+    Tree { parents, hidden }
+}
+
+/// Where a shortcut's record stands in a tree: gone for good, hidden by the trash, or shown.
+#[must_use]
+pub fn standing_in(tree: &Tree, shortcut: &Shortcut) -> Standing {
+    let declared = shortcut.folder.value.map(|folder| tree.standing(folder));
+    index_rules::filing(shortcut.presence.value, declared).standing
 }
 
 const fn register<T>(value: T, stamp: Stamp) -> Register<T> {
@@ -327,6 +468,7 @@ impl State {
         Self {
             shortcuts: merge_maps(&self.shortcuts, &other.shortcuts, Shortcut::merge),
             folders: merge_maps(&self.folders, &other.folders, Folder::merge),
+            devices: merge_maps(&self.devices, &other.devices, Register::merge),
         }
     }
 
@@ -335,7 +477,10 @@ impl State {
     pub fn latest(&self) -> Option<Stamp> {
         let shortcuts = self.shortcuts.values().map(Shortcut::latest);
         let folders = self.folders.values().map(Folder::latest);
-        shortcuts.chain(folders).max()
+        shortcuts
+            .chain(folders)
+            .chain(self.devices.values().map(|name| name.stamp))
+            .max()
     }
 
     /// The latest stamp of a write by `device` that the state still holds, or `None` when it holds none.
@@ -347,71 +492,60 @@ impl State {
         let folders = self.folders.values().flat_map(Folder::stamps);
         shortcuts
             .chain(folders)
+            .chain(self.devices.values().map(|name| name.stamp))
             .filter(|stamp| stamp.device == device)
             .max()
     }
 
-    /// A shortcut that is not removed.
+    /// A shortcut whose own presence is live, which an edit may change whether or not a folder in the trash hides it.
     #[must_use]
     pub fn shortcut(&self, id: ItemId) -> Option<&Shortcut> {
         self.shortcuts
             .get(&id)
-            .filter(|shortcut| !shortcut.removed.value)
+            .filter(|shortcut| shortcut.presence.value == Presence::Live)
     }
 
-    /// A folder that is not removed.
+    /// A folder whose own presence is live, which an edit may change whether or not a folder in the trash hides it.
     #[must_use]
     pub fn folder(&self, id: ItemId) -> Option<&Folder> {
-        self.folders.get(&id).filter(|folder| !folder.removed.value)
+        self.folders
+            .get(&id)
+            .filter(|folder| folder.presence.value == Presence::Live)
     }
 
-    /// The folder tree of the live folders.
+    /// Where a shortcut stands in a tree: gone for good or unknown, hidden by the trash, or shown.
+    #[must_use]
+    pub fn standing(&self, tree: &Tree, id: ItemId) -> Standing {
+        self.shortcuts
+            .get(&id)
+            .map_or(Standing::Gone, |shortcut| standing_in(tree, shortcut))
+    }
+
+    /// A shortcut that shows: live, at the top or in a folder that shows.
+    #[must_use]
+    pub fn shown(&self, tree: &Tree, id: ItemId) -> Option<&Shortcut> {
+        self.shortcuts
+            .get(&id)
+            .filter(|shortcut| standing_in(tree, shortcut) == Standing::Shown)
+    }
+
+    /// The folder tree of the folders not gone for good.
     #[must_use]
     pub fn tree(&self) -> Tree {
-        let live: Vec<(ItemId, &Folder)> = self
-            .folders
-            .iter()
-            .filter(|(_, folder)| !folder.removed.value)
-            .map(|(id, folder)| (*id, folder))
-            .collect();
-        let index: BTreeMap<ItemId, usize> = live
-            .iter()
-            .enumerate()
-            .map(|(place, (id, _))| (*id, place))
-            .collect();
-        let declared: Vec<Declared<Stamp>> = live
-            .iter()
-            .map(|(_, folder)| Declared {
-                parent: folder
-                    .parent
-                    .value
-                    .and_then(|parent| index.get(&parent).copied()),
-                recency: folder.parent.stamp,
-            })
-            .collect();
-        let resolved = tree_rules::resolve(&declared);
-        let parents = live
-            .iter()
-            .zip(resolved)
-            .map(|((child, _), parent)| {
-                let parent = parent.and_then(|place| live.get(place).map(|(id, _)| *id));
-                (*child, parent)
-            })
-            .collect();
-        Tree { parents }
+        tree_of(&self.folders)
     }
 
-    /// The live entries of a folder, or of the top, in their order.
+    /// The entries that show in a folder, or in the top, in their order.
     #[must_use]
     pub fn entries(&self, tree: &Tree, folder: Option<ItemId>) -> Vec<Entry> {
         let mut placed: Vec<(&Key, Entry)> = Vec::new();
         for (id, child) in &self.folders {
-            if !child.removed.value && tree.holds(*id) && tree.parent(*id) == folder {
+            if tree.shows(*id) && tree.parent(*id) == folder {
                 placed.push((&child.position.value, Entry::Folder(*id)));
             }
         }
         for (id, shortcut) in &self.shortcuts {
-            if !shortcut.removed.value && home(tree, shortcut) == folder {
+            if standing_in(tree, shortcut) == Standing::Shown && home(tree, shortcut) == folder {
                 placed.push((&shortcut.position.value, Entry::Shortcut(*id)));
             }
         }
@@ -419,39 +553,61 @@ impl State {
         placed.into_iter().map(|(_, entry)| entry).collect()
     }
 
-    /// The position of a live entry.
-    fn position(&self, entry: Entry) -> Option<&Key> {
+    /// The presence of the item an entry names, or `None` for one the state does not hold.
+    fn presence(&self, entry: Entry) -> Option<Presence> {
         match entry {
-            Entry::Folder(id) => self.folder(id).map(|folder| &folder.position.value),
-            Entry::Shortcut(id) => self.shortcut(id).map(|shortcut| &shortcut.position.value),
+            Entry::Folder(id) => self.folders.get(&id).map(|folder| folder.presence.value),
+            Entry::Shortcut(id) => self
+                .shortcuts
+                .get(&id)
+                .map(|shortcut| shortcut.presence.value),
         }
     }
 
-    /// The live folder or shortcut an entry names, as an error when it is gone.
-    fn require(&self, entry: Entry) -> Result<(), EditError> {
-        self.position(entry)
-            .map(|_| ())
-            .ok_or(EditError::Unknown(entry))
+    /// The position of an entry that shows.
+    fn position(&self, tree: &Tree, entry: Entry) -> Option<&Key> {
+        match entry {
+            Entry::Folder(id) => self
+                .folders
+                .get(&id)
+                .filter(|_| tree.shows(id))
+                .map(|folder| &folder.position.value),
+            Entry::Shortcut(id) => self
+                .shown(tree, id)
+                .map(|shortcut| &shortcut.position.value),
+        }
     }
 
-    /// A position for an entry at a destination, leaving `moving` out of its new siblings.
+    /// The live folder or shortcut an entry names, as an error when it waits in the trash or is gone.
+    fn require(&self, entry: Entry) -> Result<(), EditError> {
+        match self.presence(entry) {
+            Some(Presence::Live) => Ok(()),
+            Some(Presence::Trashed | Presence::Purged) | None => Err(EditError::Unknown(entry)),
+        }
+    }
+
+    /// A position for an entry at a destination, among the entries that show there with `moving` left out.
     fn place(&self, tree: &Tree, to: Destination, moving: Option<Entry>) -> Result<Key, EditError> {
         let mut positions: Vec<&Key> = self
             .entries(tree, to.folder)
             .into_iter()
             .filter(|entry| Some(*entry) != moving)
-            .filter_map(|entry| self.position(entry))
+            .filter_map(|entry| self.position(tree, entry))
             .collect();
         positions.sort_unstable();
         let (low, high) = match to.slot {
             Slot::End => (positions.last().copied(), None),
             Slot::Before(sibling) => {
-                let anchor = self.position(sibling).ok_or(EditError::Unknown(sibling))?;
+                let anchor = self
+                    .position(tree, sibling)
+                    .ok_or(EditError::Unknown(sibling))?;
                 let below = positions.iter().rev().find(|position| **position < anchor);
                 (below.copied(), Some(anchor))
             }
             Slot::After(sibling) => {
-                let anchor = self.position(sibling).ok_or(EditError::Unknown(sibling))?;
+                let anchor = self
+                    .position(tree, sibling)
+                    .ok_or(EditError::Unknown(sibling))?;
                 let above = positions.iter().find(|position| **position > anchor);
                 (Some(anchor), above.copied())
             }
@@ -467,7 +623,7 @@ impl State {
     ///
     /// # Errors
     ///
-    /// Returns an [`EditError`] when the edit names an entry that is gone, adds one that exists, moves a folder into itself, or finds no position; the state is then unchanged.
+    /// Returns an [`EditError`] when the edit names an entry not in the presence it needs, adds one that exists, moves a folder into itself, or finds no position; the state is then unchanged.
     pub fn apply(&mut self, edit: Edit, stamp: Stamp) -> Result<(), EditError> {
         let tree = self.tree();
         let at_end = |folder| Destination {
@@ -475,6 +631,17 @@ impl State {
             slot: Slot::End,
         };
         match edit {
+            Edit::NameDevice { id, name } => {
+                if !crate::device_rules::admitted_name(&name) {
+                    return Err(EditError::DeviceName);
+                }
+                let next = Register { value: name, stamp };
+                let joined = self
+                    .devices
+                    .get(&id)
+                    .map_or_else(|| next.clone(), |held| held.merge(&next));
+                self.devices.insert(id, joined);
+            }
             Edit::AddShortcut {
                 id,
                 link,
@@ -490,21 +657,7 @@ impl State {
                 self.shortcuts.insert(id, added);
             }
             Edit::AddFolder { id, name, parent } => {
-                if self.folders.contains_key(&id) {
-                    return Err(EditError::Exists(Entry::Folder(id)));
-                }
-                self.require_folder(parent)?;
-                let position = self.place(&tree, at_end(parent), None)?;
-                self.folders.insert(
-                    id,
-                    Folder {
-                        name: register(name, stamp),
-                        mark: register(String::new(), stamp),
-                        parent: register(parent, stamp),
-                        position: register(position, stamp),
-                        removed: register(false, stamp),
-                    },
-                );
+                self.add_folder(&Context { tree: &tree, stamp }, (id, name, parent))?;
             }
             Edit::Retitle { id, title } => {
                 self.change(id, |shortcut| write(&mut shortcut.title, title, stamp))?;
@@ -513,16 +666,10 @@ impl State {
                 self.change(id, |shortcut| write(&mut shortcut.alias, alias, stamp))?;
             }
             Edit::RenameFolder { id, name } => {
-                self.require(Entry::Folder(id))?;
-                if let Some(folder) = self.folders.get_mut(&id) {
-                    write(&mut folder.name, name, stamp);
-                }
+                self.change_folder(id, |folder| write(&mut folder.name, name, stamp))?;
             }
             Edit::MarkFolder { id, mark } => {
-                self.require(Entry::Folder(id))?;
-                if let Some(folder) = self.folders.get_mut(&id) {
-                    write(&mut folder.mark, mark, stamp);
-                }
+                self.change_folder(id, |folder| write(&mut folder.mark, mark, stamp))?;
             }
             Edit::Move {
                 entry,
@@ -532,6 +679,24 @@ impl State {
                 let context = Context { tree: &tree, stamp };
                 self.move_entry(&context, entry, Destination { folder, slot })?;
             }
+            Edit::RestorePlace {
+                entry,
+                folder,
+                position,
+            } => {
+                self.moving_allowed(&tree, entry, folder)?;
+                self.set_place(entry, (folder, position), stamp);
+            }
+            Edit::Trash { entry } => {
+                self.require(entry)?;
+                self.set_presence(entry, Presence::Trashed, stamp);
+            }
+            Edit::PutBack { entry } => {
+                if self.presence(entry) != Some(Presence::Trashed) {
+                    return Err(EditError::Unknown(entry));
+                }
+                self.set_presence(entry, Presence::Live, stamp);
+            }
             Edit::Remove { entry } => self.remove(&tree, entry, stamp)?,
             Edit::SetNote { id, note } => {
                 self.change(id, |shortcut| write(&mut shortcut.note, note, stamp))?;
@@ -540,7 +705,38 @@ impl State {
         Ok(())
     }
 
-    /// Changes a live shortcut, or refuses a shortcut that is gone.
+    fn add_folder(
+        &mut self,
+        context: &Context<'_>,
+        (id, name, parent): (ItemId, String, Option<ItemId>),
+    ) -> Result<(), EditError> {
+        if self.folders.contains_key(&id) {
+            return Err(EditError::Exists(Entry::Folder(id)));
+        }
+        self.require_folder(parent)?;
+        let position = self.place(
+            context.tree,
+            Destination {
+                folder: parent,
+                slot: Slot::End,
+            },
+            None,
+        )?;
+        let stamp = context.stamp;
+        self.folders.insert(
+            id,
+            Folder {
+                name: register(name, stamp),
+                mark: register(String::new(), stamp),
+                parent: register(parent, stamp),
+                position: register(position, stamp),
+                presence: register(Presence::Live, stamp),
+            },
+        );
+        Ok(())
+    }
+
+    /// Changes a live shortcut, or refuses one that waits in the trash or is gone.
     fn change(&mut self, id: ItemId, change: impl FnOnce(&mut Shortcut)) -> Result<(), EditError> {
         self.require(Entry::Shortcut(id))?;
         if let Some(shortcut) = self.shortcuts.get_mut(&id) {
@@ -549,99 +745,139 @@ impl State {
         Ok(())
     }
 
+    /// Changes a live folder, or refuses one that waits in the trash or is gone.
+    fn change_folder(
+        &mut self,
+        id: ItemId,
+        change: impl FnOnce(&mut Folder),
+    ) -> Result<(), EditError> {
+        self.require(Entry::Folder(id))?;
+        if let Some(folder) = self.folders.get_mut(&id) {
+            change(folder);
+        }
+        Ok(())
+    }
+
+    /// Writes the presence of the item an entry names.
+    fn set_presence(&mut self, entry: Entry, presence: Presence, stamp: Stamp) {
+        match entry {
+            Entry::Folder(id) => {
+                if let Some(folder) = self.folders.get_mut(&id) {
+                    write(&mut folder.presence, presence, stamp);
+                }
+            }
+            Entry::Shortcut(id) => {
+                if let Some(shortcut) = self.shortcuts.get_mut(&id) {
+                    write(&mut shortcut.presence, presence, stamp);
+                }
+            }
+        }
+    }
+
     fn move_entry(
         &mut self,
         context: &Context<'_>,
         entry: Entry,
         to: Destination,
     ) -> Result<(), EditError> {
+        self.moving_allowed(context.tree, entry, to.folder)?;
+        let position = self.place(context.tree, to, Some(entry))?;
+        self.set_place(entry, (to.folder, position), context.stamp);
+        Ok(())
+    }
+
+    fn moving_allowed(
+        &self,
+        tree: &Tree,
+        entry: Entry,
+        folder: Option<ItemId>,
+    ) -> Result<(), EditError> {
         self.require(entry)?;
-        self.require_folder(to.folder)?;
-        if let (Entry::Folder(id), Some(target)) = (entry, to.folder)
-            && context.tree.within(target, id)
+        self.require_folder(folder)?;
+        if let (Entry::Folder(id), Some(target)) = (entry, folder)
+            && tree.within(target, id)
         {
             return Err(EditError::IntoItself(id));
         }
-        let position = self.place(context.tree, to, Some(entry))?;
+        Ok(())
+    }
+
+    fn set_place(&mut self, entry: Entry, (folder, position): (Option<ItemId>, Key), stamp: Stamp) {
         match entry {
             Entry::Folder(id) => {
                 if let Some(moved) = self.folders.get_mut(&id) {
-                    write(&mut moved.parent, to.folder, context.stamp);
-                    write(&mut moved.position, position, context.stamp);
+                    write(&mut moved.parent, folder, stamp);
+                    write(&mut moved.position, position, stamp);
                 }
             }
             Entry::Shortcut(id) => {
                 if let Some(moved) = self.shortcuts.get_mut(&id) {
-                    write(&mut moved.folder, to.folder, context.stamp);
-                    write(&mut moved.position, position, context.stamp);
+                    write(&mut moved.folder, folder, stamp);
+                    write(&mut moved.position, position, stamp);
                 }
             }
         }
-        Ok(())
     }
 
+    /// Removes an entry for good, a folder with every folder inside it and every shortcut they hold, whether they show or wait in the trash.
     fn remove(&mut self, tree: &Tree, entry: Entry, stamp: Stamp) -> Result<(), EditError> {
-        self.require(entry)?;
-        match entry {
-            Entry::Shortcut(id) => {
-                if let Some(shortcut) = self.shortcuts.get_mut(&id) {
-                    write(&mut shortcut.removed, true, stamp);
-                }
-            }
-            Entry::Folder(removed) => {
-                let doomed: BTreeSet<ItemId> = self
-                    .folders
-                    .keys()
-                    .copied()
-                    .filter(|folder| tree.within(*folder, removed))
-                    .collect();
-                let held: Vec<ItemId> = self
-                    .shortcuts
-                    .iter()
-                    .filter(|(_, shortcut)| {
-                        !shortcut.removed.value
-                            && home(tree, shortcut).is_some_and(|folder| doomed.contains(&folder))
-                    })
-                    .map(|(shortcut, _)| *shortcut)
-                    .collect();
-                for shortcut in held {
-                    if let Some(doomed_shortcut) = self.shortcuts.get_mut(&shortcut) {
-                        write(&mut doomed_shortcut.removed, true, stamp);
-                    }
-                }
-                for folder in doomed {
-                    if let Some(doomed_folder) = self.folders.get_mut(&folder) {
-                        write(&mut doomed_folder.removed, true, stamp);
-                    }
-                }
-            }
+        match self.presence(entry) {
+            Some(Presence::Live | Presence::Trashed) => {}
+            Some(Presence::Purged) | None => return Err(EditError::Unknown(entry)),
+        }
+        let Entry::Folder(removed) = entry else {
+            self.set_presence(entry, Presence::Purged, stamp);
+            return Ok(());
+        };
+        let doomed: BTreeSet<ItemId> = tree
+            .folders()
+            .map(|(folder, _)| folder)
+            .filter(|folder| tree.within(*folder, removed))
+            .collect();
+        let held: Vec<ItemId> = self
+            .shortcuts
+            .iter()
+            .filter(|(_, shortcut)| {
+                shortcut.presence.value != Presence::Purged
+                    && home(tree, shortcut).is_some_and(|folder| doomed.contains(&folder))
+            })
+            .map(|(shortcut, _)| *shortcut)
+            .collect();
+        for shortcut in held {
+            self.set_presence(Entry::Shortcut(shortcut), Presence::Purged, stamp);
+        }
+        for folder in doomed {
+            self.set_presence(Entry::Folder(folder), Presence::Purged, stamp);
         }
         Ok(())
     }
 
-    /// The names of the live folders from the top down to `folder`.
+    /// The names of the folders from the top down to `folder`, which the tree holds.
     #[must_use]
     pub fn path(&self, tree: &Tree, folder: Option<ItemId>) -> Vec<&str> {
         tree.lineage(folder)
             .into_iter()
-            .filter_map(|id| self.folder(id).map(|found| found.name.value.as_str()))
+            .filter_map(|id| self.folders.get(&id).map(|found| found.name.value.as_str()))
             .collect()
     }
 
-    /// The folder a live shortcut sits in, as every replica draws it.
+    /// The folder a shortcut not gone for good sits in, as every replica draws it.
     #[must_use]
     pub fn folder_of(&self, tree: &Tree, id: ItemId) -> Option<ItemId> {
-        self.shortcut(id).and_then(|shortcut| home(tree, shortcut))
+        self.shortcuts
+            .get(&id)
+            .filter(|shortcut| shortcut.presence.value != Presence::Purged)
+            .and_then(|shortcut| home(tree, shortcut))
     }
 
-    /// The live shortcut that holds `link` in `folder`, or the top for `None`, which a folder holds at most once.
+    /// The shortcut that shows with `link` in `folder`, or the top for `None`, which a folder holds at most once.
     #[must_use]
     pub fn holding(&self, tree: &Tree, folder: Option<ItemId>, link: &str) -> Option<ItemId> {
         self.shortcuts
             .iter()
             .find(|(_, shortcut)| {
-                !shortcut.removed.value
-                    && shortcut.link.value == link
+                shortcut.link.value == link
+                    && standing_in(tree, shortcut) == Standing::Shown
                     && home(tree, shortcut) == folder
             })
             .map(|(id, _)| *id)
@@ -662,15 +898,16 @@ struct Context<'a> {
     stamp: Stamp,
 }
 
-/// The folder a shortcut effectively sits in: its declared folder while that is live, and the top otherwise.
+/// The folder a shortcut effectively sits in: its declared folder while the tree holds it, and the top otherwise.
 fn home(tree: &Tree, shortcut: &Shortcut) -> Option<ItemId> {
     shortcut.folder.value.filter(|folder| tree.holds(*folder))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Edit, EditError, Entry, ItemId, Slot, State};
+    use super::{Edit, EditError, Entry, ItemId, Presence, Slot, State};
     use crate::clock_rules::{DeviceId, Stamp};
+    use crate::index_rules::Standing;
     use alloc::string::String;
     use alloc::vec::Vec;
 
@@ -842,6 +1079,7 @@ mod tests {
         assert_eq!(state.entries(&tree, Some(id(6))), [Entry::Shortcut(id(7))]);
         assert!(state.shortcut(id(3)).is_none());
         assert!(state.folder(id(2)).is_none());
+        assert!(!tree.holds(id(2)), "a folder gone for good leaves the tree");
         assert_eq!(
             state.apply(
                 Edit::Retitle {
@@ -852,6 +1090,170 @@ mod tests {
             ),
             Err(EditError::Unknown(Entry::Shortcut(id(3))))
         );
+        assert_eq!(
+            state.apply(
+                Edit::Remove {
+                    entry: Entry::Folder(id(1)),
+                },
+                at(7, DEVICE)
+            ),
+            Err(EditError::Unknown(Entry::Folder(id(1)))),
+            "nothing is gone twice"
+        );
+    }
+
+    #[test]
+    fn a_folder_in_the_trash_hides_what_it_holds_until_it_comes_back() {
+        let mut state = State::default();
+        folder(&mut state, 1, None, 1);
+        folder(&mut state, 2, Some(id(1)), 2);
+        add(&mut state, 3, Some(id(2)), 3);
+        add(&mut state, 4, None, 4);
+        let trash = |held: &mut State, entry, wall| {
+            held.apply(Edit::Trash { entry }, at(wall, DEVICE)).unwrap();
+        };
+        trash(&mut state, Entry::Folder(id(1)), 5);
+        let tree = state.tree();
+        assert_eq!(state.entries(&tree, None), [Entry::Shortcut(id(4))]);
+        assert!(tree.holds(id(2)) && !tree.shows(id(2)));
+        assert_eq!(tree.standing(id(1)), Standing::Hidden);
+        assert_eq!(state.standing(&tree, id(3)), Standing::Hidden);
+        assert!(
+            state.shortcut(id(3)).is_some() && state.shown(&tree, id(3)).is_none(),
+            "a shortcut the trash hides stays live itself"
+        );
+        assert_eq!(state.folder_of(&tree, id(3)), Some(id(2)));
+        assert_eq!(
+            state.path(&tree, Some(id(2))),
+            ["folder 1", "folder 2"],
+            "a path names the folders the trash hides"
+        );
+        assert_eq!(
+            state.holding(&tree, Some(id(2)), "https://example.com/3"),
+            None
+        );
+        state
+            .apply(
+                Edit::PutBack {
+                    entry: Entry::Folder(id(1)),
+                },
+                at(6, DEVICE),
+            )
+            .unwrap();
+        let back = state.tree();
+        assert_eq!(state.standing(&back, id(3)), Standing::Shown);
+        assert_eq!(
+            state.entries(&back, None),
+            [Entry::Folder(id(1)), Entry::Shortcut(id(4))]
+        );
+        trash(&mut state, Entry::Shortcut(id(4)), 7);
+        assert_eq!(
+            state.standing(&state.tree(), id(4)),
+            Standing::Hidden,
+            "a shortcut in the trash hides wherever it sits"
+        );
+    }
+
+    #[test]
+    fn each_edit_of_the_trash_needs_its_presence() {
+        let mut state = State::default();
+        folder(&mut state, 1, None, 1);
+        add(&mut state, 2, Some(id(1)), 2);
+        let refused = |held: &mut State, edit: Edit, entry| {
+            let before = held.clone();
+            assert_eq!(
+                held.apply(edit, at(9, DEVICE)),
+                Err(EditError::Unknown(entry))
+            );
+            assert_eq!(*held, before);
+        };
+        let shortcut = Entry::Shortcut(id(2));
+        refused(&mut state, Edit::PutBack { entry: shortcut }, shortcut);
+        refused(
+            &mut state,
+            Edit::Trash {
+                entry: Entry::Folder(id(7)),
+            },
+            Entry::Folder(id(7)),
+        );
+        state
+            .apply(Edit::Trash { entry: shortcut }, at(3, DEVICE))
+            .unwrap();
+        refused(&mut state, Edit::Trash { entry: shortcut }, shortcut);
+        refused(
+            &mut state,
+            Edit::Retitle {
+                id: id(2),
+                title: String::from("x"),
+            },
+            shortcut,
+        );
+        refused(
+            &mut state,
+            Edit::Move {
+                entry: shortcut,
+                folder: None,
+                slot: Slot::End,
+            },
+            shortcut,
+        );
+        state
+            .apply(
+                Edit::Trash {
+                    entry: Entry::Folder(id(1)),
+                },
+                at(4, DEVICE),
+            )
+            .unwrap();
+        refused(
+            &mut state,
+            Edit::AddShortcut {
+                id: id(5),
+                link: String::new(),
+                title: String::new(),
+                folder: Some(id(1)),
+            },
+            Entry::Folder(id(1)),
+        );
+        state
+            .apply(Edit::Remove { entry: shortcut }, at(5, DEVICE))
+            .unwrap();
+        assert_eq!(
+            state.shortcuts.get(&id(2)).map(|kept| kept.presence.value),
+            Some(Presence::Purged)
+        );
+        refused(&mut state, Edit::PutBack { entry: shortcut }, shortcut);
+        refused(&mut state, Edit::Remove { entry: shortcut }, shortcut);
+    }
+
+    #[test]
+    fn removing_a_folder_in_the_trash_removes_everything_inside_it_for_good() {
+        let mut state = State::default();
+        folder(&mut state, 1, None, 1);
+        folder(&mut state, 2, Some(id(1)), 2);
+        add(&mut state, 3, Some(id(2)), 3);
+        add(&mut state, 4, Some(id(1)), 4);
+        for (entry, wall) in [(Entry::Shortcut(id(4)), 5), (Entry::Folder(id(1)), 6)] {
+            state
+                .apply(Edit::Trash { entry }, at(wall, DEVICE))
+                .unwrap();
+        }
+        state
+            .apply(
+                Edit::Remove {
+                    entry: Entry::Folder(id(1)),
+                },
+                at(7, DEVICE),
+            )
+            .unwrap();
+        let presences: Vec<Presence> = state
+            .shortcuts
+            .values()
+            .map(|shortcut| shortcut.presence.value)
+            .chain(state.folders.values().map(|folder| folder.presence.value))
+            .collect();
+        assert_eq!(presences, [Presence::Purged; 4]);
+        assert_eq!(state.tree(), super::Tree::default());
     }
 
     #[test]
@@ -993,6 +1395,52 @@ mod tests {
     }
 
     #[test]
+    fn a_put_back_and_a_trash_on_two_devices_merge_to_the_later_one() {
+        let mut base = State::default();
+        add(&mut base, 1, None, 1);
+        base.apply(
+            Edit::Trash {
+                entry: Entry::Shortcut(id(1)),
+            },
+            at(2, DEVICE),
+        )
+        .unwrap();
+        let mut left = base.clone();
+        let mut right = base;
+        left.apply(
+            Edit::PutBack {
+                entry: Entry::Shortcut(id(1)),
+            },
+            at(3, DEVICE),
+        )
+        .unwrap();
+        right
+            .apply(
+                Edit::Remove {
+                    entry: Entry::Shortcut(id(1)),
+                },
+                at(4, OTHER),
+            )
+            .unwrap();
+        let merged = left.merge(&right);
+        assert_eq!(merged, right.merge(&left));
+        assert_eq!(merged.standing(&merged.tree(), id(1)), Standing::Gone);
+        let mut later = left.clone();
+        later
+            .apply(
+                Edit::Trash {
+                    entry: Entry::Shortcut(id(1)),
+                },
+                at(5, DEVICE),
+            )
+            .unwrap();
+        assert_eq!(
+            later.merge(&left).standing(&later.tree(), id(1)),
+            Standing::Hidden
+        );
+    }
+
+    #[test]
     fn an_entry_added_to_a_folder_removed_elsewhere_surfaces_at_the_top() {
         let mut base = State::default();
         folder(&mut base, 1, None, 1);
@@ -1044,7 +1492,7 @@ mod tests {
         );
         state
             .apply(
-                Edit::Remove {
+                Edit::Trash {
                     entry: Entry::Shortcut(id(1)),
                 },
                 at(4, DEVICE),
@@ -1053,7 +1501,7 @@ mod tests {
         assert_eq!(
             state.holding(&state.tree(), None, "https://example.com/1"),
             None,
-            "a removed shortcut holds nothing"
+            "a shortcut in the trash holds nothing"
         );
     }
 

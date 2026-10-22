@@ -1,15 +1,51 @@
 // The window's side of the library: it sends what a person does to the library and draws the view it gets back.
 // It decides nothing the library decides; every shortcut's text reaches the page as text, never as markup.
+// The page holds the rows around the place in sight and asks the library for the others as a person scrolls, so a listing of millions draws as fast as one of a few.
 
-import { COLUMN_TITLES, DRAGGED, DRAGGED_FOLDERS, cards, columns, extend, layouts, list, shortcuts, sidebar } from "./draw.js";
-import type { Handlers } from "./draw.js";
+import {
+  COLUMN_TITLES,
+  DRAGGED,
+  applyMetrics,
+  cardMetrics,
+  cards,
+  columns,
+  described,
+  inTrash,
+  layouts,
+  list,
+  rename,
+  shortcuts,
+  sidebar,
+} from "./draw.js";
+import type { Drawn, DrawnColumn, Handlers } from "./draw.js";
 import { button, el, find, icon } from "./dom.js";
-import { AddSheet, AskSheet, EditSheet, MarkSheet, Menu } from "./sheets.js";
+import { Rows } from "./rows.js";
+import { AddSheet, AskSheet, EditSheet, MarkSheet, Menu, Picker } from "./sheets.js";
 import type { MenuChoice } from "./sheets.js";
 import { drawSync } from "./sync.js";
+import { DevicesPane } from "./devices.js";
 import { themePane, wear } from "./theme.js";
-import { invoke, listen, listenText } from "./types.js";
-import type { Browser, ColumnEntry, ColumnName, EmojiGroup, Intent, Item, Key, Layout, Sort, ThemeOption, View } from "./types.js";
+import { invoke, listen, listenProgress, listenText } from "./types.js";
+import type {
+  Browser,
+  Choice,
+  ColumnEntry,
+  ColumnName,
+  EmojiGroup,
+  EntriesView,
+  DragMaterial,
+  Intent,
+  Item,
+  Key,
+  Layout,
+  Progress,
+  RowView,
+  RowsView,
+  Sort,
+  Target,
+  ThemeOption,
+  View,
+} from "./types.js";
 
 /** How long a notice stays before it fades. */
 const NOTICE_MS = 4000;
@@ -32,6 +68,16 @@ const SYNCED = "synced";
 const ICONED = "iconed";
 /** The event the library raises with a command a person chose from the app's menu. */
 const COMMAND = "command";
+/** The event the library raises with how far a move or a removal came. */
+const PROGRESS = "progress";
+/** How many rows the page asks for beyond those in sight, before and after them. */
+const MARGIN = 100;
+/** The most rows one call for a page asks for, as the library answers at most. */
+const MOST_ROWS = 1000;
+/** How long a scroll rests before the page tells the library where it stands. */
+const REST_MS = 150;
+/** How many collections a picker shows at a time. */
+const PICKED = 200;
 
 const nav = find("scopes", HTMLElement);
 const title = find("title", HTMLElement);
@@ -47,6 +93,7 @@ const addButton = find("add-button", HTMLButtonElement);
 const settingsButton = find("settings-button", HTMLButtonElement);
 const settings = find("settings", HTMLDialogElement);
 const importHtml = find("import-html", HTMLButtonElement);
+const exportHtml = find("export-html", HTMLButtonElement);
 const importFile = find("import-file", HTMLInputElement);
 const themeSection = settings.querySelector<HTMLElement>('[data-pane="theme"]');
 const browserButtons = find("browser-buttons", HTMLElement);
@@ -73,6 +120,21 @@ const drawnIcons = new Map<string, string>();
 const askedIcons = new Set<string>();
 /** The images waiting for each icon. */
 const waiting = new Map<string, HTMLImageElement[]>();
+/** The rows the page holds of the listing the cards or the list show, and of each column. */
+const listingRows = new Rows<RowView>();
+let columnRows: Rows<ColumnEntry>[] = [];
+/** The listing drawn in the content, and the columns. */
+let drawnListing: Drawn | null = null;
+let drawnColumns: readonly DrawnColumn[] = [];
+/** How many views the page drew, so a page that answers an older one changes nothing. */
+let drawnViews = 0;
+/** Whether a call for rows is in flight, whether another band waits for one, and the last call, which goes once for a view. */
+let fetching = false;
+let wanting = false;
+let lastCall = "";
+/** Whether a view that a changed store asks for waits in the queue already. */
+let refreshing = false;
+let restTimer: number | undefined;
 
 function showNotice(view: View): void {
   window.clearTimeout(noticeTimer);
@@ -86,6 +148,14 @@ function showNotice(view: View): void {
   noticeTimer = window.setTimeout(() => {
     notice.hidden = true;
   }, NOTICE_MS);
+}
+
+/** Shows how far a move or a removal came, until the view after it arrives. */
+function showProgress(progress: Progress): void {
+  window.clearTimeout(noticeTimer);
+  notice.textContent = progress.text;
+  notice.classList.remove("error");
+  notice.hidden = false;
 }
 
 /** Asks the library for the icons the page lacks, and fills every image that waits for one. */
@@ -124,6 +194,11 @@ async function drawThemes(): Promise<void> {
 function openSettings(): void {
   settings.showModal();
   void drawThemes();
+  void devicesPane.refresh();
+  if (current !== null) {
+    openAs.value = current.opening.layout;
+    void openAt.open(current.opening.start);
+  }
 }
 
 /** Draws the trail of the folders from the top down to the one the cards and the list stand in, each a step up to it. */
@@ -165,31 +240,199 @@ function drawTrail(view: View): void {
   root.addEventListener("click", () => send({ kind: "scope", scope: view.sidebar.scope }));
   const steps = view.trail.flatMap((step) => {
     const made = button(step.name, "");
-    made.addEventListener("click", () => send({ kind: "column", depth: step.depth, entry: { kind: "folder", id: step.id } }));
+    made.addEventListener("click", () =>
+      send({ kind: "column", depth: step.depth, entry: { kind: "folder", id: step.id }, place: null, extend: "replace" }),
+    );
     return [el("span", "separator", TRAIL_SEPARATOR), made];
   });
   trailNav.replaceChildren(root, ...steps);
 }
 
-/** Scrolls an entry's column up or down until the entry shows, and leaves the columns' sideways scroll alone, which a scroll into view would move too. */
-function keepInColumn(entry: HTMLElement): void {
-  const column = entry.closest<HTMLElement>(".column");
-  if (column === null) {
+/** Draws the lines of the listing in sight, and asks for the rows the page lacks. */
+function showListing(): void {
+  if (drawnListing === null) {
     return;
   }
-  const box = entry.getBoundingClientRect();
-  const frame = column.getBoundingClientRect();
-  if (box.top < frame.top) {
-    column.scrollTop -= frame.top - box.top;
-  } else if (box.bottom > frame.bottom) {
-    column.scrollTop += box.bottom - frame.bottom;
+  const span = drawnListing.show(content.scrollTop, content.clientHeight);
+  if (!listingRows.holds(span.first, span.end)) {
+    void fetchRows(span.first, span.end);
   }
+  void fetchIcons();
+}
+
+/** Asks the library for the rows around a span in sight, one call at a time, and draws them once they arrive; the same call for the same view goes once. */
+async function fetchRows(first: number, end: number): Promise<void> {
+  if (fetching) {
+    wanting = true;
+    return;
+  }
+  const asked = drawnViews;
+  const start = Math.max(0, first - MARGIN);
+  const limit = Math.min(MOST_ROWS, end + MARGIN - start);
+  const call = `${asked}:${start}:${limit}`;
+  if (call === lastCall) {
+    return;
+  }
+  lastCall = call;
+  fetching = true;
+  try {
+    const page = await invoke<RowsView>("page", { first: start, limit });
+    if (asked === drawnViews) {
+      if (page.key === listingRows.key) {
+        listingRows.take(page.total, page.first, page.rows);
+      } else {
+        // The store changed since the view, so the whole view is drawn again.
+        refresh();
+      }
+    }
+  } catch (error: unknown) {
+    notice.textContent = String(error);
+    notice.classList.add("error");
+    notice.hidden = false;
+  } finally {
+    fetching = false;
+  }
+  if (wanting) {
+    wanting = false;
+  }
+  showListing();
+}
+
+/** Asks the library for the entries of a column around a span in sight, and draws them once they arrive. */
+async function fetchEntries(depth: number, first: number, end: number): Promise<void> {
+  const held = columnRows[depth];
+  if (held === undefined || held.holds(first, end)) {
+    return;
+  }
+  const asked = drawnViews;
+  const start = Math.max(0, first - MARGIN);
+  const limit = Math.min(MOST_ROWS, end + MARGIN - start);
+  const page = await invoke<EntriesView>("column_page", { depth, first: start, limit });
+  if (asked !== drawnViews) {
+    return;
+  }
+  if (page.key !== held.key) {
+    refresh();
+    return;
+  }
+  held.take(page.total, page.first, page.entries);
+  drawnColumns[depth]?.show();
+  void fetchIcons();
+}
+
+/** Tells the library where the page stands once a scroll rests, so the next view answers around it, and holds the rows there anew. */
+function rest(): void {
+  window.clearTimeout(restTimer);
+  restTimer = window.setTimeout(() => {
+    if (drawnListing !== null) {
+      const span = drawnListing.span(content.scrollTop, content.clientHeight);
+      void fetchRows(span.first, span.end);
+    }
+  }, REST_MS);
+}
+
+interface ViewportPin {
+  readonly identity: string;
+  readonly column: number | null;
+  readonly scroll: number;
+  readonly anchor: { readonly id: string; readonly place: number; readonly offset: number } | null;
+}
+
+function pinViewport(scroller: HTMLElement, identity: string, column: number | null): ViewportPin {
+  const area = scroller.getBoundingClientRect();
+  const top = area.top + scroller.clientTop;
+  const covered = Math.max(top, scroller.querySelector("thead")?.getBoundingClientRect().bottom ?? top);
+  for (const entry of scroller.querySelectorAll<HTMLElement>("[data-id][data-place]")) {
+    const id = entry.dataset["id"];
+    const place = Number(entry.dataset["place"]);
+    const bounds = entry.getBoundingClientRect();
+    if (id !== undefined && Number.isSafeInteger(place) && place >= 0 && bounds.bottom > covered
+      && bounds.top < top + scroller.clientHeight && bounds.right > area.left && bounds.left < area.right) {
+      return { identity, column, scroll: scroller.scrollTop, anchor: { id, place, offset: bounds.top - top } };
+    }
+  }
+  return { identity, column, scroll: scroller.scrollTop, anchor: null };
+}
+
+function viewportPins(): readonly ViewportPin[] {
+  if (current === null) { return []; }
+  if (current.layout !== "columns") { return [pinViewport(content, current.listing.identity, null)]; }
+  return current.columns.flatMap((column, depth) => {
+    const drawn = drawnColumns[depth];
+    return drawn === undefined ? [] : [pinViewport(drawn.element, column.identity, depth)];
+  });
+}
+
+/** Draws the cards, the list, or the columns of a view, each from the rows the page holds. */
+function drawContent(view: View, answers: boolean, pins: readonly ViewportPin[] = []): void {
+  const left = content.scrollLeft;
+  drawnListing = null;
+  drawnColumns = [];
+  if (view.layout === "columns") {
+    const walk = columns(view, columnRows, handlers);
+    content.replaceChildren(walk.element);
+    drawnColumns = walk.columns;
+    view.columns.forEach((shown, depth) => {
+      const drawn = walk.columns[depth];
+      const pin = pins.find((pin) => pin.column === depth && pin.identity === shown.identity);
+      if (!answers && drawn !== undefined && pin !== undefined) {
+        drawn.element.scrollTop = pin.scroll;
+        if (pin.anchor !== null) {
+          const place = shown.anchor?.id === pin.anchor.id ? shown.anchor.place : pin.anchor.place;
+          drawn.anchor(place, pin.anchor.offset);
+        }
+      }
+      if (answers && drawn !== undefined && shown.selected !== null) {
+        drawn.reveal(shown.selected);
+      }
+      drawn?.show();
+    });
+    if (answers) {
+      // The deepest column and its preview stay at the right edge as the walk goes deeper or turns back up, as an explorer's columns do.
+      content.scrollLeft = content.scrollWidth;
+    } else {
+      content.scrollLeft = left;
+    }
+    return;
+  }
+  const drawn = view.layout === "cards" ? cards(view, listingRows, handlers, content.clientWidth) : list(view, listingRows, handlers);
+  if (drawn instanceof HTMLElement) {
+    content.replaceChildren(drawn);
+    return;
+  }
+  content.replaceChildren(drawn.element);
+  drawnListing = drawn;
+  if (view.listing.fresh) {
+    content.scrollTop = 0;
+  }
+  const pin = pins.find((pin) => pin.column === null && pin.identity === view.listing.identity);
+  if (!answers && pin !== undefined) {
+    content.scrollTop = pin.scroll;
+    if (pin.anchor !== null) {
+      const place = view.listing.anchor?.id === pin.anchor.id ? view.listing.anchor.place : pin.anchor.place;
+      content.scrollTop = drawn.anchor(place, pin.anchor.offset, content.clientHeight);
+    }
+  }
+  const reveal = view.listing.reveal;
+  if (answers && reveal !== null) {
+    content.scrollTop = drawn.reveal(reveal, content.scrollTop, content.clientHeight);
+  }
+  showListing();
 }
 
 /** Draws a view; one that answers no intent of the person's keeps the scroll and the notice on screen, unless the notice is new. */
-function draw(view: View, answers = true): void {
+function draw(view: View, answers = true, pins: readonly ViewportPin[] = []): void {
   const shown = current?.notice?.text;
   current = view;
+  historyMenu();
+  drawnViews += 1;
+  refreshing = false;
+  listingRows.reset(view.listing.key, view.listing.total, view.listing.first, view.listing.rows);
+  columnRows = view.columns.map((column) => {
+    const held = new Rows<ColumnEntry>();
+    held.reset(column.key, column.total, column.first, column.entries);
+    return held;
+  });
   wear(view.theme);
   void drawThemes();
   drawSync(view.sync, send);
@@ -211,22 +454,31 @@ function draw(view: View, answers = true): void {
   sort.value = view.sort;
   grouping.value = view.grouping;
   drawTrail(view);
-  const drawn = view.layout === "cards" ? cards(view, handlers) : view.layout === "list" ? list(view, handlers) : columns(view, handlers);
-  content.replaceChildren(drawn);
-  if (answers && view.layout === "columns") {
-    for (const shown of content.querySelectorAll<HTMLElement>('.column [aria-selected="true"]')) {
-      keepInColumn(shown);
-    }
-    // The deepest column and its preview stay at the right edge as the walk goes deeper or turns back up, as an explorer's columns do.
-    content.scrollLeft = content.scrollWidth;
-  } else if (answers) {
-    content.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: "nearest", inline: "nearest" });
-  }
+  drawContent(view, answers, pins);
   if (answers || view.notice?.text !== shown) {
     showNotice(view);
   }
   void fetchIcons();
 }
+
+/** Shows a failure of a call to the library. */
+function failed(error: unknown): void {
+  notice.textContent = String(error);
+  notice.classList.add("error");
+  notice.hidden = false;
+}
+
+/** Names the next history steps while fields keep their own text editing. */
+function historyMenu(): void {
+  void invoke("history_menu", {
+    undo: current?.undo ?? null,
+    redo: current?.redo ?? null,
+    field: typing(document.activeElement),
+  }).catch(failed);
+}
+
+document.addEventListener("focusin", historyMenu);
+document.addEventListener("focusout", () => queueMicrotask(historyMenu));
 
 /** Sends an intent after every earlier one, and draws the view it answers with. */
 function send(intent: Intent): void {
@@ -234,42 +486,55 @@ function send(intent: Intent): void {
     try {
       draw(await invoke<View>("act", { intent }));
     } catch (error: unknown) {
-      notice.textContent = String(error);
-      notice.classList.add("error");
-      notice.hidden = false;
+      failed(error);
+    }
+  });
+}
+
+function libraryCommand(command: "copy_selection" | "paste" | "export_bookmarks"): void {
+  queue = queue.then(async () => {
+    try {
+      draw(await invoke<View>(command));
+    } catch (error: unknown) {
+      failed(error);
     }
   });
 }
 
 /** Draws the view as it stands after every earlier intent, as when a sync began or ended. */
 function refresh(): void {
+  if (refreshing) {
+    return;
+  }
+  refreshing = true;
   queue = queue.then(async () => {
     try {
-      draw(await invoke<View>("view"), false);
+      const pins = viewportPins();
+      const anchors = pins.flatMap((pin) => pin.anchor === null ? [] : [{ identity: pin.identity, column: pin.column, id: pin.anchor.id }]);
+      draw(await invoke<View>("view_anchored", { anchors }), false, pins);
     } catch (error: unknown) {
-      notice.textContent = String(error);
-      notice.classList.add("error");
-      notice.hidden = false;
+      refreshing = false;
+      failed(error);
     }
   });
 }
 
-/** The focused shortcut, from the listing or the preview. */
+/** The focused shortcut, from the rows held or the preview. */
 function focused(): Item | null {
   if (current === null || current.focus === null) {
     return null;
   }
-  const focus = current.focus;
-  return current.items.find((item) => item.id === focus) ?? (current.preview?.id === focus ? current.preview : null);
+  const place = current.listing.focus;
+  const held = place === null ? undefined : listingRows.get(place);
+  if (held?.kind === "shortcut" && held.item.id === current.focus) {
+    return held.item;
+  }
+  return current.preview?.id === current.focus ? current.preview : null;
 }
 
 /** How many cards a row of the grid holds now. */
 function across(): number {
-  const grid = content.querySelector(".cards");
-  if (!(grid instanceof HTMLElement)) {
-    return 1;
-  }
-  return getComputedStyle(grid).gridTemplateColumns.split(" ").length;
+  return current?.layout === "cards" ? (drawnListing?.geometry.metrics.across ?? 1) : 1;
 }
 
 async function copy(link: string): Promise<void> {
@@ -280,109 +545,176 @@ async function copy(link: string): Promise<void> {
 }
 
 const ask = new AskSheet();
+const devicesPane = new DevicesPane(ask, failed);
 const marking = new MarkSheet((query) => invoke<EmojiGroup[]>("emoji", { query }));
 const menu = new Menu();
+/** The collections a picker finds for what a person typed. */
+const pick = (query: string, first: number): Promise<Choice[]> => invoke<Choice[]>("choices", { query, first, limit: PICKED });
 
-/** How many folders, in words. */
-function folders(count: number): string {
-  return count === 1 ? "1 folder" : `${count} folders`;
+/** The layout the settings open the window with. */
+const openAs = find("open-as", HTMLSelectElement);
+/** Keeps the place and the layout the settings show as what the window opens with. */
+function chooseOpening(): void {
+  const layout = openAs.value;
+  if (layout === "cards" || layout === "list" || layout === "columns") {
+    send({ kind: "opening", layout, start: openAt.value });
+  }
+}
+/** The collection the settings open the window at, or every shortcut. */
+const openAt = new Picker(find("open-at-search", HTMLInputElement), find("open-at", HTMLSelectElement), pick, ALL, chooseOpening);
+openAs.addEventListener("change", chooseOpening);
+
+/** Whether the window stands in the trash now. */
+function trashShown(): boolean {
+  return current !== null && inTrash(current);
 }
 
-async function confirmRemoval(ids: readonly string[]): Promise<void> {
-  const held = new Set(current?.folders.map((folder) => folder.id) ?? []);
-  const folderCount = ids.filter((id) => held.has(id)).length;
-  const linkCount = ids.length - folderCount;
-  const named =
-    folderCount === 0
-      ? shortcuts(linkCount)
-      : linkCount === 0
-        ? folders(folderCount)
-        : `${folders(folderCount)} and ${shortcuts(linkCount)}`;
+/** Asks before deleting shortcuts and folders for good, naming how many, and deletes them once the person agrees. */
+async function confirmDeletion(target: Target, total: number, folderCount: number): Promise<void> {
   const answer = await ask.ask({
-    title: ids.length === 1 && folderCount === 0 ? "Remove this shortcut?" : `Remove ${named}?`,
+    title: total === 1 && folderCount === 0 ? "Delete this shortcut immediately?" : `Delete ${described(total, folderCount)} immediately?`,
     text:
       folderCount === 0
-        ? "Every device of the account removes it too."
-        : "The shortcuts and collections inside go with them, and every device of the account removes them too.",
-    action: "Remove",
+        ? "It goes for good on every device of the account, and no undo brings it back."
+        : "The shortcuts and collections inside go with them, for good, on every device of the account.",
+    action: "Delete",
     answer: null,
   });
   if (answer !== null) {
-    send({ kind: "remove", ids });
+    send({ kind: "remove", target });
   }
 }
 
-const adding = new AddSheet({
-  clipboard: () => invoke<string | null>("clipboard"),
-  title: (link) => invoke<string | null>("title", { link }),
-  add: async (link, name, collection) => {
-    try {
-      const view = await invoke<View>("add", { link, title: name, collection });
-      draw(view);
-      return view.notice?.error !== true;
-    } catch (error: unknown) {
-      notice.textContent = String(error);
-      notice.classList.add("error");
-      notice.hidden = false;
-      return false;
-    }
+/** Asks once before emptying the trash, and empties it once the person agrees. */
+async function confirmEmptying(): Promise<void> {
+  const held = current?.sidebar.trash ?? 0;
+  const answer = await ask.ask({
+    title: "Empty the Trash?",
+    text: `${held === 1 ? "The item" : `The ${held} items`} in the Trash go for good on every device of the account, and no undo brings them back.`,
+    action: "Empty Trash",
+    answer: null,
+  });
+  if (answer !== null) {
+    send({ kind: "emptyTrash" });
+  }
+}
+
+/** Moves what the selection takes to the trash, or, in the trash, asks before deleting it for good. */
+function deleteSelection(immediately: boolean): void {
+  if (current === null || current.selection.count === 0) {
+    return;
+  }
+  if (immediately || trashShown()) {
+    void confirmDeletion({ kind: "selection" }, current.selection.count, current.selection.folders);
+  } else {
+    send({ kind: "trash", target: { kind: "selection" } });
+  }
+}
+
+const adding = new AddSheet(
+  {
+    clipboard: () => invoke<string | null>("clipboard"),
+    title: (link) => invoke<string | null>("title", { link }),
+    add: async (link, name, collection) => {
+      try {
+        const view = await invoke<View>("add", { link, title: name, collection });
+        draw(view);
+        return view.notice?.error !== true;
+      } catch (error: unknown) {
+        failed(error);
+        return false;
+      }
+    },
   },
-});
+  pick,
+);
 
 const editing = new EditSheet(
   (fields) => send({ kind: "edit", fields }),
-  (id) => void confirmRemoval([id]),
+  (id) => send({ kind: "trash", target: { kind: "ids", ids: [id] } }),
+  pick,
 );
+
+/** The choices of the menu of what waits in the trash: put it back, or delete it for good once the person agrees. */
+function trashChoices(target: Target, total: number, folderCount: number): MenuChoice[] {
+  return [
+    { label: "Put Back", act: () => send({ kind: "putBack", target }) },
+    "line",
+    { label: "Delete Immediately…", danger: true, act: () => void confirmDeletion(target, total, folderCount) },
+  ];
+}
 
 /** Opens the add sheet over the collection the window stands in. */
 function openAdd(dropped: string | null): void {
   if (current !== null) {
-    void adding.open(current.collections, current.here, dropped);
+    void adding.open(current.here, dropped);
   }
 }
 
 function edit(item: Item): void {
-  if (current !== null) {
-    editing.open(item, current.collections);
-  }
+  editing.open(item);
 }
 
 /** Asks for a name and makes a collection inside `parent`, or at the top for null. */
-async function newFolder(parent: string | null): Promise<void> {
-  const place = current?.collections.find((choice) => choice.id === parent)?.path;
+async function newFolder(parent: Choice | null): Promise<void> {
   const name = await ask.ask({
-    title: place === undefined ? "New collection" : `New collection in ${place}`,
+    title: parent === null ? "New collection" : `New collection in ${parent.path}`,
     text: "",
     action: "Create",
     answer: "",
   });
   if (name !== null) {
-    send({ kind: "newCollection", name, parent });
+    send({ kind: "newCollection", name, parent: parent?.id ?? null });
   }
 }
 
 const handlers: Handlers = {
+  prepareDrag(target: Target): Promise<DragMaterial> {
+    const prepared = queue.then(() => invoke<DragMaterial>("prepare_drag", { target }));
+    queue = prepared.then(() => undefined).catch(failed);
+    return prepared;
+  },
+  endDrag: (token) => send({ kind: "endDrag", token }),
+  hover: (token, folder) => {
+    const hovered = queue.then(() => invoke<number | null>("hover", { token, folder }));
+    queue = hovered.then(() => undefined).catch(failed);
+    return hovered;
+  },
+  spring: (token, folder) => send({ kind: "spring", token, folder }),
+  failed,
   scope: (scope) => send({ kind: "scope", scope }),
-  select: (id, how) => send({ kind: "select", id, extend: how }),
+  select: (id, place, how) => send({ kind: "select", id, extend: how, place }),
   open: (id) => send({ kind: "open", id }),
-  menu: (event, item) => {
-    const selected = current?.selected.includes(item.id) === true ? (current?.selected ?? [item.id]) : [item.id];
-    if (current?.selected.includes(item.id) !== true) {
-      send({ kind: "select", id: item.id, extend: "replace" });
+  menu: (event, item, place, selected) => {
+    if (!selected) {
+      send({ kind: "select", id: item.id, extend: "replace", place });
+    }
+    const selection = current?.selection ?? { count: 1, folders: 0 };
+    const [total, folderCount]: readonly [number, number] = selected ? [selection.count, selection.folders] : [1, 0];
+    const target: Target = selected ? { kind: "selection" } : { kind: "ids", ids: [item.id] };
+    if (trashShown()) {
+      menu.show(event, trashChoices(target, total, folderCount));
+      return;
     }
     const choices: MenuChoice[] = [
       { label: "Open", act: () => send({ kind: "open", id: item.id }) },
       { label: "Copy URL", act: () => void copy(item.link) },
+      { label: "Show in Folder", act: () => send({ kind: "showInFolder", id: item.id }) },
       "line",
       { label: "Edit…", act: () => edit(item) },
       "line",
-      { label: selected.length === 1 ? "Remove…" : `Remove ${shortcuts(selected.length)}…`, danger: true, act: () => void confirmRemoval(selected) },
+      { label: "Move to Trash", act: () => send({ kind: "trash", target }) },
     ];
     menu.show(event, choices);
   },
   collectionMenu: (event, id, name, mark) => {
+    const target: Target = { kind: "ids", ids: [id] };
+    if (trashShown()) {
+      menu.show(event, trashChoices(target, 1, 1));
+      return;
+    }
     menu.show(event, [
-      { label: "New collection inside…", act: () => void newFolder(id) },
+      { label: "New collection inside…", act: () => void newFolder({ id, path: name }) },
       "line",
       {
         label: "Set Mark…",
@@ -403,23 +735,16 @@ const handlers: Handlers = {
           }),
       },
       "line",
-      {
-        label: "Remove…",
-        danger: true,
-        act: () =>
-          void ask
-            .ask({ title: `Remove ${name}?`, text: "The shortcuts and collections inside it go with it.", action: "Remove", answer: null })
-            .then((answer) => {
-              if (answer !== null) {
-                send({ kind: "removeCollection", id });
-              }
-            }),
-      },
+      { label: "Move to Trash", act: () => send({ kind: "trash", target }) },
     ]);
   },
+  trashMenu: (event) => {
+    menu.show(event, [{ label: "Empty Trash…", danger: true, act: () => void confirmEmptying() }]);
+  },
   newCollection: () => void newFolder(null),
-  dropOnCollection: (ids, collection) => send({ kind: "file", ids, collection }),
-  moveFolders: (ids, collection) => send({ kind: "moveFolders", ids, collection }),
+  dropOnCollection: (target, collection) => send({ kind: "file", target, collection }),
+  trash: (target) => send({ kind: "trash", target }),
+  putBack: (target) => send({ kind: "putBack", target }),
   retitle: (id, typed) => send({ kind: "retitle", id, title: typed }),
   renameFolder: (id, name) => send({ kind: "renameCollection", id, name }),
   saveField: (item, field, value) =>
@@ -433,7 +758,11 @@ const handlers: Handlers = {
         collection: item.collectionId,
       },
     }),
-  column: (depth: number, entry: ColumnEntry) => send({ kind: "column", depth, entry: { kind: entry.kind, id: entry.id } }),
+  column: (depth, entry, place, extend) => {
+    if (entry.kind !== "gone") {
+      send({ kind: "column", depth, entry: { kind: entry.kind, id: entry.id }, place, extend });
+    }
+  },
   copy: (link) => void copy(link),
   edit,
   sort: (chosen: Sort) => send({ kind: "sort", sort: chosen }),
@@ -448,7 +777,7 @@ const handlers: Handlers = {
       })),
     );
   },
-  disclose: (id, open) => send({ kind: "disclose", id, open }),
+  disclose: (id, open, deep) => send({ kind: "disclose", id, open, deep }),
   discloseSidebar: (id, open) => send({ kind: "discloseSidebar", id, open }),
   layout: (layout) => send({ kind: "layout", layout }),
   icon: (image, name) => {
@@ -459,6 +788,7 @@ const handlers: Handlers = {
     }
     waiting.set(name, [...(waiting.get(name) ?? []), image]);
   },
+  wantEntries: (depth, first, end) => void fetchEntries(depth, first, end).catch(failed),
 };
 
 /** Whether a key press goes to a field the person types into. */
@@ -476,6 +806,18 @@ function command(event: KeyboardEvent): boolean {
     up();
   } else if (key === "arrowdown" && !typing(event.target)) {
     send({ kind: "open", id: null });
+  } else if (key === "o" && !typing(event.target)) {
+    send({ kind: "open", id: null });
+  } else if (key === "[") {
+    send({ kind: "back" });
+  } else if (key === "]") {
+    send({ kind: "forward" });
+  } else if (key === "r") {
+    send({ kind: "showInFolder", id: null });
+  } else if (key === "z" && !typing(event.target)) {
+    send({ kind: event.shiftKey ? "redo" : "undo" });
+  } else if (key === "y" && !typing(event.target)) {
+    send({ kind: "redo" });
   } else if (key === "k" || key === "f") {
     search.focus();
     search.select();
@@ -485,6 +827,8 @@ function command(event: KeyboardEvent): boolean {
     openAdd(null);
   } else if (key === ",") {
     openSettings();
+  } else if (key === "w") {
+    void invoke("close").catch(failed);
   } else if (key === "e") {
     const item = focused();
     if (item !== null) {
@@ -493,10 +837,14 @@ function command(event: KeyboardEvent): boolean {
   } else if (key === "a" && !typing(event.target)) {
     send({ kind: "selectAll" });
   } else if (key === "c" && !typing(event.target)) {
-    const item = focused();
-    if (item !== null) {
-      void copy(item.link);
-    }
+    libraryCommand("copy_selection");
+  } else if (key === "x" && !typing(event.target)) {
+    send({ kind: "cut" });
+  } else if (key === "v" && !typing(event.target)) {
+    libraryCommand("paste");
+  } else if ((key === "backspace" || key === "delete") && !typing(event.target)) {
+    // The command key with delete moves the selection to the trash, and with the option key too deletes it for good, as an explorer's keys do.
+    deleteSelection(event.altKey);
   } else {
     return false;
   }
@@ -505,17 +853,25 @@ function command(event: KeyboardEvent): boolean {
 
 /** The keys that act on the selection while no field takes them. */
 function selectionKey(event: KeyboardEvent): boolean {
+  if (event.key === "Escape") {
+    send({ kind: "cancel" });
+    return true;
+  }
   const move = MOVES[event.key];
   if (move !== undefined) {
-    send({ kind: "step", key: move, across: across() });
+    send({ kind: "step", key: move, across: across(), extend: event.shiftKey });
     return true;
   }
   if (event.key === "Enter") {
-    send({ kind: "open", id: null });
+    if (current?.selection.count === 1 && current.focus !== null && !inTrash(current)) {
+      rename(current.focus);
+    } else {
+      send({ kind: "open", id: null });
+    }
     return true;
   }
-  if ((event.key === "Backspace" || event.key === "Delete") && current !== null && current.selected.length > 0) {
-    void confirmRemoval(current.selected);
+  if ((event.key === "Backspace" || event.key === "Delete") && current !== null && current.selection.count > 0) {
+    deleteSelection(false);
     return true;
   }
   return false;
@@ -536,12 +892,15 @@ document.addEventListener("keydown", (event) => {
       if (event.key === "Enter") {
         send({ kind: "open", id: null });
       } else {
-        send({ kind: "step", key: event.key === "ArrowDown" ? "down" : "up", across: across() });
+        send({ kind: "step", key: event.key === "ArrowDown" ? "down" : "up", across: across(), extend: event.shiftKey });
       }
-    } else if (event.key === "Escape" && search.value !== "") {
+    } else if (event.key === "Escape") {
       event.preventDefault();
-      search.value = "";
-      send({ kind: "search", text: "" });
+      if (search.value !== "") {
+        search.value = "";
+        send({ kind: "search", text: "" });
+      }
+      send({ kind: "cancel" });
     }
     return;
   }
@@ -550,9 +909,9 @@ document.addEventListener("keydown", (event) => {
   }
   if (selectionKey(event)) {
     event.preventDefault();
-  } else if (event.key.length === 1 && !commanding && !event.altKey) {
-    // Typing anywhere searches, as the launcher always did.
-    search.focus();
+  } else if (Array.from(event.key).length === 1 && !commanding && !event.altKey) {
+    event.preventDefault();
+    send({ kind: "type", key: event.key });
   }
 });
 
@@ -577,11 +936,12 @@ grouping.addEventListener("change", () => {
 });
 sort.addEventListener("change", () => {
   const chosen = sort.value;
-  if (chosen === "newest" || chosen === "oldest" || chosen === "title" || chosen === "link" || chosen === "opened" || chosen === "manual") {
+  if (chosen === "newest" || chosen === "oldest" || chosen === "title" || chosen === "link" || chosen === "opened") {
     send({ kind: "sort", sort: chosen });
   }
 });
 
+applyMetrics();
 addButton.append(icon("plus"), "Add");
 addButton.addEventListener("click", () => openAdd(null));
 settingsButton.append(icon("gear"));
@@ -596,7 +956,7 @@ for (const close of settings.querySelectorAll("[data-close]")) {
 }
 for (const tab of settings.querySelectorAll<HTMLButtonElement>(".tab")) {
   const name = tab.dataset["tab"] ?? "";
-  tab.append(icon(name === "theme" ? "contrast" : "sliders"), name === "theme" ? "Theme" : "General");
+  tab.append(icon(name === "theme" ? "contrast" : "sliders"), name === "theme" ? "Theme" : name === "devices" ? "Devices" : "General");
   tab.addEventListener("click", () => {
     for (const other of settings.querySelectorAll<HTMLButtonElement>(".tab")) {
       other.setAttribute("aria-selected", String(other === tab));
@@ -605,6 +965,7 @@ for (const tab of settings.querySelectorAll<HTMLButtonElement>(".tab")) {
       pane.hidden = pane.dataset["pane"] !== name;
     }
     void drawThemes();
+    void devicesPane.refresh();
   });
 }
 
@@ -614,6 +975,10 @@ function importBookmarks(file: File): void {
 }
 
 importHtml.addEventListener("click", () => importFile.click());
+exportHtml.addEventListener("click", () => {
+  settings.close();
+  libraryCommand("export_bookmarks");
+});
 importFile.addEventListener("change", () => {
   const file = importFile.files?.[0];
   importFile.value = "";
@@ -643,7 +1008,6 @@ function bringsLink(event: DragEvent): boolean {
   return (
     !bringsFile(event) &&
     !types.includes(DRAGGED) &&
-    !types.includes(DRAGGED_FOLDERS) &&
     (types.includes("text/uri-list") || types.includes("text/plain"))
   );
 }
@@ -695,7 +1059,23 @@ document.addEventListener("contextmenu", (event) => {
 
 /** Carries out a command a person chose from the app's menu. */
 function menuCommand(id: string): void {
-  if (id === "settings") {
+  if (id === "cut" || id === "copy" || id === "paste" || id === "select-all") {
+    if (typing(document.activeElement)) {
+      document.execCommand(id === "select-all" ? "selectAll" : id);
+    } else if (id === "cut") {
+      send({ kind: "cut" });
+    } else if (id === "select-all") {
+      send({ kind: "selectAll" });
+    } else {
+      libraryCommand(id === "copy" ? "copy_selection" : "paste");
+    }
+  } else if (id === "undo" || id === "redo") {
+    if (typing(document.activeElement)) {
+      document.execCommand(id);
+    } else {
+      send({ kind: id });
+    }
+  } else if (id === "settings") {
     openSettings();
   } else if (id === "new-link") {
     openAdd(null);
@@ -703,6 +1083,14 @@ function menuCommand(id: string): void {
     void newFolder(current?.here ?? null);
   } else if (id === "import") {
     importFile.click();
+  } else if (id === "export") {
+    libraryCommand("export_bookmarks");
+  } else if (id === "open") {
+    send({ kind: "open", id: null });
+  } else if (id === "back" || id === "forward") {
+    send({ kind: id });
+  } else if (id === "show-in-folder") {
+    send({ kind: "showInFolder", id: null });
   } else if (id === "cards" || id === "list" || id === "columns") {
     send({ kind: "layout", layout: id });
   }
@@ -712,14 +1100,31 @@ content.addEventListener("click", (event) => {
     content.focus();
   }
 });
-content.addEventListener("dragstart", (event) => {
-  const dragged = event.target instanceof HTMLElement ? event.target.dataset["id"] : undefined;
-  if (dragged !== undefined && current !== null && !current.selected.includes(dragged)) {
-    send({ kind: "select", id: dragged, extend: extend(event) });
+
+let scrolling = false;
+content.addEventListener("scroll", () => {
+  if (!scrolling) {
+    scrolling = true;
+    window.requestAnimationFrame(() => {
+      scrolling = false;
+      showListing();
+    });
   }
+  rest();
+});
+let resizing: number | undefined;
+window.addEventListener("resize", () => {
+  window.clearTimeout(resizing);
+  resizing = window.setTimeout(() => {
+    if (current !== null && current.layout === "cards" && drawnListing !== null) {
+      if (cardMetrics(content.clientWidth).across !== drawnListing.geometry.metrics.across) {
+        drawContent(current, false, viewportPins());
+      }
+    }
+  }, REST_MS);
 });
 
-window.addEventListener("focus", () => send({ kind: "show" }));
+window.addEventListener("focus", refresh);
 void listen(SUMMONED, () => {
   search.focus();
   search.select();
@@ -727,6 +1132,7 @@ void listen(SUMMONED, () => {
 void listen(SYNCED, refresh);
 void listen(ICONED, refresh);
 void listenText(COMMAND, menuCommand);
+void listenProgress(PROGRESS, showProgress);
 
 send({ kind: "show" });
 

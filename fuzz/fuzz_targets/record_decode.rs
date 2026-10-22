@@ -1,5 +1,4 @@
-//! Decoding records never panics, every body it accepts is the one form of its records, which writes the same bytes again, and the store reads a state from records only with every link admitted again.
-//! A state received as records or in the JSON form of an older build merges into itself unchanged.
+//! Decoding records never panics, every body it accepts is the one form of its records, which writes the same bytes again and merges into itself unchanged, and the store reads a state from records only with every link admitted again.
 #![no_main]
 
 use youarel_core::record_rules::{decode_body, encode_body};
@@ -28,13 +27,6 @@ libfuzzer_sys::fuzz_target!(|data: &[u8]| {
             records::encode(&state).expect("a state the store read encodes"),
             data,
             "the store reads only the one form of a state's records"
-        );
-    }
-    if let Ok(state) = records::decode_received(data) {
-        assert_eq!(
-            state.merge(&state),
-            state,
-            "a received state merges into itself unchanged"
         );
     }
 });

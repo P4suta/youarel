@@ -155,6 +155,10 @@ impl Syncing {
 
 #[cfg(test)]
 mod tests {
+    const OWN_CHAIN: &str = "1111111111111111111111111111111111111111111111111111111111111111";
+    const OWN_HEAD: &str = "1111111111111111111111111111111111111111111111111111111111111111/head";
+    const OTHER_HEAD: &str =
+        "2222222222222222222222222222222222222222222222222222222222222222/head";
     use super::{SyncState, Syncing};
     use youarel_core::folder_rules::Seen;
     use youarel_core::sync_rules::{BACKOFF, INTERVAL, QUIET, SETTLE, Sync};
@@ -288,7 +292,7 @@ mod tests {
         let mut syncing = Syncing::default();
         assert_eq!(syncing.begin(&chosen(), true, NOW), Some(Sync::Merge));
         assert!(syncing.end(Ok(false)));
-        assert!(syncing.noticed(Seen::Touched("other.youarel"), NOW + 1));
+        assert!(syncing.noticed(Seen::Touched(OTHER_HEAD), NOW + 1));
         assert_eq!(
             syncing.begin(&chosen(), true, NOW + QUIET),
             None,
@@ -309,8 +313,8 @@ mod tests {
     #[test]
     fn the_device_s_own_bundle_and_what_lies_beside_it_bring_no_merge() {
         let mut syncing = Syncing::default();
-        syncing.learned("mine.youarel".to_owned());
-        assert!(!syncing.noticed(Seen::Touched("mine.youarel"), NOW));
+        syncing.learned(OWN_CHAIN.to_owned());
+        assert!(!syncing.noticed(Seen::Touched(OWN_HEAD), NOW));
         assert!(!syncing.noticed(Seen::Touched("._other.youarel"), NOW));
         assert!(!syncing.noticed(Seen::Read, NOW));
         assert_eq!(syncing.begin(&chosen(), true, NOW), Some(Sync::Merge));
@@ -336,7 +340,7 @@ mod tests {
         assert!(!syncing.end(Err("unreachable".to_owned())));
         assert!(syncing.rewatch(), "a failure starts the watch again");
         assert!(!syncing.rewatch(), "and only once");
-        assert!(syncing.noticed(Seen::Touched("other.youarel"), NOW + 1));
+        assert!(syncing.noticed(Seen::Touched(OTHER_HEAD), NOW + 1));
         assert_eq!(
             syncing.begin(&chosen(), true, NOW + 1 + QUIET),
             None,

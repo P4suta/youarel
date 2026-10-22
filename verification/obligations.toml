@@ -4,6 +4,62 @@
 
 [[obligation]]
 verifier = "kani"
+source = "crates/youarel-core/src/icon_rules.rs"
+harnesses = [
+  { name = "proofs::cache_roots_preserve_the_hosts_environment_conventions", covers = 3, contract = "cache discovery preserves the platform's explicit environment root and refuses empty or unavailable roots", input_domain = "all six cache browsers, all three host kinds, and unset, empty, and one-byte nonempty classes for each environment value", bound = "complete over the presence classes; native tests cover actual Windows and Unix path values and profile discovery" },
+  { name = "proofs::bitmap_preference_keeps_the_largest_small_image_or_the_smallest_large_one", covers = 4, contract = "bitmap dimensions are admitted exactly within bounds and preference chooses the largest size at or below 64 pixels before any larger size, then the smallest larger size", input_domain = "every u32 width and height and every pair of positive square sides up to 4096", bound = "complete; the adapter validates image bytes through the production normalizer" },
+  { name = "proofs::admitted_database_sizes_never_overflow_or_pass_the_snapshot_limit", covers = 2, contract = "admitted SQLite page counts and sizes multiply without overflow and fit the snapshot byte limit", input_domain = "every u64 page count and page size", bound = "complete; the SQLite adapter supplies the database facts" },
+]
+probes = [
+  { harness = "proofs::rejects_preferring_a_larger_than_needed_bitmap", assertion = "NEGATIVE_ICON_CONTROL" },
+]
+
+[[obligation]]
+verifier = "kani"
+source = "crates/youarel-core/src/device_rules.rs"
+harnesses = [
+  { name = "checks::qr_bounds_admit_only_nonempty_bounded_text_and_standard_squares", covers = 4, contract = "QR text contains one through 512 UTF-8 bytes and QR squares have exactly a standard side between 21 and 177 without arithmetic overflow", input_domain = "every usize byte length and every u32 side", bound = "complete for admission; the pinned encoder is trusted for QR encoding and native independent decoding checks emitted matrices" },
+  { name = "checks::display_integers_never_round_or_overflow", covers = 4, contract = "device work identifiers strictly increase within JavaScript's exact integer range and displayed admission times fit the Date range", input_domain = "every u64 counter and timestamp", bound = "complete" },
+  { name = "checks::screen_steps_only_advance_and_terminal_runs_never_restart", covers = 4, contract = "device-screen progress only advances, terminal runs stay final, and an expired unfinished run never completes", input_domain = "every screen stage and event and every u64 start and current time", bound = "complete; the adapter supplies the authenticated pairing outcomes and serializes each run" },
+  { name = "checks::admitted_short_names_round_trip_through_the_production_codec", covers = 2, contract = "the production codec admits exactly valid short device names and preserves their full membership identity and stamp without trailing bytes", input_domain = "every valid UTF-8 prefix of up to four arbitrary bytes, every 32-byte membership identity, and every u64 wall and u32 counter", bound = "four UTF-8 bytes and one fixed writer; native tests cover the 128-byte boundary, multiple writers, Unicode, whole bodies, and segment partitions" },
+]
+probes = [
+  { harness = "checks::rejects_an_expired_invitation_completing", assertion = "NEGATIVE_DEVICE_CONTROL" },
+]
+
+[[obligation]]
+verifier = "kani"
+source = "crates/youarel-core/src/bench_rules.rs"
+harnesses = [
+  { name = "proofs::admitted_workloads_keep_every_subworkload_within_its_requested_size", covers = 2, contract = "admitted benchmark workloads preserve positive bounded counts and never import or remove more than the requested shortcut count", input_domain = "every u64 shortcut count, folder count, and seed", bound = "complete" },
+  { name = "proofs::synthetic_identifiers_never_alias_across_indices_or_namespaces", covers = 2, contract = "synthetic version-seven identifiers preserve every counter bit and separate all six fixture namespaces, regardless of timestamps", input_domain = "all six namespaces, every u64 index, and every u64 timestamp", bound = "sixteen-byte comparisons unwind at seventeen" },
+  { name = "proofs::resource_limits_stop_before_the_next_reserved_write", covers = 5, contract = "a campaign continues only before its deadline, without cancellation, within its synthetic storage bound and with its free-space floor including a write reserve", input_domain = "every u64 storage, free-space and elapsed-time value and cancellation flag", bound = "complete; the adapter supplies measured filesystem and monotonic-clock facts between bounded operations" },
+]
+probes = [
+  { harness = "proofs::rejects_a_campaign_after_its_deadline", assertion = "NEGATIVE_BENCH_CONTROL" },
+]
+
+[[obligation]]
+verifier = "kani"
+source = "crates/youarel-core/src/segment_rules.rs"
+harnesses = [
+  { name = "proofs::a_snapshot_header_has_positive_parts_and_fits_the_chain", covers = 5, contract = "Header::new admits every delta and exactly snapshots whose part is within a nonempty count, whose first part has a positive sequence, and whose last part does not overflow", input_domain = "every positive u64 sequence, every u32 part and part count, and either segment kind", bound = "complete; the predecessor digest is stored without being read" },
+  { name = "proofs::fetching_chooses_the_next_segment_or_a_retained_snapshot_without_overflow", covers = 4, contract = "a reader fetches the next retained sequence or a snapshot beyond a missing prefix, reports complete only after catching up, and reports Lost only for a missing prefix without a snapshot", input_domain = "all optional cursor sequences and positive first/latest sequences with first no later than latest, and every absent or retained snapshot start", bound = "all u64 positions; digests are not read" },
+  { name = "proofs::a_publish_plan_preserves_quiet_and_repairs_missing_or_compacted_chains", covers = 3, contract = "publication preserves quiet, snapshots ordinary repairs and compaction, and uses deltas for explicit bounded relay bridges or changed delta-only chains; first and forced publications always snapshot", input_domain = "every cursor presence, all five destinations including delta-only and bridge, change and force flag, byte count, and delta count", bound = "complete; publication reads the cursor only for its presence" },
+  { name = "proofs::a_target_past_every_owned_sequence_is_never_overwritten", covers = 3, contract = "remote_ahead blocks exactly a remote head beyond this device's highest owned sequence or any remote head before it owns one", input_domain = "every optional positive remote and owned sequence", bound = "complete" },
+  { name = "proofs::canonical_parts_preserve_two_whole_records_as_the_dictionary_changes", covers = 2, contract = "Parts emits only canonical bodies within the actual byte limit and preserves both individually fitting records with every field unchanged as its device dictionary grows", input_domain = "two ascending folder, shortcut, or device-name records with fixed valid texts and positions, base stamps from three writer classes, and limits ten through five hundred twelve bytes", bound = "two records with fixed payloads and base stamps; native tests cover UTF-8 text, larger fields, refusal without loss, and dictionary and record counts past the varint boundary" },
+  { name = "proofs::a_cursor_advances_only_to_the_next_segment_or_a_snapshot_restart", covers = 8, contract = "step advances exactly for the next segment with the matching predecessor, or a first snapshot part at the advertised complete snapshot after a gap; every other verdict keeps the cursor", input_domain = "optional cursors and headers through sequence four, snapshot parts through two, retained bounds through four, and digest equality classes zero through three", bound = "four sequences, two snapshot parts, and four digest equality classes; the adapter authenticates headers and plaintext before admission" },
+  { name = "proofs::the_same_plaintext_replays_without_advancing", covers = 1, contract = "the same plaintext digest at the cursor's sequence returns Reapply without changing the cursor", input_domain = "every nonzero sequence, digest, and predecessor", bound = "complete; digest comparisons unwind at thirty-three" },
+  { name = "proofs::a_delta_admits_exactly_own_writes_after_its_watermark", covers = 2, contract = "publishes admits exactly written stamps of this device that follow the watermark, or any of its written stamps when none was published, and excludes the stamp no device wrote", input_domain = "every stamp, device, and optional watermark", bound = "complete; device comparisons unwind at seventeen" },
+  { name = "proofs::compaction_follows_the_ratio_or_the_delta_count_without_overflow", covers = 2, contract = "compaction is due at the delta count bound or once nonempty deltas reach the configured multiple of snapshot bytes, without overflowing", input_domain = "every byte count and delta count", bound = "complete on targets whose usize is at most sixty-four bits" },
+  { name = "proofs::a_split_never_cuts_a_record_or_passes_its_limit", covers = 2, contract = "split returns contiguous record ranges covering the input with every part within its limit, and refuses exactly a zero limit or a record too large to fit alone", input_domain = "up to three records of zero through four bytes and a limit of zero through four bytes", bound = "three records and four-byte limits; native tests cover usize overflow and production-sized limits" },
+]
+probes = [
+  { harness = "proofs::rejects_a_segment_from_the_past", assertion = "NEGATIVE_SEGMENT_CONTROL" },
+]
+
+[[obligation]]
+verifier = "kani"
 source = "crates/youarel-core/src/link_rules.rs"
 harnesses = [
   { name = "proofs::only_web_links_with_a_host_are_admitted", covers = 4, contract = "admit returns a scheme only for exactly `http` or `https` with a non-empty host, returns the matching scheme for every such link, and refuses any other scheme before it reads the host", input_domain = "every UTF-8 scheme of up to six bytes and a host that is absent, empty, or a name", bound = "six bytes; a longer scheme differs from `http` and `https` in its length alone" },
@@ -58,11 +114,16 @@ probes = [
 verifier = "kani"
 source = "crates/youarel-core/src/position_rules.rs"
 harnesses = [
-  { name = "proofs::a_key_lands_strictly_between_its_bounds", covers = 2, contract = "midpoint returns a digit key strictly between ordered digit keys, or after the lower one when the upper end is open", input_domain = "every lower bound that is empty or a digit key and every upper bound that is absent or a greater digit key, of up to two digits", bound = "two digits per bound; three digits and repeated insertion are covered by the tests" },
-  { name = "proofs::every_symbol_decodes_to_its_place_in_byte_order", covers = 1, contract = "a byte decodes exactly when the alphabet holds it, to its place there, and two decoded bytes order as their digits", input_domain = "every pair of bytes", bound = "complete; between composes this encoding with the midpoint" },
+  { name = "proofs::a_key_lands_strictly_between_its_bounds", covers = 3, contract = "midpoint returns a digit key strictly between ordered digit keys, or after the lower one when the upper end is open, and below the upper one for an empty lower bound, which is how a key before one that starts with a decimal digit is placed; it refuses bounds out of order with Unordered, which place passes on for two bounds", input_domain = "every lower bound that is empty or a digit key and every upper bound that is absent or a digit key, of up to two digits and in either order", bound = "two digits per bound; three digits and repeated insertion are covered by the tests" },
+  { name = "proofs::every_symbol_decodes_to_its_place_in_byte_order", covers = 1, contract = "a byte decodes exactly when the alphabet holds it, to its place there, and two decoded bytes order as their digits", input_domain = "every pair of bytes", bound = "complete; between composes this encoding with the rule its bounds take: the midpoint for two, the key past one, and a1 for none" },
+  { name = "proofs::the_integer_above_a_key_lies_above_and_grows_by_one_symbol_at_most", covers = 2, contract = "the least integer above a key that starts with a small letter, as every key at or after a1 does, lies above it, is a key, and is at most one symbol longer than the longer of the key and its class; a key after the last is this integer for such a key, and a1 for a key below a1", input_domain = "every key of one to three digits that starts with a, b, or c, each letter fixed in turn and the length and other digits drawn", bound = "three digits: the integers of the classes of one and two digits with or without a fraction, and the keys shorter than the class of three; whole integers of three digits are the harness of integers, the choice of a1 below a1 and of the midpoint past the last integer are a comparison and the midpoint's harness, and longer keys and classes are covered by the tests" },
+  { name = "proofs::the_integer_below_a_key_lies_below_and_grows_by_one_symbol_at_most", covers = 2, contract = "the greatest integer below a key that starts with a capital, as every key at or before Zz that starts with a letter does, lies below it, is a key, and is at most one symbol longer than the longer of the key and its class: its integer for a key with a fraction, the integer before it, or the greatest integer below a key shorter than its class; a key before the first is this integer for such a key, and Zz for a key above Zz", input_domain = "every key of one to three digits that starts with X, Y, or Z, each letter fixed in turn and the length and other digits drawn", bound = "three digits as above; a key that starts with a decimal digit takes the midpoint below it, which the midpoint's harness proves with an empty lower bound" },
+  { name = "proofs::the_integers_beside_an_integer_are_keys_on_either_side_of_it", covers = 2, contract = "the integer after an integer is a key above it and the integer before it a key below it, each at most one digit longer, as a carry into the next class or a borrow from the class before makes them", input_domain = "every whole integer of the classes of X, Y, Z, a, b, and c, each letter fixed in turn and every digit drawn", bound = "the classes of one to three digits; that no integer lies between them, and the classes past them, are covered by the tests" },
+  { name = "proofs::the_least_integer_above_a_short_key_takes_its_class_length", covers = 3, contract = "the least integer above a key shorter than its class lies above it, is a key, takes the class's length, and passes over no integer of the key's first letter above the key", input_domain = "every key of up to three digits shorter than its class that starts with a, b, or c, each letter fixed in turn, against every integer of that class", bound = "the classes of one to three digits; the classes past them are covered by the tests" },
 ]
 probes = [
   { harness = "proofs::rejects_a_key_at_its_lower_bound", assertion = "NEGATIVE_POSITION_CONTROL" },
+  { harness = "proofs::rejects_an_append_that_lengthens_a_short_integer", assertion = "NEGATIVE_POSITION_CONTROL" },
 ]
 
 [[obligation]]
@@ -98,6 +159,33 @@ probes = [
 
 [[obligation]]
 verifier = "quint"
+spec = "specs/devices.qnt"
+main = "devices"
+probe = "devices_probe"
+invariant = "safe"
+witnesses = ["completed", "expired", "refused", "cancelled", "granted"]
+seed = "0x2a"
+samples = 1000
+steps = 12
+traces = 100
+# The complete state count is pending the owner's verification window.
+
+[[obligation]]
+verifier = "quint"
+spec = "specs/segments.qnt"
+main = "segments"
+probe = "segments_probe"
+invariant = "safe"
+witnesses = ["applied", "reapplied", "jumped", "lost", "compacted"]
+seed = "0x2a"
+samples = 1000
+steps = 80
+traces = 100
+# The complete state count remains unmeasured while the owner defers long verification.
+# The Quint gate refuses an absent count even when its full exploration succeeds.
+
+[[obligation]]
+verifier = "quint"
 spec = "specs/ui.qnt"
 main = "ui"
 probe = "ui_probe"
@@ -124,15 +212,18 @@ source = "crates/youarel-core/src/tree_rules.rs"
 harnesses = [
   { name = "proofs::the_tree_of_four_folders_breaks_each_cycle_at_its_most_recent_move", covers = 2, contract = "resolve keeps every declared parent in range except the most recent declaration of each declared cycle, which moves to the top, and the result has no cycle and names only folders of the list", input_domain = "every list of four folders, each declaring the top, a folder, or an index out of range, with recencies below four, which realize every order of four keys and every tie, since the resolution compares recencies only", bound = "four folders; larger trees are covered by the tests and the replay" },
   { name = "proofs::the_tree_of_fewer_folders_breaks_each_cycle_at_its_most_recent_move", covers = 1, contract = "the same promise as for four folders", input_domain = "every list of none to three folders, each declaring the top, a folder, or an index out of range, with recencies below the folder count", bound = "three folders" },
+  { name = "proofs::a_folder_hides_exactly_when_it_or_a_folder_over_it_waits_in_the_trash", covers = 2, contract = "hidden names every folder once and hides a folder exactly when it waits in the trash or its parent hides, so a folder in the trash hides its whole subtree and nothing else", input_domain = "every tree of four folders without a cycle, each folder at the top, under a folder, or under an index out of range, and every set of the four in the trash", bound = "four folders; resolve gives hidden only trees without a cycle, the walk passes each folder once, and the tests cover every tree of up to three folders and every walk that a cycle ends" },
 ]
 probes = [
   { harness = "proofs::rejects_a_cycle_left_in_place", assertion = "NEGATIVE_TREE_CONTROL" },
+  { harness = "proofs::rejects_a_folder_shown_inside_the_trash", assertion = "NEGATIVE_TREE_CONTROL" },
 ]
 
 [[obligation]]
 verifier = "kani"
 source = "crates/youarel-core/src/membership_rules.rs"
 harnesses = [
+  { name = "proofs::historical_key_grants_preserve_the_epoch_and_require_a_current_author", covers = 4, contract = "historical rotation operations retain accessible key grants only from a current member and never replace or advance the canonical epoch", input_domain = "every positive u32 canonical and historical epoch with historical no greater than canonical, and either an active or a removed author", bound = "five causally ordered operations and two members; the adapter authenticates operations and seals slots to the recovery identity" },
   { name = "proofs::every_decision_keeps_a_member_and_counts_only_members", covers = 2, contract = "decide founds only an empty account from its genesis, skips every other action whose author is no member, adds only a stranger, never removes the last member, and rotates only to a greater epoch, naming the device or epoch of the action", input_domain = "every action with every device and epoch, every member count and epoch, and every value of the genesis, author, and target facts", bound = "complete for decide; Members::apply, which carries out a decision on its vector, is covered by the exhaustive test over every account of up to three members, and resolve's order by the exhaustive test over every log of three operations and by the replay of the Quint model's traces" },
 ]
 probes = [
@@ -157,6 +248,8 @@ probes = [
 verifier = "kani"
 source = "crates/youarel-core/src/record_rules.rs"
 harnesses = [
+  { name = "proofs::body_framing_reports_its_exact_size_without_overflow", covers = 2, contract = "body_framing returns the exact bytes for the magic, version, four count prefixes, and device dictionary, or Length exactly when that framing exceeds usize", input_domain = "every writer, folder, shortcut, and device-name count", bound = "complete on targets whose usize is at most sixty-four bits; count encodings and small writer buffers unwind at sixty-five" },
+  { name = "proofs::every_record_reports_its_latest_stamp_of_the_requested_device", covers = 3, contract = "Record::latest_of returns a stamp of a field written by the requested device at least as late as every such field, and returns none exactly when the device wrote no field", input_domain = "either record kind with arbitrary stamps and requested device, and fixed payload values that latest_of never reads", bound = "complete for stamp projection; payload values do not participate in this function" },
   { name = "proofs::a_stamp_reads_back_beside_its_base", covers = 2, contract = "mode gives a register's stamp the one mode its relation to the base names, own_stamp reads every stamp of its own back from its zigzag difference, counter, and device and refuses the base and the stamp no device wrote as such, and each difference has one zigzag form", input_domain = "every pair of stamps of any wall time, any counter, and any device, and every zigzag form", bound = "complete; the varints that carry each part read back by every_varint_reads_back_canonically" },
   { name = "proofs::a_byte_of_modes_has_one_form", covers = 2, contract = "unpack_modes refuses a byte exactly when a bit past its last register is set, the modes it reads write the byte again through pack_modes, and every modes of one to four registers read back from the byte they write, so a record's modes have one form", input_domain = "every byte, every count of one to four registers, and every modes of those registers", bound = "complete; a record holds one or two such bytes, and a whole record's round trip and one form are swept by the tests and required by the fuzz target record_decode, since decoding a whole record's texts took the solver past the gate's memory" },
   { name = "proofs::a_body_refuses_items_out_of_order", covers = 3, contract = "read_list, which decode_body reads its folders and its shortcuts with, reads two items exactly when their identifiers ascend strictly, refuses them as out of order otherwise, and holds them in their order, and DeviceTable::ascending, which builds a body's table, takes two devices exactly when they ascend strictly", input_domain = "every pair of identifiers and every pair of devices", bound = "two items; the reader compares items only by their identifiers, so items of an identifier alone stand for records, and the tests cover whole bodies, longer lists, and repeated identifiers" },
@@ -169,13 +262,19 @@ probes = [
 verifier = "kani"
 source = "crates/youarel-core/src/relay_rules.rs"
 harnesses = [
+  { name = "proofs::only_an_unfinished_snapshot_reports_more_parts", covers = 2, contract = "a retained latest header reports an unfinished snapshot exactly when a later part remains, and deltas and final parts never do", input_domain = "every valid header with every positive u64 sequence and every valid u32 snapshot part count", bound = "complete scalar domains" },
+  { name = "proofs::delivery_pages_bound_their_metadata_segments_and_framing_without_overflow", covers = 2, contract = "delivery pages account for metadata, segment framing, and every accepted byte exactly, admitting only pages within both the byte and segment limits without overflow", input_domain = "every machine-word metadata and segment size, and every page within its established count and byte bounds", bound = "complete scalar domains; induction covers any number of pushes" },
+  { name = "proofs::appends_require_a_successor_or_an_explicit_restart", covers = 4, contract = "a chain accepts only a positive newer sequence that continues compatible snapshot parts or complete data, starts a snapshot, or explicitly bridges delta-only transport; old and incomplete continuations refuse", input_domain = "every two valid headers, all positive u64 sequences and valid snapshot part counts, optional previous header, and bridge flag", bound = "complete scalar domain; no ciphertext is trusted by this decision" },
+  { name = "proofs::retention_matches_the_newest_complete_snapshot_or_the_largest_bounded_suffix", covers = 5, contract = "retain keeps the newest complete snapshot and its following segments when they fit, otherwise the largest fitting suffix with no incomplete snapshot hint, and refuses empty or oversized input without overflow", input_domain = "up to three ascending valid headers at sequences one through three, every snapshot part count, every positive machine-word segment size, and every byte budget", bound = "three segments; snapshot completion and suffix sums are checked by an independent bounded specification using wide arithmetic" },
+  { name = "proofs::retention_refuses_duplicate_or_reversed_sequences", covers = 2, contract = "duplicate and reversed sequences refuse before retention and ordered metadata is admitted when it fits", input_domain = "two delta headers with every positive u64 sequence and one byte each", bound = "two segments" },
   { name = "proofs::a_forgotten_nonce_belongs_to_a_stale_request", covers = 1, contract = "a request is fresh exactly when its stamp lies within the window of the relay's clock, and the relay forgets a nonce only once its request is stale, so a forgotten nonce never returns as fresh", input_domain = "every clock reading and every stamp", bound = "complete" },
   { name = "proofs::a_request_passes_only_fresh_and_new", covers = 1, contract = "admit lets a request pass exactly when it is fresh and its nonce is none the relay retains, and calls it a replay only for a retained nonce", input_domain = "every clock reading, stamp, and nonce, and every list of up to three retained nonces with their stamps", bound = "three retained nonces" },
-  { name = "proofs::the_quota_and_the_clocks_never_overflow", covers = 1, contract = "a bundle fits exactly when the account's total after it stays within the quota, an account expires its retention after its last request, a device is gone only after its inactivity, a mailbox stays open for its lifetime and takes a message exactly when it stays within its limit, with no overflow", input_domain = "every total, replaced and incoming size, clock reading, and timestamp", bound = "complete" },
+  { name = "proofs::the_quota_and_the_clocks_never_overflow", covers = 1, contract = "an account expires its retention after its last request, a device is gone only after its inactivity, and a mailbox stays open for its lifetime and takes a message exactly when it stays within its limit, with no overflow", input_domain = "every total and incoming mail size, clock reading, and timestamp", bound = "complete; account segment retention has its own obligation" },
   { name = "proofs::the_nameplate_is_the_smallest_free_one", covers = 1, contract = "nameplate hands out a positive number that no open mailbox holds, and every smaller positive number is taken", input_domain = "every list of up to three open nameplates", bound = "three open mailboxes; the tests cover a full table" },
 ]
 probes = [
   { harness = "proofs::rejects_a_request_from_beyond_the_window", assertion = "NEGATIVE_RELAY_CONTROL" },
+  { harness = "proofs::rejects_a_partial_snapshot_as_a_bootstrap", assertion = "NEGATIVE_RELAY_RETENTION_CONTROL" },
 ]
 
 [[obligation]]
@@ -192,6 +291,7 @@ probes = [
 verifier = "kani"
 source = "crates/youarel-core/src/library_rules.rs"
 harnesses = [
+  { name = "proofs::a_hover_springs_only_for_its_drag_and_folder_after_its_delay", covers = 4, contract = "only the same active drag and folder spring, never before the delay, and every eligible hover springs", input_domain = "every optional active drag and folder, every requested drag and folder, and every elapsed millisecond count", bound = "none for time or identities; sixteen-byte identity comparisons unwind at seventeen, and the app passes elapsed monotonic time" },
   { name = "proofs::a_grid_move_lands_on_an_item", covers = 3, contract = "moved selects nothing exactly when there is no item, otherwise an item, moving up or down at most a row unless it lands on the last item, and left or right at most one item", input_domain = "every count and row width up to four, every selection up to four or none, and every key", bound = "four items and four to a row; the moves compare places only through their order and a row's width" },
   { name = "proofs::a_column_step_keeps_the_selection_in_its_column_and_opens_or_closes_only_as_asked", covers = 3, contract = "column_step, the decision column_moved applies to the deepest column, keeps the selection within the column, moves it at most one place up or down, sends first and last to the column's ends, keeps it for right and opens a new column only when right may open one, and closes the column for left unless it is the first", input_domain = "every standing of any place up to any last place, first or not, opening or not, and every key", bound = "complete" },
   { name = "proofs::a_walk_keeps_the_leading_places_whose_columns_hold_entries", covers = 1, contract = "kept_columns keeps no more places than the path and the columns hold, keeps only places whose columns hold entries, and cuts the walk only at its end or at an empty column", input_domain = "every path and every list of column lengths of up to three each", bound = "three places and three columns; column_moved composes this keeping with the step, which the tests draw over a small domain" },
@@ -199,9 +299,11 @@ harnesses = [
   { name = "proofs::a_grouped_grid_moves_a_row_across_the_headings", covers = 2, contract = "grouped_moved over one group moves as moved, moves left, right, first, and last as moved over all the items, moves up and down to the next row toward the key across the headings or stays at the edge, and lands on an item exactly when there is one", input_domain = "every grid of two groups of up to three items each, where an empty group stands for a missing one, up to three to a row, every selection up to six or none, and every key", bound = "two groups of three items, three to a row" },
   { name = "proofs::a_time_falls_in_the_period_of_its_age_and_a_later_one_never_in_an_older", covers = 2, contract = "period names the past week up to seven days of age, the past month after it up to thirty days, and earlier beyond, and a later time never falls in an older period", input_domain = "every pair of times and every clock reading", bound = "complete" },
   { name = "proofs::a_grouping_keeps_every_shortcut_once_under_its_key_in_order", covers = 2, contract = "gather orders its groups strictly by their keys, sizes each group by the items that follow under it, keeps each item under its own key and each group in the listing's order, and holds every item of the listing once", input_domain = "the listing of three distinct items under every key up to three for each; gather reads its items only through the key, so small items stand for shortcuts, and the tests draw the shorter listings", bound = "three items of three keys" },
+  { name = "proofs::a_period_s_bounds_hold_exactly_its_times", covers = 2, contract = "period_bounds names for each period the times that period draws at a clock reading, from its first time on and before its last when it has one, and recent_since names the first time that counts as recent", input_domain = "every time, every clock reading, and every period", bound = "complete" },
 ]
 probes = [
   { harness = "proofs::rejects_a_move_past_the_last_item", assertion = "NEGATIVE_LIBRARY_CONTROL" },
+  { harness = "proofs::rejects_a_spring_before_its_delay", assertion = "NEGATIVE_LIBRARY_CONTROL" },
 ]
 
 [[obligation]]
@@ -257,10 +359,116 @@ probes = [
 verifier = "kani"
 source = "crates/youarel-core/src/folder_rules.rs"
 harnesses = [
-  { name = "proofs::only_another_device_s_bundle_counts", covers = 4, contract = "a read never counts, a rescan always does, and a touched file counts exactly when its name ends with the bundle suffix after at least one byte, starts with neither the hidden mark nor the lock mark, and differs from this device's own bundle", input_domain = "every part of the text `~$._a.youarel.tmp`, which holds a bundle, its hidden sidecar, its lock file, the suffix with no stem, a partial download, and names with no suffix, with no own bundle, the name itself, or another device's bundle as the own one; tests check the same parts and every name joined of three pieces of six, and show real sidecar, download, and lock names count for nothing", bound = "the parts of a seventeen-byte text; longer names differ only in their stem, which counting reads only for being empty" },
+  { name = "proofs::only_another_device_s_chain_counts", covers = 3, contract = "reads never count, rescans always count, and only another device's directory, head, or canonical segment file counts", input_domain = "the ten committed filename classes, including sidecars, incomplete writes, a zero or overflowing sequence, an old flat bundle, and unrelated names, with an absent, matching, or different own device", bound = "ten filename classes and three own-device classes; the filename parser also has a fuzz target and native Unicode cases" },
+  { name = "proofs::every_sequence_file_reads_back_canonically", covers = 2, contract = "every positive u64 sequence writes one canonical twenty-digit filename that reads back to that sequence", input_domain = "every positive u64 sequence", bound = "twenty decimal digits" },
 ]
 probes = [
-  { harness = "proofs::rejects_the_device_s_own_bundle", assertion = "NEGATIVE_FOLDER_CONTROL" },
+  { harness = "proofs::rejects_the_device_s_own_chain", assertion = "NEGATIVE_FOLDER_CONTROL" },
+]
+
+[[obligation]]
+verifier = "kani"
+source = "crates/youarel-core/src/hash_rules.rs"
+harnesses = [
+  { name = "proofs::absorbing_tells_two_bytes_apart", covers = 1, contract = "absorbing one byte by FNV-1a from any state reaches equal states exactly from equal bytes, so two texts of one length that differ in one byte part at that byte; absorbing also tells two states apart, since a multiplication modulo two to the sixty-fourth undoes by the prime's inverse, whose product with the prime the tests check is one", input_domain = "every 64-bit state and every pair of bytes", bound = "complete" },
+  { name = "proofs::a_hash_continues_over_a_joined_text", covers = 1, contract = "the hash of a text joined of two parts continues the hash of the first part over the second, and the empty text keeps the offset", input_domain = "every pair of parts of every length up to two bytes, each byte any value", bound = "two bytes a part; the hash absorbs one byte at a time, so longer parts repeat the same absorption" },
+]
+probes = [
+  { harness = "proofs::rejects_a_hash_that_passes_over_a_byte", assertion = "NEGATIVE_HASH_CONTROL" },
+]
+
+[[obligation]]
+verifier = "kani"
+source = "crates/youarel-core/src/index_rules.rs"
+harnesses = [
+  { name = "proofs::a_placement_key_orders_as_its_home_its_position_and_its_entry", covers = 1, contract = "placement keys order exactly as their homes' keys, then their positions as text, then their entries, folders before shortcuts and each by its identifier, so the terminator sorts a position before a longer one that starts with it", input_domain = "every two entries of either kind, in the top or a folder, each identifier with its first and last bytes drawn, at the positions V and VV and at V and V", bound = "a position with a longer one that it starts, and one position, whose reversed pairs keys and parts both order the other way; identifiers that differ in their first and last bytes tell a key that keeps an identifier's bytes in order from one that drops or reverses them, and the tests cover more positions" },
+  { name = "proofs::placement_keys_at_positions_apart_order_as_their_parts", covers = 1, contract = "placement keys at positions that part before either ends order exactly as their homes' keys, then their positions as text, then their entries", input_domain = "every two entries of either kind, in the top or a folder, each identifier with its first and last bytes drawn, at the positions 1 and z and at VV and Vz", bound = "positions apart at their first symbol and at a later one, whose reversed pairs keys and parts both order the other way; the alphabet's bytes all lie above the terminator, which the position proofs and the tests cover" },
+  { name = "proofs::a_kept_start_never_reverses_the_order_of_texts", covers = 1, contract = "the start of a text that a sort key keeps holds no terminator and fits its bound, a smaller kept start belongs to a smaller text, and a sort key orders as its kept start and then its identifier", input_domain = "every pair of texts of up to three arbitrary bytes, which hold terminators, kept to two bytes, with any identifier byte", bound = "texts of three bytes kept to two; the keep reads a text only up to its bound and its first terminator, so longer texts and the thirty-two bytes of a real key repeat the same cut" },
+  { name = "proofs::a_shortcut_sits_at_the_top_exactly_when_its_folder_is_gone", covers = 1, contract = "a shortcut sits at the top exactly when it declares no folder or the tree does not hold its folder, and otherwise in the folder it declares; the top's key sorts before every folder's; and the record of an item gone for good may go exactly once it stayed for the horizon of 180 days", input_domain = "every declared folder or none, whether the tree holds it, every removal time, and every clock reading", bound = "complete" },
+  { name = "proofs::a_shortcut_files_as_its_presence_and_its_folder_s_standing_decide", covers = 2, contract = "filing makes a shortcut gone exactly when it is gone for good, shown exactly when it is live and its folder is not hidden by the trash, in its folder exactly while the tree holds that folder, an orphan exactly when it is not gone and waits for a folder the tree does not hold, and in the trash exactly while it waits there itself; rows files the rows of each table from that filing", input_domain = "every presence and every folder the shortcut declares in every standing, or none", bound = "complete for filing; rows composes it with the keys the other harnesses prove, and the tests and the store's differential test check every row a shortcut files" },
+  { name = "proofs::the_whole_days_of_times_lie_within_them", covers = 2, contract = "the whole days of times start with the first day that starts at their start or later and end before the day their end falls in, so the rows before and after them fill the rest, and times that hold no day whole, or whose first whole day would start past every time, name none", input_domain = "every start and every end or none within the first three days from the epoch or the last three days before the end of time", bound = "three days at either end of time; the days a start or an end falls in, and whether a day's start passes every time, decide every case, and the windows hold a start and an end within one day, across one day, and across two, a first whole day that would start past every time, and the tests cover other spans" },
+  { name = "proofs::a_delta_removes_every_old_row_and_inserts_every_new_one", covers = 1, contract = "between two strictly ascending lists of rows, the walk that delta collects takes away exactly the old rows the new list lacks and adds exactly the new rows the old list lacks, each in ascending order", input_domain = "every pair of strictly ascending lists of up to three rows below four", bound = "three rows a side; the walk compares rows only through their order, so small rows stand for keys, and the tests cover every such pair through delta and whole shortcuts' rows" },
+]
+probes = [
+  { harness = "proofs::rejects_an_index_key_out_of_order", assertion = "NEGATIVE_INDEX_CONTROL" },
+]
+
+[[obligation]]
+verifier = "kani"
+source = "crates/youarel-core/src/page_rules.rs"
+harnesses = [
+  { name = "proofs::consecutive_windows_tile_a_listing_without_a_skip_or_a_repeat", covers = 1, contract = "a window lies within its listing and holds at most its limit, and the window that starts where it ends follows it with no place skipped or repeated, so the two hold the window of both limits", input_domain = "every total, first place, and limit", bound = "complete" },
+  { name = "proofs::a_page_keeps_what_was_in_sight_and_brings_a_row_into_sight", covers = 2, contract = "the page a view answers with holds as many rows as the listing can fill, holds the row it brings into sight whenever its lead is shorter than a page, and holds every row of the page in sight when it brings no row into sight from outside that page", input_domain = "every total, place in sight, row to bring into sight or none, limit, and lead", bound = "complete" },
+  { name = "proofs::a_place_falls_in_the_one_part_that_holds_it", covers = 2, contract = "locate puts a place within a listing of parts in the part that holds it, at the place within that part that the parts before it leave, and puts a place past the listing's end in no part", input_domain = "every list of up to three parts of any size and every place", bound = "three parts; locate passes each part once and reads it only through its size, so longer lists repeat the same step, which the tests cover" },
+  { name = "proofs::a_merged_page_is_the_start_of_the_sorted_union_after_its_cursor", covers = 1, contract = "a merged page holds, in ascending order, exactly the first keys after its cursor of the union of its ascending lists, up to its limit", input_domain = "every two strictly ascending lists of up to two keys below four, every byte cursor or none, and every limit up to four", bound = "two lists of two keys below four; the merge compares keys only through their order and takes one key a round, so small keys stand for any, and the tests cover every such pair of lists" },
+]
+probes = [
+  { harness = "proofs::rejects_a_page_that_repeats_a_row", assertion = "NEGATIVE_PAGE_CONTROL" },
+]
+
+[[obligation]]
+verifier = "kani"
+source = "crates/youarel-core/src/selection_rules.rs"
+harnesses = [
+  { name = "proofs::pinned_identifiers_survive_a_change_of_generation_or_order", covers = 3, contract = "a snapshot keeps places only in its exact listing and generation and, when restored, selects exactly the saved identifiers rather than new rows at their old places", input_domain = "every listing and generation before and after, zero to three arbitrary byte identifiers including duplicates, and any candidate identifier", bound = "three identifiers; production normalizes them through Selection::of and tests cover the store-backed capture across page boundaries" },
+  { name = "proofs::a_selection_takes_no_place_past_its_listing_and_counts_what_it_takes", covers = 3, contract = "for every span and every rows left out inside it and added outside it, a row is taken exactly as Standing::taken decides, no place past the listing's end is taken, the span's covered rows less those left out and with those added count exactly the rows taken, and the turn a toggle makes at a row of the listing turns that row alone and keeps the rows left out inside the span and those added outside it", input_domain = "every listing of up to three rows, every span of either listing between any two places in order or over every row, every rows left out and added as marks on four places that keep that promise, and every toggle at a row of the listing", bound = "three rows; a selection reads its lists of identifiers only for whether they hold an identifier and how long they are, so the harness reads them as marks on places, and the tests run the lists themselves through every sequence of three changes over four places" },
+]
+probes = [
+  { harness = "proofs::rejects_a_selection_of_a_place_outside_the_listing", assertion = "NEGATIVE_SELECTION_CONTROL" },
+  { harness = "proofs::rejects_a_new_row_joining_a_pinned_selection", assertion = "NEGATIVE_SELECTION_CONTROL" },
+]
+
+[[obligation]]
+verifier = "kani"
+source = "crates/youarel-core/src/search_rules.rs"
+harnesses = [
+  { name = "proofs::a_search_scans_exactly_below_the_limit", covers = 2, contract = "plan scans every shortcut exactly when the scope holds fewer than the scan limit, and otherwise reads the index of the word given, or nothing without a word", input_domain = "every count of live shortcuts and every word or none", bound = "complete; the plan reads the word only for whether it is there" },
+  { name = "proofs::the_longest_word_is_the_first_that_no_other_passes", covers = 1, contract = "first_longest names no place without lengths, and otherwise the place of a length that no other passes and that every length before it falls short of", input_domain = "every list of up to three lengths of any value", bound = "three lengths; the search compares lengths only with the best so far, so longer lists repeat the same step, which the tests cover" },
+  { name = "proofs::a_word_s_bounds_hold_exactly_the_keys_that_start_with_it", covers = 2, contract = "the bounds that starting gives a prefix hold a key exactly when the key starts with the prefix, with no end for a prefix of the last bytes", input_domain = "every prefix of up to two bytes and every key of up to three, each byte any value", bound = "two bytes of prefix and three of key; the bounds raise the last byte below the greatest and compare keys bytewise, so longer prefixes and keys repeat the same carry and comparison, which the tests cover" },
+  { name = "proofs::a_spelling_s_bounds_hold_exactly_the_identifiers_it_starts", covers = 2, contract = "identifiers bounds exactly the identifiers whose lowercase hexadecimal spelling starts with the spelling, an odd last digit the bytes it starts, and nothing for a spelling with another character or more digits than an identifier holds", input_domain = "every spelling of up to three bytes, each any value, against every identifier whose first two bytes are drawn", bound = "three bytes of spelling, a whole byte and an odd digit; longer spellings repeat the same pairing of digits, which the tests cover up to the whole identifier" },
+]
+probes = [
+  { harness = "proofs::rejects_an_index_search_below_the_limit", assertion = "NEGATIVE_SEARCH_CONTROL" },
+]
+
+[[obligation]]
+verifier = "kani"
+source = "crates/youarel-core/src/edit_rules.rs"
+harnesses = [
+  { name = "proofs::an_edit_is_refused_as_the_reference_refuses_it_and_lands_between_its_neighbors", covers = 4, contract = "the decision that apply runs with position_rules' between refuses an edit as State::apply does, in its order: an addition of an identifier that exists in any presence, an edit of an entry not in the presence it needs, which is in the trash for a put back, live or in the trash for a removal for good, and live for every other edit, an entry put into a folder that is not live, a folder moved into itself or a folder it holds, a slot whose sibling does not show, and no position between the neighbors; otherwise it writes the edit's own entry, folder, texts, and presence, and an edit that places its entry asks the choice of a position for exactly the slot's bounds and writes the position it answers; RestorePlace admits the same entry and destination as a move and restores the saved valid position without generating another", input_domain = "every presence of the edited entry or none, every liveness of the destination, every containment, neighbors drawn from three positions or none, every kind of edit of fourteen, every slot, and the top or a folder", bound = "three positions, with a choice that answers one position between ordered bounds in place of between, whose midpoint and encoding position_rules proves; the decision reads the entries only through the facts, and the tests and the store's differential test drive apply with between against State::apply" },
+]
+probes = [
+  { harness = "proofs::rejects_a_move_into_a_dead_folder", assertion = "NEGATIVE_EDIT_CONTROL" },
+]
+
+[[obligation]]
+verifier = "kani"
+source = "crates/youarel-core/src/history_rules.rs"
+harnesses = [
+  { name = "proofs::a_history_walks_one_step_at_a_time_and_keeps_its_bound", covers = 3, contract = "a new step keeps the steps behind the present, joins them, drops the oldest exactly when they filled the bound, and leaves no step ahead; back passes the most recent step behind the present and forward the next step ahead, each exactly when one lies there, each answers a place among the steps the history keeps, and each undoes the other", input_domain = "every bound and every place a history can stand at under it: any count of steps within the bound and any present among them", bound = "none: the decisions read only the counts of a history, which Kani takes at every value; the tests check that History carries them out over every run of six acts at bounds up to three" },
+]
+probes = [
+  { harness = "proofs::rejects_a_step_ahead_kept_past_a_new_step", assertion = "NEGATIVE_HISTORY_CONTROL" },
+]
+
+[[obligation]]
+verifier = "kani"
+source = "crates/youarel-core/src/typeahead_rules.rs"
+harnesses = [
+  { name = "proofs::a_key_joins_the_letters_typed_within_the_window_and_starts_anew_after_it", covers = 3, contract = "typing starts the letters anew when none came before, when the clock moved back, and when more than the window passed since the last key; within the window it joins the key when the letters leave room for its bytes within the bound, and holds the letters otherwise", input_domain = "every key of any size at every reading of the clock, after no letters or after letters of any size whose last key came at any time", bound = "none: the decision reads only sizes and times, which Kani takes at every value; the tests check that typed folds each key and carries the decision out" },
+]
+probes = [
+  { harness = "proofs::rejects_a_letter_joined_after_the_window", assertion = "NEGATIVE_TYPEAHEAD_CONTROL" },
+]
+
+[[obligation]]
+verifier = "kani"
+source = "crates/youarel-core/src/undo_rules.rs"
+harnesses = [
+  { name = "proofs::a_reversal_restores_only_the_changed_fields_and_keeps_the_identifier", covers = 3, contract = "a reversal names the edited entry, restores the previous value of exactly the changed field or the saved home and position, and repeats the original edit; an addition undoes to the trash and repeats by putting the same identifier back; an irreversible edit or a previous record of the wrong kind or presence has no reversal", input_domain = "every edit shape of fourteen, no previous record or a shortcut or folder, and every presence", bound = "records with distinct one-character text values and fixed valid positions; the decision copies their fields unchanged, and the store and app tests apply the returned edits at new stamps" },
+]
+probes = [
+  { harness = "proofs::rejects_an_undo_that_keeps_the_new_title", assertion = "NEGATIVE_UNDO_CONTROL" },
 ]
 
 [[obligation]]
@@ -301,7 +509,7 @@ probe = "specs/proverif/probes/rotation.pv"
 verifier = "proverif"
 model = "specs/proverif/recovery.pv"
 library = "specs/proverif/primitives.pvl"
-queries = 3
+queries = 6
 probe = "specs/proverif/probes/recovery.pv"
 
 [[obligation]]

@@ -109,8 +109,9 @@ youarel-import = { path = "crates/youarel-import" }
 anyhow = "1.0"
 base64 = "0.22"
 clap = { version = "4.6", features = ["derive", "wrap_help"] }
+ctrlc = { version = "3.5.2", features = ["termination"] }
 flate2 = "1.1"
-keyring = "4.2"
+fs4 = "1.1"
 getrandom = "0.4"
 image = { version = "0.25.10", default-features = false, features = [
   "bmp",
@@ -136,9 +137,13 @@ plist = { version = "1.10", default-features = false }
 libcrux-ml-dsa = { version = "0.0.11", default-features = false, features = ["mldsa65", "std"] }
 minisign = "0.7"
 minisign-verify = "0.2"
+md-5 = "0.11"
 rand_chacha = "0.3"
 rand_core = "0.6"
 ratatui = "0.30"
+# The store keeps the state with its indexes, the visits, and the icons in one embedded database in pure Rust, whose transactions a crash never leaves half done.
+redb = "4.4"
+rusqlite = { version = "=0.40.2", features = ["backup", "bundled", "hooks", "limits"] }
 # The operating system verifies certificates, so its trust store and its updates apply and no root bundle ships with the binary.
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 ureq = { version = "3", default-features = false, features = [

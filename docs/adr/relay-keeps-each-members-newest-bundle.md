@@ -1,6 +1,7 @@
 ---
-status: proposed
+status: superseded
 date: 2026-10-16
+superseded-by: state-travels-as-sealed-segment-chains.md
 ---
 # The relay keeps each member's newest bundle
 

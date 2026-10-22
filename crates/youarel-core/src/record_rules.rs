@@ -7,7 +7,7 @@
 use crate::clock_rules::{DeviceId, Stamp};
 use crate::merge_rules::Register;
 use crate::position_rules::Key;
-use crate::state::{Folder, ItemId, Shortcut, State};
+use crate::state::{Folder, ItemId, Presence, Shortcut, State};
 use crate::wire_rules::{Reader, WireError, Writer, ascending};
 use alloc::collections::BTreeSet;
 use alloc::string::String;
@@ -16,22 +16,46 @@ use alloc::vec::Vec;
 /// The magic that opens the records of a state.
 pub const MAGIC: [u8; 4] = *b"YRR1";
 /// The version of the records this module writes and reads.
-pub const VERSION: u16 = 1;
+pub const VERSION: u16 = 2;
+
+#[cfg(test)]
+mod device_tests;
 /// The stamp of a register that no device wrote, which every write follows.
 pub const NEVER: Stamp = Stamp::origin(DeviceId([0; 16]));
 
-/// The flag of a removed item.
-const REMOVED: u8 = 0b0001;
+/// The flag of an item gone for good, which a record before the trash raised for a removed item.
+const PURGED: u8 = 0b0_0001;
 /// The flag of an item inside a folder: a shortcut's folder, or a folder's parent.
-const PLACED: u8 = 0b0010;
+const PLACED: u8 = 0b0_0010;
 /// The flag of a shortcut with an alias, or of a folder with a mark.
-const NAMED: u8 = 0b0100;
+const NAMED: u8 = 0b0_0100;
 /// The flag of a shortcut with a note.
-const NOTED: u8 = 0b1000;
-/// The flags a shortcut's record may raise, all four; every other bit stays clear.
-const SHORTCUT_FLAGS: u8 = 0b1111;
+const NOTED: u8 = 0b0_1000;
+/// The flag of an item in the trash, which never stands beside the flag of an item gone for good.
+const TRASHED: u8 = 0b1_0000;
+/// The flags a shortcut's record may raise, all five; every other bit stays clear.
+const SHORTCUT_FLAGS: u8 = 0b1_1111;
 /// The flags a folder's record may raise, all but the note's; every other bit stays clear.
-const FOLDER_FLAGS: u8 = 0b0111;
+const FOLDER_FLAGS: u8 = 0b1_0111;
+
+/// The flag of an item's presence: none while it is live.
+const fn presence_flag(presence: Presence) -> u8 {
+    match presence {
+        Presence::Live => 0,
+        Presence::Trashed => TRASHED,
+        Presence::Purged => PURGED,
+    }
+}
+
+/// The presence that a record's flags name, refusing flags that name it both in the trash and gone for good.
+const fn read_presence(flags: u8) -> Result<Presence, WireError> {
+    match (flags & PURGED != 0, flags & TRASHED != 0) {
+        (false, false) => Ok(Presence::Live),
+        (false, true) => Ok(Presence::Trashed),
+        (true, false) => Ok(Presence::Purged),
+        (true, true) => Err(WireError::Tag(flags)),
+    }
+}
 
 /// The mode of a register that shares its item's base stamp.
 const SAME: u8 = 0;
@@ -43,9 +67,9 @@ const UNWRITTEN: u8 = 2;
 const MODE: u8 = 0b11;
 /// Where each of the four modes of a byte sits in it, the first register's lowest.
 const MODE_SHIFTS: [u32; 4] = [0, 2, 4, 6];
-/// The registers of a shortcut after its link: title, alias, folder, position, removal, and note.
+/// The registers of a shortcut after its link: title, alias, folder, position, presence, and note.
 const SHORTCUT_REGISTERS: usize = 6;
-/// The registers of a folder after its name: mark, parent, position, and removal.
+/// The registers of a folder after its name: mark, parent, position, and presence.
 const FOLDER_REGISTERS: usize = 4;
 /// The shift that spreads a difference's sign across all its bits.
 const SIGN_SHIFT: u32 = 63;
@@ -61,6 +85,14 @@ impl DeviceTable {
     #[must_use]
     pub fn ascending(devices: Vec<DeviceId>) -> Option<Self> {
         ascending(&devices).then_some(Self { devices })
+    }
+
+    /// The table of devices in any order, each once, as a store keeps them so that every place it wrote stays, or `None` for a list that names a device twice.
+    #[must_use]
+    pub fn distinct(devices: Vec<DeviceId>) -> Option<Self> {
+        let mut sorted = devices.clone();
+        sorted.sort_unstable();
+        ascending(&sorted).then_some(Self { devices })
     }
 
     /// The table of every device whose stamp a body's records write in full.
@@ -90,6 +122,56 @@ impl DeviceTable {
 pub struct Body {
     pub folders: Vec<(ItemId, Folder)>,
     pub shortcuts: Vec<(ItemId, Shortcut)>,
+    pub devices: Vec<(crate::device_rules::MemberId, Register<String>)>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum Record {
+    Folder(ItemId, Folder),
+    Shortcut(ItemId, Shortcut),
+    Device(crate::device_rules::MemberId, Register<String>),
+}
+
+impl Record {
+    #[must_use]
+    pub fn latest_of(&self, device: DeviceId) -> Option<Stamp> {
+        match self {
+            Self::Device(_, name) => (name.stamp.device == device).then_some(name.stamp),
+            Self::Folder(_, folder) => folder
+                .stamps()
+                .into_iter()
+                .filter(|stamp| stamp.device == device)
+                .max(),
+            Self::Shortcut(_, shortcut) => shortcut
+                .stamps()
+                .into_iter()
+                .filter(|stamp| stamp.device == device)
+                .max(),
+        }
+    }
+}
+
+/// The bytes surrounding a body's encoded records, including its device dictionary.
+///
+/// # Errors
+///
+/// Refuses counts whose framing cannot fit in memory.
+pub fn body_framing(
+    devices: usize,
+    folders: usize,
+    shortcuts: usize,
+    names: usize,
+) -> Result<usize, WireError> {
+    const DEVICE_BYTES: usize = size_of::<DeviceId>();
+    let mut writer = Writer::new();
+    writer.raw(&MAGIC).short(VERSION);
+    for count in [devices, folders, shortcuts, names] {
+        write_count(&mut writer, count)?;
+    }
+    devices
+        .checked_mul(DEVICE_BYTES)
+        .and_then(|bytes| bytes.checked_add(writer.finish().len()))
+        .ok_or(WireError::Length)
 }
 
 impl Body {
@@ -97,6 +179,11 @@ impl Body {
     #[must_use]
     pub fn of(state: &State) -> Self {
         Self {
+            devices: state
+                .devices
+                .iter()
+                .map(|(id, name)| (*id, name.clone()))
+                .collect(),
             folders: state
                 .folders
                 .iter()
@@ -114,6 +201,7 @@ impl Body {
     #[must_use]
     pub fn into_state(self) -> State {
         State {
+            devices: self.devices.into_iter().collect(),
             shortcuts: self.shortcuts.into_iter().collect(),
             folders: self.folders.into_iter().collect(),
         }
@@ -129,7 +217,7 @@ const fn shortcut_stamps(shortcut: &Shortcut) -> (Stamp, [Stamp; SHORTCUT_REGIST
             shortcut.alias.stamp,
             shortcut.folder.stamp,
             shortcut.position.stamp,
-            shortcut.removed.stamp,
+            shortcut.presence.stamp,
             shortcut.note.stamp,
         ],
     )
@@ -143,7 +231,7 @@ const fn folder_stamps(folder: &Folder) -> (Stamp, [Stamp; FOLDER_REGISTERS]) {
             folder.mark.stamp,
             folder.parent.stamp,
             folder.position.stamp,
-            folder.removed.stamp,
+            folder.presence.stamp,
         ],
     )
 }
@@ -179,7 +267,9 @@ fn stamped(body: &Body) -> impl Iterator<Item = DeviceId> + '_ {
         .shortcuts
         .iter()
         .flat_map(|(_, shortcut)| written(shortcut_stamps(shortcut)));
-    folders.chain(shortcuts)
+    folders
+        .chain(shortcuts)
+        .chain(body.devices.iter().map(|(_, name)| name.stamp.device))
 }
 
 /// The zigzag form of a wrapping difference, which keeps a small step either way small.
@@ -354,7 +444,7 @@ fn read_key(reader: &mut Reader<'_>) -> Result<Key, WireError> {
     Key::parse(&read_text(reader)?).ok_or(WireError::Value)
 }
 
-/// Writes a shortcut's record: its identifier, its flags, its stamps, then its link, title, alias, folder, position, and note, each optional field only when a flag says it is there.
+/// Writes a shortcut's record: its identifier, then its fields as [`encode_shortcut_fields`] writes them.
 ///
 /// # Errors
 ///
@@ -364,10 +454,23 @@ pub fn encode_shortcut(
     devices: &DeviceTable,
     (id, shortcut): (ItemId, &Shortcut),
 ) -> Result<(), WireError> {
-    let mut flags = 0;
-    if shortcut.removed.value {
-        flags |= REMOVED;
-    }
+    writer.raw(&id.0);
+    encode_shortcut_fields(writer, devices, shortcut)
+}
+
+/// Writes a shortcut's fields: its flags, its stamps, then its link, title, alias, folder, position, and note, each optional field only when a flag says it is there.
+///
+/// A store keeps the fields under the identifier as its key.
+///
+/// # Errors
+///
+/// Returns [`WireError::Value`] when a stamp names a device that the table does not hold.
+pub fn encode_shortcut_fields(
+    writer: &mut Writer,
+    devices: &DeviceTable,
+    shortcut: &Shortcut,
+) -> Result<(), WireError> {
+    let mut flags = presence_flag(shortcut.presence.value);
     if shortcut.folder.value.is_some() {
         flags |= PLACED;
     }
@@ -377,7 +480,7 @@ pub fn encode_shortcut(
     if !shortcut.note.value.is_empty() {
         flags |= NOTED;
     }
-    writer.raw(&id.0).byte(flags);
+    writer.byte(flags);
     write_stamps(writer, devices, shortcut_stamps(shortcut))?;
     write_text(writer, &shortcut.link.value)?;
     write_text(writer, &shortcut.title.value)?;
@@ -404,11 +507,24 @@ pub fn decode_shortcut(
     devices: &DeviceTable,
 ) -> Result<(ItemId, Shortcut), WireError> {
     let id = ItemId(reader.array()?);
+    Ok((id, decode_shortcut_fields(reader, devices)?))
+}
+
+/// A shortcut's fields, as [`encode_shortcut_fields`] writes them.
+///
+/// # Errors
+///
+/// Returns a [`WireError`] for bytes that [`encode_shortcut_fields`] would not have written.
+pub fn decode_shortcut_fields(
+    reader: &mut Reader<'_>,
+    devices: &DeviceTable,
+) -> Result<Shortcut, WireError> {
     let flags = reader.byte()?;
     if flags & !SHORTCUT_FLAGS != 0 {
         return Err(WireError::Tag(flags));
     }
-    let (base, [title, alias, folder, position, removed, note]) = read_stamps(reader, devices)?;
+    let present = read_presence(flags)?;
+    let (base, [title, alias, folder, position, presence, note]) = read_stamps(reader, devices)?;
     let link = read_text(reader)?;
     let titled = read_text(reader)?;
     let aliased = read_flagged(reader, flags & NAMED != 0)?;
@@ -440,19 +556,19 @@ pub fn decode_shortcut(
             value: key,
             stamp: position,
         },
-        removed: Register {
-            value: flags & REMOVED != 0,
-            stamp: removed,
+        presence: Register {
+            value: present,
+            stamp: presence,
         },
         note: Register {
             value: noted,
             stamp: note,
         },
     };
-    Ok((id, shortcut))
+    Ok(shortcut)
 }
 
-/// Writes a folder's record: its identifier, its flags, its stamps, then its name, mark, parent, and position, each optional field only when a flag says it is there.
+/// Writes a folder's record: its identifier, then its fields as [`encode_folder_fields`] writes them.
 ///
 /// # Errors
 ///
@@ -462,17 +578,28 @@ pub fn encode_folder(
     devices: &DeviceTable,
     (id, folder): (ItemId, &Folder),
 ) -> Result<(), WireError> {
-    let mut flags = 0;
-    if folder.removed.value {
-        flags |= REMOVED;
-    }
+    writer.raw(&id.0);
+    encode_folder_fields(writer, devices, folder)
+}
+
+/// Writes a folder's fields: its flags, its stamps, then its name, mark, parent, and position, each optional field only when a flag says it is there.
+///
+/// # Errors
+///
+/// Returns [`WireError::Value`] when a stamp names a device that the table does not hold.
+pub fn encode_folder_fields(
+    writer: &mut Writer,
+    devices: &DeviceTable,
+    folder: &Folder,
+) -> Result<(), WireError> {
+    let mut flags = presence_flag(folder.presence.value);
     if folder.parent.value.is_some() {
         flags |= PLACED;
     }
     if !folder.mark.value.is_empty() {
         flags |= NAMED;
     }
-    writer.raw(&id.0).byte(flags);
+    writer.byte(flags);
     write_stamps(writer, devices, folder_stamps(folder))?;
     write_text(writer, &folder.name.value)?;
     if flags & NAMED != 0 {
@@ -494,11 +621,24 @@ pub fn decode_folder(
     devices: &DeviceTable,
 ) -> Result<(ItemId, Folder), WireError> {
     let id = ItemId(reader.array()?);
+    Ok((id, decode_folder_fields(reader, devices)?))
+}
+
+/// A folder's fields, as [`encode_folder_fields`] writes them.
+///
+/// # Errors
+///
+/// Returns a [`WireError`] for bytes that [`encode_folder_fields`] would not have written.
+pub fn decode_folder_fields(
+    reader: &mut Reader<'_>,
+    devices: &DeviceTable,
+) -> Result<Folder, WireError> {
     let flags = reader.byte()?;
     if flags & !FOLDER_FLAGS != 0 {
         return Err(WireError::Tag(flags));
     }
-    let (base, [mark, parent, position, removed]) = read_stamps(reader, devices)?;
+    let present = read_presence(flags)?;
+    let (base, [mark, parent, position, presence]) = read_stamps(reader, devices)?;
     let name = read_text(reader)?;
     let marked = read_flagged(reader, flags & NAMED != 0)?;
     let placed = if flags & PLACED == 0 {
@@ -524,12 +664,12 @@ pub fn decode_folder(
             value: key,
             stamp: position,
         },
-        removed: Register {
-            value: flags & REMOVED != 0,
-            stamp: removed,
+        presence: Register {
+            value: present,
+            stamp: presence,
         },
     };
-    Ok((id, folder))
+    Ok(folder)
 }
 
 /// The records as bytes: the magic and the version, the table of devices, then the folders and the shortcuts, each list counted by a varint.
@@ -540,6 +680,7 @@ pub fn decode_folder(
 pub fn encode_body(body: &Body) -> Result<Vec<u8>, WireError> {
     if !ascending(body.folders.iter().map(|(id, _)| id))
         || !ascending(body.shortcuts.iter().map(|(id, _)| id))
+        || !ascending(body.devices.iter().map(|(id, _)| id))
     {
         return Err(WireError::Order);
     }
@@ -558,16 +699,53 @@ pub fn encode_body(body: &Body) -> Result<Vec<u8>, WireError> {
     for (id, shortcut) in &body.shortcuts {
         encode_shortcut(&mut writer, &devices, (*id, shortcut))?;
     }
+    write_count(&mut writer, body.devices.len())?;
+    for (id, name) in &body.devices {
+        encode_device(&mut writer, &devices, (*id, name))?;
+    }
     Ok(writer.finish())
 }
 
-/// A list counted by a varint whose items ascend strictly by their identifiers.
-fn read_list<T>(
+/// Writes a membership identity and its sealed name register.
+///
+/// # Errors
+///
+/// Refuses names outside the device-name contract or a stamp outside the dictionary.
+pub fn encode_device(
+    writer: &mut Writer,
+    devices: &DeviceTable,
+    (id, name): (crate::device_rules::MemberId, &Register<String>),
+) -> Result<(), WireError> {
+    if !crate::device_rules::admitted_name(&name.value) {
+        return Err(WireError::Value);
+    }
+    writer.raw(&id.0);
+    write_stamps(writer, devices, (name.stamp, []))?;
+    write_text(writer, &name.value)
+}
+
+/// # Errors
+///
+/// Refuses a malformed stamp, noncanonical text, or an invalid name.
+pub fn decode_device(
     reader: &mut Reader<'_>,
-    read: impl Fn(&mut Reader<'_>) -> Result<(ItemId, T), WireError>,
-) -> Result<Vec<(ItemId, T)>, WireError> {
+    devices: &DeviceTable,
+) -> Result<(crate::device_rules::MemberId, Register<String>), WireError> {
+    let id = crate::device_rules::MemberId(reader.array()?);
+    let (stamp, []) = read_stamps::<0>(reader, devices)?;
+    let value = read_text(reader)?;
+    if !crate::device_rules::admitted_name(&value) {
+        return Err(WireError::Value);
+    }
+    Ok((id, Register { value, stamp }))
+}
+
+fn read_list<K: Copy + Ord, T>(
+    reader: &mut Reader<'_>,
+    read: impl Fn(&mut Reader<'_>) -> Result<(K, T), WireError>,
+) -> Result<Vec<(K, T)>, WireError> {
     let count = read_count(reader)?;
-    let mut items: Vec<(ItemId, T)> = Vec::new();
+    let mut items: Vec<(K, T)> = Vec::new();
     for _ in 0..count {
         let item = read(reader)?;
         if items.last().is_some_and(|(last, _)| *last >= item.0) {
@@ -611,8 +789,13 @@ pub fn decode_body(bytes: &[u8]) -> Result<Body, WireError> {
     let devices = DeviceTable::ascending(listed).ok_or(WireError::Order)?;
     let folders = read_list(&mut reader, |reader| decode_folder(reader, &devices))?;
     let shortcuts = read_list(&mut reader, |reader| decode_shortcut(reader, &devices))?;
+    let names = read_list(&mut reader, |reader| decode_device(reader, &devices))?;
     reader.finish()?;
-    let body = Body { folders, shortcuts };
+    let body = Body {
+        folders,
+        shortcuts,
+        devices: names,
+    };
     if !names_every(&devices, &body) {
         return Err(WireError::Canonical);
     }
@@ -631,7 +814,7 @@ mod proofs {
     use crate::clock_rules::{DeviceId, Stamp};
     use crate::merge_rules::Register;
     use crate::position_rules::Key;
-    use crate::state::{ItemId, Shortcut};
+    use crate::state::{ItemId, Presence, Shortcut};
     use crate::wire_rules::{Reader, WireError, Writer};
     use alloc::string::String;
     use alloc::vec;
@@ -652,6 +835,108 @@ mod proofs {
 
     fn register<T>(value: T, stamp: Stamp) -> Register<T> {
         Register { value, stamp }
+    }
+
+    fn count_width(mut value: usize) -> u128 {
+        const BITS: u32 = 7;
+        const BASE: usize = 128;
+        let mut bytes: u128 = 1;
+        while value >= BASE {
+            value >>= BITS;
+            bytes += 1;
+        }
+        bytes
+    }
+
+    #[kani::proof]
+    #[kani::unwind(65)]
+    fn body_framing_reports_its_exact_size_without_overflow() {
+        let devices: usize = kani::any();
+        let folders: usize = kani::any();
+        let shortcuts: usize = kani::any();
+        let names: usize = kani::any();
+        let fixed = (super::MAGIC.len() + size_of::<u16>()) as u128;
+        let expected = fixed
+            + count_width(devices)
+            + count_width(folders)
+            + count_width(shortcuts)
+            + count_width(names)
+            + (devices as u128) * (size_of::<DeviceId>() as u128);
+        match super::body_framing(devices, folders, shortcuts, names) {
+            Ok(bytes) => kani::assert(
+                bytes as u128 == expected,
+                "framing is the four counts, magic, version, and dictionary",
+            ),
+            Err(error) => kani::assert(
+                error == super::WireError::Length && expected > usize::MAX as u128,
+                "only framing beyond memory refuses",
+            ),
+        }
+        kani::cover!(expected <= usize::MAX as u128, "framing fits");
+        kani::cover!(
+            expected > usize::MAX as u128,
+            "dictionary bytes would overflow"
+        );
+    }
+
+    #[kani::proof]
+    #[kani::unwind(33)]
+    fn every_record_reports_its_latest_stamp_of_the_requested_device() {
+        let stamps: [Stamp; 7] = core::array::from_fn(|_| any_stamp());
+        let device = DeviceId(kani::any());
+        let folder: bool = kani::any();
+        let Some(position) = Key::parse("a1") else {
+            kani::assert(false, "the fixed position is admitted");
+            return;
+        };
+        let record = if folder {
+            super::Record::Folder(
+                ItemId([1; ID]),
+                super::Folder {
+                    name: register(String::new(), stamps[0]),
+                    mark: register(String::new(), stamps[1]),
+                    parent: register(None, stamps[2]),
+                    position: register(position, stamps[3]),
+                    presence: register(super::Presence::Live, stamps[4]),
+                },
+            )
+        } else {
+            super::Record::Shortcut(
+                ItemId([1; ID]),
+                Shortcut {
+                    link: register(String::new(), stamps[0]),
+                    title: register(String::new(), stamps[1]),
+                    alias: register(String::new(), stamps[2]),
+                    folder: register(None, stamps[3]),
+                    position: register(position, stamps[4]),
+                    presence: register(super::Presence::Live, stamps[5]),
+                    note: register(String::new(), stamps[6]),
+                },
+            )
+        };
+        let fields = if folder { &stamps[..5] } else { &stamps[..] };
+        let latest = record.latest_of(device);
+        if let Some(latest) = latest {
+            kani::assert(
+                latest.device == device && fields.contains(&latest),
+                "the latest stamp is a field of this device",
+            );
+            kani::assert(
+                fields
+                    .iter()
+                    .filter(|stamp| stamp.device == device)
+                    .all(|stamp| *stamp <= latest),
+                "no field of this device follows the result",
+            );
+        } else {
+            kani::assert(
+                fields.iter().all(|stamp| stamp.device != device),
+                "none means this device wrote no field",
+            );
+        }
+        kani::cover!(latest.is_some() && folder, "a folder holds an own write");
+        kani::cover!(latest.is_some() && !folder, "a shortcut holds an own write");
+        kani::cover!(latest.is_none(), "this device wrote no field");
     }
 
     /// Every stamp beside every base takes the one mode its relation to the base names, and a stamp of its own reads back from its zigzag difference, its counter, and its device, while the base and the stamp no device wrote never read as a stamp of their own.
@@ -775,13 +1060,13 @@ mod proofs {
             alias: register(String::new(), base),
             folder: register(None, base),
             position: register(Key::parse("V").unwrap(), base),
-            removed: register(false, base),
+            presence: register(Presence::Live, base),
             note: register(String::new(), base),
         };
         let mut writer = Writer::new();
         encode_shortcut(&mut writer, &table, (ItemId([0; ID]), &shortcut)).unwrap();
         let mut bytes = writer.finish();
-        bytes[ID] |= 0b1_0000;
+        bytes[ID] |= 0b10_0000;
         kani::assert(
             decode_shortcut(&mut Reader::new(&bytes), &table).is_ok(),
             "NEGATIVE_RECORD_CONTROL",
@@ -792,14 +1077,15 @@ mod proofs {
 #[cfg(test)]
 mod tests {
     use super::{
-        Body, DeviceTable, FOLDER_FLAGS, MAGIC, NAMED, NEVER, NOTED, PLACED, REMOVED,
-        SHORTCUT_FLAGS, VERSION, decode_body, decode_folder, decode_shortcut, encode_body,
-        encode_folder, encode_shortcut, unzigzag, zigzag,
+        Body, DeviceTable, FOLDER_FLAGS, MAGIC, NAMED, NEVER, NOTED, PLACED, PURGED,
+        SHORTCUT_FLAGS, TRASHED, VERSION, decode_body, decode_folder, decode_folder_fields,
+        decode_shortcut, decode_shortcut_fields, encode_body, encode_folder, encode_folder_fields,
+        encode_shortcut, encode_shortcut_fields, read_presence, unzigzag, zigzag,
     };
     use crate::clock_rules::{DeviceId, Stamp};
     use crate::merge_rules::Register;
     use crate::position_rules::Key;
-    use crate::state::{Edit, Entry, Folder, ItemId, Shortcut, State};
+    use crate::state::{Edit, Entry, Folder, ItemId, Presence, Shortcut, State};
     use crate::wire_rules::{Reader, WireError, Writer};
     use alloc::string::String;
     use alloc::vec;
@@ -840,7 +1126,7 @@ mod tests {
             alias: register(String::from("ex"), NEVER),
             folder: register(Some(ItemId([9; 16])), at(BASE + 5, 0, SECOND)),
             position: register(key("1z"), at(BASE - 10, 7, FIRST)),
-            removed: register(true, at(u64::MAX, u32::MAX, SECOND)),
+            presence: register(Presence::Purged, at(u64::MAX, u32::MAX, SECOND)),
             note: register(String::from("é note"), base),
         }
     }
@@ -853,7 +1139,7 @@ mod tests {
             alias: register(String::new(), stamp),
             folder: register(None, stamp),
             position: register(key("V"), stamp),
-            removed: register(false, stamp),
+            presence: register(Presence::Live, stamp),
             note: register(String::new(), stamp),
         }
     }
@@ -866,7 +1152,7 @@ mod tests {
             mark: register(String::from("📚"), at(BASE + 1, 1, FIRST)),
             parent: register(Some(ItemId([3; 16])), base),
             position: register(key("V"), NEVER),
-            removed: register(true, at(0, 0, SECOND)),
+            presence: register(Presence::Purged, at(0, 0, SECOND)),
         }
     }
 
@@ -909,12 +1195,27 @@ mod tests {
 
     #[test]
     fn the_flags_of_each_record_are_the_ones_their_names_say() {
-        assert_eq!(SHORTCUT_FLAGS, REMOVED | PLACED | NAMED | NOTED);
-        assert_eq!(FOLDER_FLAGS, REMOVED | PLACED | NAMED);
+        assert_eq!(SHORTCUT_FLAGS, PURGED | PLACED | NAMED | NOTED | TRASHED);
+        assert_eq!(FOLDER_FLAGS, PURGED | PLACED | NAMED | TRASHED);
         assert_eq!(
-            [REMOVED, PLACED, NAMED, NOTED],
-            [0b0001, 0b0010, 0b0100, 0b1000]
+            [PURGED, PLACED, NAMED, NOTED, TRASHED],
+            [0b0_0001, 0b0_0010, 0b0_0100, 0b0_1000, 0b1_0000]
         );
+        assert_eq!(read_presence(0), Ok(Presence::Live));
+        assert_eq!(read_presence(PURGED | PLACED), Ok(Presence::Purged));
+        assert_eq!(read_presence(TRASHED | NAMED), Ok(Presence::Trashed));
+        assert_eq!(
+            read_presence(PURGED | TRASHED),
+            Err(WireError::Tag(0b1_0001)),
+            "an item is never both in the trash and gone for good"
+        );
+    }
+
+    /// The flags a sweep raises over a record that may raise `allowed`: every combination but the one that names both presences.
+    fn swept_flags(allowed: u8) -> impl Iterator<Item = u8> {
+        (0..=allowed).filter(move |flags| {
+            flags & !allowed == 0 && flags & (PURGED | TRASHED) != PURGED | TRASHED
+        })
     }
 
     #[test]
@@ -957,6 +1258,42 @@ mod tests {
         plain_fields(&mut short);
         assert_eq!(written(&plain), short.finish());
         assert_eq!(read(&written(&plain), &table()), Ok((ID, plain)));
+    }
+
+    #[test]
+    fn a_store_s_table_keeps_its_devices_in_any_order_each_once_and_fields_read_back_alone() {
+        let kept = DeviceTable::distinct(vec![SECOND, FIRST]).unwrap();
+        assert_eq!(kept.devices(), [SECOND, FIRST]);
+        assert_eq!((kept.place(SECOND), kept.place(FIRST)), (Some(0), Some(1)));
+        assert_eq!(DeviceTable::distinct(vec![FIRST, SECOND, FIRST]), None);
+        assert_eq!(
+            DeviceTable::distinct(Vec::new()),
+            Some(DeviceTable::default())
+        );
+        let mut shortcut_writer = Writer::new();
+        encode_shortcut_fields(&mut shortcut_writer, &table(), &full()).unwrap();
+        let shortcut_fields = shortcut_writer.finish();
+        assert_eq!(shortcut_fields, written(&full())[ID.0.len()..]);
+        let mut shortcut_reader = Reader::new(&shortcut_fields);
+        assert_eq!(
+            decode_shortcut_fields(&mut shortcut_reader, &table()),
+            Ok(full())
+        );
+        assert_eq!(shortcut_reader.finish(), Ok(()));
+        let mut folder_writer = Writer::new();
+        encode_folder_fields(&mut folder_writer, &kept, &marked()).unwrap();
+        let folder_fields = folder_writer.finish();
+        let mut folder_reader = Reader::new(&folder_fields);
+        assert_eq!(
+            decode_folder_fields(&mut folder_reader, &kept),
+            Ok(marked())
+        );
+        assert_eq!(folder_reader.finish(), Ok(()));
+        assert_ne!(
+            decode_folder_fields(&mut Reader::new(&folder_fields), &table()),
+            Ok(marked()),
+            "a place names the device of its own table"
+        );
     }
 
     #[test]
@@ -1029,7 +1366,7 @@ mod tests {
         for base in [at(BASE, 0, FIRST), at(0, 9, SECOND)] {
             let stamps = sweep_stamps(base);
             for code in 0..4096 {
-                for flags in 0..16_u8 {
+                for flags in swept_flags(SHORTCUT_FLAGS) {
                     let text = |flag: u8, text: &str| {
                         if flags & flag == 0 {
                             String::new()
@@ -1046,7 +1383,7 @@ mod tests {
                             swept(&stamps, code, 2),
                         ),
                         position: register(key("1z"), swept(&stamps, code, 3)),
-                        removed: register(flags & REMOVED != 0, swept(&stamps, code, 4)),
+                        presence: register(read_presence(flags).unwrap(), swept(&stamps, code, 4)),
                         note: register(text(NOTED, "é"), swept(&stamps, code, 5)),
                     };
                     let bytes = written(&shortcut);
@@ -1064,7 +1401,7 @@ mod tests {
         let base = at(BASE, 0, SECOND);
         let stamps = sweep_stamps(base);
         for code in 0..256 {
-            for flags in 0..8_u8 {
+            for flags in swept_flags(FOLDER_FLAGS) {
                 let folder = Folder {
                     name: register(String::from("仕事"), base),
                     mark: register(
@@ -1080,7 +1417,7 @@ mod tests {
                         swept(&stamps, code, 1),
                     ),
                     position: register(key("V"), swept(&stamps, code, 2)),
-                    removed: register(flags & REMOVED != 0, swept(&stamps, code, 3)),
+                    presence: register(read_presence(flags).unwrap(), swept(&stamps, code, 3)),
                 };
                 let mut writer = Writer::new();
                 encode_folder(&mut writer, &devices, (ID, &folder)).unwrap();
@@ -1113,8 +1450,11 @@ mod tests {
             writer.byte(first).byte(second);
             writer
         };
-        let mut reserved = head(0b1_0000, 5, 0);
+        let mut reserved = head(0b10_0000, 5, 0);
         reserved.byte(0).byte(0);
+        let mut both = head(PURGED | TRASHED, 5, 0);
+        both.byte(0).byte(0);
+        plain_fields(&mut both);
         let mut reserved_mode = modes(0b11, 0);
         plain_fields(&mut reserved_mode);
         let mut spare = modes(0, 0b1_0000);
@@ -1147,7 +1487,8 @@ mod tests {
         let mut unkeyed = modes(0, 0);
         unkeyed.varint(1).raw(b"a").varint(0).varint(2).raw(b"V0");
         let refusals = [
-            (reserved, WireError::Tag(0b1_0000)),
+            (reserved, WireError::Tag(0b10_0000)),
+            (both, WireError::Tag(0b1_0001)),
             (reserved_mode, WireError::Tag(0b11)),
             (spare, WireError::Tag(0b1_0000)),
             (named, WireError::Canonical),
@@ -1238,7 +1579,7 @@ mod tests {
         );
     }
 
-    /// A state of two devices' edits, with a folder inside another, notes, marks, aliases, and removals.
+    /// A state of two devices' edits, with a folder inside another, notes, marks, aliases, a removal for good, and a folder in the trash.
     fn sample() -> State {
         let mut state = State::default();
         let folder = |byte: u8, parent| Edit::AddFolder {
@@ -1285,6 +1626,12 @@ mod tests {
                 },
                 at(9, 0, SECOND),
             ),
+            (
+                Edit::Trash {
+                    entry: Entry::Folder(ItemId([2; 16])),
+                },
+                at(10, 0, FIRST),
+            ),
         ];
         for (edit, stamp) in edits {
             state.apply(edit, stamp).unwrap();
@@ -1302,7 +1649,7 @@ mod tests {
         assert_eq!(decode_body(&bytes), Ok(body));
         assert_eq!(
             encode_body(&Body::default()).unwrap(),
-            [&MAGIC[..], &VERSION.to_be_bytes(), &[0, 0, 0]].concat()
+            [&MAGIC[..], &VERSION.to_be_bytes(), &[0, 0, 0, 0]].concat()
         );
         assert_eq!(
             decode_body(&encode_body(&Body::default()).unwrap()),
@@ -1364,12 +1711,14 @@ mod tests {
         for (id, shortcut) in shortcuts {
             encode_shortcut(&mut writer, table, (*id, shortcut)).unwrap();
         }
+        writer.varint(0);
         writer.finish()
     }
 
     /// Two folders, and two shortcuts written by each device of the table, in ascending order of their identifiers.
     fn items() -> Body {
         Body {
+            devices: Vec::new(),
             folders: vec![(ItemId([3; 16]), marked()), (ItemId([4; 16]), marked())],
             shortcuts: vec![
                 (ItemId([1; 16]), plain(at(1, 0, FIRST))),
@@ -1381,19 +1730,21 @@ mod tests {
     #[test]
     fn a_body_whose_head_or_table_the_writer_would_not_write_is_refused() {
         let devices = table();
-        let Body { folders, shortcuts } = items();
+        let Body {
+            folders, shortcuts, ..
+        } = items();
         let good = body_bytes(&[FIRST, SECOND], &folders, &shortcuts, &devices);
         assert_eq!(decode_body(&good).map(|body| body.shortcuts.len()), Ok(2));
         let mut magic = good.clone();
         magic[0] = b'X';
         let mut version = good.clone();
-        version[5] = 2;
+        version[5] = 3;
         let mut trailing = good.clone();
         trailing.push(0);
         let first = core::slice::from_ref(&shortcuts[0]);
         let refusals = [
             (magic, WireError::Magic),
-            (version, WireError::Version(2)),
+            (version, WireError::Version(3)),
             (trailing, WireError::Trailing),
             (
                 body_bytes(&[SECOND, FIRST], &[], &shortcuts, &devices),
@@ -1420,7 +1771,9 @@ mod tests {
     #[test]
     fn a_body_whose_items_stand_out_of_order_is_refused_and_does_not_write() {
         let devices = table();
-        let Body { folders, shortcuts } = items();
+        let Body {
+            folders, shortcuts, ..
+        } = items();
         let (one, two) = (shortcuts[0].clone(), shortcuts[1].clone());
         let (low, high) = (folders[0].clone(), folders[1].clone());
         let refusals = [
@@ -1454,6 +1807,7 @@ mod tests {
         }
         let unsorted = |placed: Vec<(ItemId, Folder)>, listed: Vec<(ItemId, Shortcut)>| {
             encode_body(&Body {
+                devices: Vec::new(),
                 folders: placed,
                 shortcuts: listed,
             })

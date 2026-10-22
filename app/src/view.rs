@@ -3,16 +3,17 @@
 use crate::intent::{BrowserChoice, ColumnName, GroupName, LayoutName, ScopeName, SortName, text};
 use crate::syncing::SyncView;
 use crate::themes::Worn;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use youarel_core::host_rules::{self, HostParts};
 use youarel_core::library_rules::{self, Counts};
 use youarel_core::rank_rules::Visits;
-use youarel_core::state::{Entry, ItemId, Shortcut, State, Tree};
+use youarel_core::state::{ItemId, Shortcut};
 use youarel_link::Link;
+use youarel_store::folders::Folders;
 
-/// The separator between the folders of a collection's path.
-pub const PATH_SEPARATOR: &str = " / ";
+pub use youarel_store::PATH_SEPARATOR;
+
 /// What the scheme of a web link shows as.
 const SCHEME_MARK: &str = "://";
 
@@ -80,8 +81,7 @@ pub struct Item {
 /// The facts an item reads beyond its shortcut.
 #[derive(Clone, Copy, Debug)]
 pub struct Context<'a> {
-    pub state: &'a State,
-    pub tree: &'a Tree,
+    pub folders: &'a Folders,
     pub visits: Option<&'a Visits>,
 }
 
@@ -94,13 +94,8 @@ impl Item {
         shortcut: &Shortcut,
         icon: Option<String>,
     ) -> Self {
-        let folder = context.state.folder_of(context.tree, id);
-        let path = folder.map(|folder| {
-            context
-                .state
-                .path(context.tree, Some(folder))
-                .join(PATH_SEPARATOR)
-        });
+        let folder = context.folders.home(shortcut);
+        let path = folder.map(|folder| context.folders.path(Some(folder)).join(PATH_SEPARATOR));
         Self {
             id: text(id),
             title: shortcut.title.value.clone(),
@@ -129,19 +124,140 @@ pub struct CollectionCount {
     pub count: usize,
 }
 
-/// A heading the cards and the list gather shortcuts under, with how many of the items that follow it fall under it.
+/// A heading over the rows of a listing: its label, the place of the first row under it, and how many rows follow under it.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GroupView {
     pub label: String,
+    pub place: usize,
     pub count: usize,
 }
 
-/// The site of a link: its registrable domain, or its whole host when it has none, such as an address or `localhost`.
-#[must_use]
-pub fn site(link: &str) -> String {
-    let parts = url(link);
-    format!("{}{}", parts.name, parts.suffix)
+/// One row of a listing as the window draws it.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum RowView {
+    /// A folder, the path of the folder it came from while it waits in the trash, how deep the outline sets it, and whether the outline shows its rows, or none outside the outline.
+    Folder {
+        folder: Box<CollectionCount>,
+        origin: Option<String>,
+        depth: usize,
+        open: Option<bool>,
+        selected: bool,
+        cut: bool,
+    },
+    /// A shortcut, and how deep the outline sets it.
+    Shortcut {
+        item: Box<Item>,
+        depth: usize,
+        selected: bool,
+        cut: bool,
+    },
+    /// A row whose entry went while the page was read.
+    Gone,
+}
+
+/// The page of a listing the window shows: what tells it apart, how many rows it holds, the rows around the place in sight, and where the focus and the headings stand.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListingView {
+    pub identity: String,
+    pub anchor: Option<AnchoredRow>,
+    /// What tells the listing apart, with the state of the store it was read in, which a page the window asks for later answers with.
+    pub key: String,
+    pub total: usize,
+    /// The place of the first of the rows.
+    pub first: usize,
+    pub rows: Vec<RowView>,
+    /// The place of the focused row, when the listing holds it.
+    pub focus: Option<usize>,
+    /// The place of a row the page brings into sight, after an intent that moved the focus to it.
+    pub reveal: Option<usize>,
+    /// Whether the listing is another than the one the window showed before, so the page starts from its top.
+    pub fresh: bool,
+    /// How many of the first rows are folders.
+    pub folders: usize,
+    /// The headings over the rows, in their order.
+    pub groups: Vec<GroupView>,
+    /// Whether the rows form the list's outline, whose folders open in place.
+    pub outline: bool,
+}
+
+/// The rows of a listing a page asks for: what tells the listing apart, how many rows it holds, and the rows from a place on.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RowsView {
+    pub key: String,
+    pub total: usize,
+    pub first: usize,
+    pub rows: Vec<RowView>,
+}
+
+/// A column of the folder walk as the window draws it: one page of its entries, the place of the one selected, and its headings.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ColumnView {
+    pub identity: String,
+    pub anchor: Option<AnchoredRow>,
+    pub key: String,
+    pub total: usize,
+    pub first: usize,
+    pub entries: Vec<ColumnEntry>,
+    pub selected: Option<usize>,
+    pub groups: Vec<GroupView>,
+}
+
+/// The entries of a column a page asks for.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EntriesView {
+    pub key: String,
+    pub total: usize,
+    pub first: usize,
+    pub entries: Vec<ColumnEntry>,
+}
+
+/// The first visible entry of a listing or a column before a refresh.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ViewportAnchor {
+    pub identity: String,
+    pub id: String,
+    pub column: Option<usize>,
+}
+
+/// Where the same visible entry stands in the refreshed listing.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AnchoredRow {
+    pub id: String,
+    pub place: usize,
+}
+
+/// How far a move or a removal came, which the window shows while it works.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Progress {
+    pub done: usize,
+    pub total: usize,
+    pub text: String,
+}
+
+/// The immutable entries of a drag, named by its token, with the text its native data store carries.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DragMaterial {
+    pub token: String,
+    pub links: String,
+    pub count: usize,
+}
+
+/// What a person selected, counted: how many rows, and how many of them are folders.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SelectionView {
+    pub count: usize,
+    pub folders: usize,
 }
 
 /// One folder of the trail above the columns, which a click selects again.
@@ -168,7 +284,7 @@ pub struct SidebarFolder {
     pub open: bool,
 }
 
-/// The sidebar: the chosen scope, the counts of the fixed scopes, and the tree of the collections.
+/// The sidebar: the chosen place, the counts of the fixed scopes and of the trash, and the tree of the collections.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Sidebar {
@@ -176,42 +292,37 @@ pub struct Sidebar {
     pub all: usize,
     pub unsorted: usize,
     pub recent: usize,
+    /// The folders and the shortcuts that wait in the trash themselves.
+    pub trash: usize,
     /// The collections from the top, each open one followed by the folders inside it.
     pub collections: Vec<SidebarFolder>,
 }
 
-/// The live folders directly in a folder, or at the top, in their order.
+/// The folders that show directly in a folder, or at the top, by their names.
 #[must_use]
-pub fn folders_in(state: &State, tree: &Tree, folder: Option<ItemId>) -> Vec<ItemId> {
-    state
-        .entries(tree, folder)
-        .into_iter()
-        .filter_map(|entry| match entry {
-            Entry::Folder(id) => Some(id),
-            Entry::Shortcut(_) => None,
-        })
-        .collect()
+pub fn folders_in(folders: &Folders, folder: Option<ItemId>) -> Vec<ItemId> {
+    folders.named(folder).to_vec()
 }
 
 impl Sidebar {
     /// The sidebar over the counts of every scope, with the folders `open` holds open in its tree.
     #[must_use]
     pub fn new(
-        (state, tree): (&State, &Tree),
+        folders: &Folders,
         scope: ScopeName,
         counts: &Counts,
         open: &BTreeSet<ItemId>,
     ) -> Self {
         let mut collections = Vec::new();
-        let mut pending: Vec<(ItemId, usize)> = library_rules::collections(state, tree)
+        let mut pending: Vec<(ItemId, usize)> = folders_in(folders, None)
             .into_iter()
             .rev()
             .map(|id| (id, 0))
             .collect();
         while let Some((id, depth)) = pending.pop() {
-            let inside = folders_in(state, tree, Some(id));
+            let inside = folders_in(folders, Some(id));
             let shows = open.contains(&id) && !inside.is_empty();
-            if let Some(folder) = state.folder(id) {
+            if let Some(folder) = folders.folder(id) {
                 collections.push(SidebarFolder {
                     id: text(id),
                     name: folder.name.value.clone(),
@@ -232,6 +343,7 @@ impl Sidebar {
             all: counts.all,
             unsorted: counts.unsorted,
             recent: counts.recent,
+            trash: counts.trash,
             collections,
         }
     }
@@ -243,6 +355,8 @@ impl Sidebar {
 pub enum EntryKind {
     Folder,
     Shortcut,
+    /// An entry whose folder or shortcut went while the column was read.
+    Gone,
 }
 
 /// One entry of a column.
@@ -253,6 +367,7 @@ pub struct ColumnEntry {
     pub id: String,
     pub name: String,
     pub selected: bool,
+    pub cut: bool,
     /// Whether the entry is a folder that holds entries.
     pub opens: bool,
     pub icon: Option<String>,
@@ -260,18 +375,6 @@ pub struct ColumnEntry {
     pub site: String,
     /// What a folder shows in place of its glyph, or empty for the glyph and for a shortcut.
     pub mark: String,
-    /// The heading this entry and the shortcuts after it fall under, on the first of each, when the column gathers under more than one.
-    pub heading: Option<String>,
-}
-
-/// One row of the list's outline: a folder or a shortcut, how deep it sits below the folder the list stands in, and whether a folder shows its rows.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct OutlineRow {
-    pub kind: EntryKind,
-    pub id: String,
-    pub depth: usize,
-    pub open: bool,
 }
 
 /// A collection a picker offers, named by its whole path.
@@ -282,29 +385,36 @@ pub struct Choice {
     pub path: String,
 }
 
-/// Every live collection by its path, in the order of the folders.
+/// A collection as a picker offers it, named by its whole path.
 #[must_use]
-pub fn choices(state: &State, tree: &Tree) -> Vec<Choice> {
+pub fn choice(folders: &Folders, id: ItemId) -> Choice {
+    Choice {
+        id: text(id),
+        path: folders.path(Some(id)).join(PATH_SEPARATOR),
+    }
+}
+
+/// Every collection that shows in the order of the tree: each one by its name among its siblings, then the folders inside it.
+#[must_use]
+pub fn tree_order(folders: &Folders) -> Vec<ItemId> {
     let mut found = Vec::new();
-    let mut pending: Vec<ItemId> = library_rules::collections(state, tree);
+    let mut pending: Vec<ItemId> = folders_in(folders, None);
     pending.reverse();
     while let Some(id) = pending.pop() {
-        found.push(Choice {
-            id: text(id),
-            path: state.path(tree, Some(id)).join(PATH_SEPARATOR),
-        });
-        let mut inside: Vec<ItemId> = state
-            .entries(tree, Some(id))
-            .into_iter()
-            .filter_map(|entry| match entry {
-                Entry::Folder(folder) => Some(folder),
-                Entry::Shortcut(_) => None,
-            })
-            .collect();
+        found.push(id);
+        let mut inside = folders_in(folders, Some(id));
         inside.reverse();
         pending.extend(inside);
     }
     found
+}
+
+/// What the window opens with, which the settings show: a layout, and a collection or every shortcut for none.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OpeningView {
+    pub layout: LayoutName,
+    pub start: Option<Choice>,
 }
 
 /// The last notice, and whether it reports a failure.
@@ -319,6 +429,7 @@ pub struct Notice {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct View {
+    pub cut: usize,
     pub sidebar: Sidebar,
     /// The heading of the scope: all, unsorted, recent, or a collection's path.
     pub title: String,
@@ -327,28 +438,22 @@ pub struct View {
     pub sort: SortName,
     pub grouping: GroupName,
     pub search: String,
-    /// The folders the cards and the list show before the shortcuts while they stand in a folder, each with the shortcuts it holds.
-    pub folders: Vec<CollectionCount>,
-    /// The rows of the list's outline, in their order, or none when the list shows the folders and the items as they come.
-    pub outline: Vec<OutlineRow>,
+    /// The page of the listing the cards or the list show.
+    pub listing: ListingView,
     /// The columns the list draws after the name, in their order.
     pub list_columns: Vec<ColumnName>,
     /// The columns of the list a person hid.
     pub hidden_columns: Vec<ColumnName>,
-    /// The shortcuts of the cards and the list, in their order, which the groups follow when there are any.
-    pub items: Vec<Item>,
-    /// The headings the items fall under in turn, or none when the window gathers nothing.
-    pub groups: Vec<GroupView>,
     /// The columns of the folder walk, from the left.
-    pub columns: Vec<Vec<ColumnEntry>>,
+    pub columns: Vec<ColumnView>,
     /// The shortcut the columns preview.
     pub preview: Option<Item>,
     pub focus: Option<String>,
-    pub selected: Vec<String>,
+    /// What a person selected, counted.
+    pub selection: SelectionView,
     pub notice: Option<Notice>,
-    pub collections: Vec<Choice>,
-    /// The folder that a new folder or a new link goes into, or none for the top.
-    pub here: Option<String>,
+    /// The folder that a new folder or a new link goes into, with its path, or none for the top.
+    pub here: Option<Choice>,
     /// The folders the columns open, from the left, or, in the cards and the list, the folders from the top down to the one they stand in.
     pub trail: Vec<Step>,
     /// The themes the window wears, or none when no theme is known at all.
@@ -356,6 +461,11 @@ pub struct View {
     /// The browsers that keep bookmarks on this kind of host.
     pub browsers: Vec<BrowserChoice>,
     pub sync: SyncView,
+    pub opening: OpeningView,
+    pub back: bool,
+    pub forward: bool,
+    pub undo: Option<String>,
+    pub redo: Option<String>,
 }
 
 #[cfg(test)]

@@ -1,4 +1,4 @@
-//! The messages of `specs/WIRE.md`: operations of the membership log, bundles, and the four messages of a pairing, with the admission its entry seals.
+//! Membership operations and pairing messages with their metadata-only admission.
 
 use crate::wire::{Reader, WireError, Writer, ascending};
 use youarel_core::membership_rules;
@@ -15,21 +15,20 @@ pub const VERSION: u16 = 1;
 pub(crate) const MAGIC: usize = 4;
 /// The magic of each kind of message.
 const OPERATION: [u8; MAGIC] = *b"YRO1";
-const BUNDLE: [u8; MAGIC] = *b"YRB1";
 const JOIN: [u8; MAGIC] = *b"YRJ1";
 const WELCOME: [u8; MAGIC] = *b"YRW1";
-const ADMISSION: [u8; MAGIC] = *b"YRA1";
+const ADMISSION: [u8; MAGIC] = *b"YRH1";
 const JOINED: [u8; MAGIC] = *b"YRC1";
 const ENTRY: [u8; MAGIC] = *b"YRE1";
 /// The most parents an operation names.
 pub const MOST_PARENTS: usize = 64;
 /// The most key slots a rotation holds, one per member.
 pub const MOST_SLOTS: usize = 1024;
-/// The most operations a bundle or an admission carries.
+/// The most operations a segment, delivery, or admission carries.
 pub const MOST_OPERATIONS: usize = 65_536;
 /// The longest operation, which a rotation of the most slots fits.
 pub const LONGEST_OPERATION: usize = 2 * 1024 * 1024;
-/// The longest sealed state.
+/// The longest sealed pairing admission.
 pub const LONGEST_STATE: usize = 16 * 1024 * 1024;
 /// The longest PAKE message.
 pub const LONGEST_PAKE: usize = 64;
@@ -45,6 +44,9 @@ const ADD: u8 = 1;
 const REMOVE: u8 = 2;
 const ROTATE: u8 = 3;
 const ADD_RECOVERY: u8 = 4;
+const NO_HINT: u8 = 0;
+const HAS_HINT: u8 = 1;
+const LONGEST_ADMISSION: usize = LONGEST_STATE.saturating_sub(youarel_crypto::seal::TAG);
 
 pub(crate) fn magic(reader: &mut Reader<'_>, expected: [u8; MAGIC]) -> Result<(), WireError> {
     if reader.array::<MAGIC>()? != expected {
@@ -388,7 +390,10 @@ pub fn account_of(genesis: &[u8]) -> Digest {
     digest(Label::Account, &[genesis])
 }
 
-fn write_operations(writer: &mut Writer, operations: &[Vec<u8>]) -> Result<(), WireError> {
+pub(crate) fn write_operations(
+    writer: &mut Writer,
+    operations: &[Vec<u8>],
+) -> Result<(), WireError> {
     if operations.len() > MOST_OPERATIONS
         || !ascending(operations.iter().map(|bytes| operation_digest(bytes)))
     {
@@ -401,7 +406,7 @@ fn write_operations(writer: &mut Writer, operations: &[Vec<u8>]) -> Result<(), W
     Ok(())
 }
 
-fn read_operations(reader: &mut Reader<'_>) -> Result<Vec<Vec<u8>>, WireError> {
+pub(crate) fn read_operations(reader: &mut Reader<'_>) -> Result<Vec<Vec<u8>>, WireError> {
     let count = reader.count(MOST_OPERATIONS)?;
     let mut operations = Vec::with_capacity(count.min(MOST_PARENTS));
     for _ in 0..count {
@@ -414,6 +419,9 @@ fn read_operations(reader: &mut Reader<'_>) -> Result<Vec<Vec<u8>>, WireError> {
 }
 
 fn write_sealed(writer: &mut Writer, sealed: &Sealed) -> Result<(), WireError> {
+    if sealed.ciphertext.len() > LONGEST_STATE {
+        return Err(WireError::Length);
+    }
     writer.raw(&sealed.commitment).raw(&sealed.nonce);
     writer.bytes(&sealed.ciphertext)?;
     Ok(())
@@ -493,94 +501,6 @@ impl Entry {
         };
         reader.finish()?;
         Ok(entry)
-    }
-}
-
-/// One device's state sealed under an epoch key, with the account's membership log, signed by the sender.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Bundle {
-    pub account: Digest,
-    /// The operations of the log, in ascending order of their digests.
-    pub operations: Vec<Vec<u8>>,
-    pub sender: Digest,
-    pub epoch: u32,
-    pub sealed: Sealed,
-    pub signature: Signature,
-}
-
-/// The fields of a bundle that its signature covers.
-#[derive(Clone, Copy, Debug)]
-pub struct UnsignedBundle<'a> {
-    pub account: &'a Digest,
-    pub operations: &'a [Vec<u8>],
-    pub sender: &'a Digest,
-    pub epoch: u32,
-    pub sealed: &'a Sealed,
-}
-
-impl UnsignedBundle<'_> {
-    /// The bytes the sender signs.
-    ///
-    /// # Errors
-    ///
-    /// Returns a [`WireError`] for operations beyond the limit or out of order.
-    pub fn bytes(&self) -> Result<Vec<u8>, WireError> {
-        let mut writer = begin(BUNDLE);
-        writer.raw(self.account);
-        write_operations(&mut writer, self.operations)?;
-        writer.raw(self.sender).word(self.epoch);
-        write_sealed(&mut writer, self.sealed)?;
-        Ok(writer.finish())
-    }
-}
-
-impl Bundle {
-    #[must_use]
-    pub fn unsigned(&self) -> UnsignedBundle<'_> {
-        UnsignedBundle {
-            account: &self.account,
-            operations: &self.operations,
-            sender: &self.sender,
-            epoch: self.epoch,
-            sealed: &self.sealed,
-        }
-    }
-
-    /// The bundle's bytes.
-    ///
-    /// # Errors
-    ///
-    /// Returns a [`WireError`] for operations beyond the limit or out of order.
-    pub fn encode(&self) -> Result<Vec<u8>, WireError> {
-        let mut writer = Writer::new();
-        writer.raw(&self.unsigned().bytes()?);
-        write_signature(&mut writer, &self.signature);
-        Ok(writer.finish())
-    }
-
-    /// The bundle `bytes` hold.
-    ///
-    /// # Errors
-    ///
-    /// Returns a [`WireError`] for any bytes that encoding never writes.
-    pub fn decode(bytes: &[u8]) -> Result<Self, WireError> {
-        let mut reader = Reader::new(bytes);
-        magic(&mut reader, BUNDLE)?;
-        let account = reader.array()?;
-        let operations = read_operations(&mut reader)?;
-        let sender = reader.array()?;
-        let epoch = reader.word()?;
-        let sealed = read_sealed(&mut reader)?;
-        let signature = read_signature(&mut reader)?;
-        reader.finish()?;
-        Ok(Self {
-            account,
-            operations,
-            sender,
-            epoch,
-            sealed,
-            signature,
-        })
     }
 }
 
@@ -677,18 +597,48 @@ impl Welcome {
     }
 }
 
-/// What a welcome seals for the joiner: the account's log, its epoch keys, and the inviter's state.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SnapshotHint {
+    pub sender: Digest,
+    pub sequence: youarel_core::segment_rules::Sequence,
+}
+
+/// What a welcome seals for the joiner: the membership, epoch keys, and an optional starting snapshot.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Admission {
     pub account: Digest,
     pub operations: Vec<Vec<u8>>,
     /// Every epoch key the inviter holds, in ascending order of the epoch and then the key, since two members may rotate to one epoch at once.
     pub epochs: Vec<(u32, [u8; KEY])>,
-    /// The inviter's state in the JSON form of the store.
-    pub state: Vec<u8>,
+    pub hint: Option<SnapshotHint>,
 }
 
 impl Admission {
+    fn byte_count(&self) -> Result<usize, WireError> {
+        const FRAME: usize =
+            MAGIC + size_of::<u16>() + DIGEST + 2 * size_of::<u32>() + size_of::<u8>();
+        const EPOCH: usize = size_of::<u32>() + KEY;
+        const HINT: usize = DIGEST + size_of::<u64>();
+        let mut size = self
+            .epochs
+            .len()
+            .checked_mul(EPOCH)
+            .and_then(|epochs| FRAME.checked_add(epochs))
+            .ok_or(WireError::Length)?;
+        if self.hint.is_some() {
+            size = size.checked_add(HINT).ok_or(WireError::Length)?;
+        }
+        for operation in &self.operations {
+            size = size
+                .checked_add(size_of::<u32>())
+                .and_then(|size| size.checked_add(operation.len()))
+                .ok_or(WireError::Length)?;
+        }
+        if size > LONGEST_ADMISSION {
+            return Err(WireError::Length);
+        }
+        Ok(size)
+    }
     /// The admission's bytes.
     ///
     /// # Errors
@@ -698,6 +648,7 @@ impl Admission {
         if self.epochs.len() > MOST_EPOCHS || !ascending(self.epochs.iter()) {
             return Err(WireError::Order);
         }
+        self.byte_count()?;
         let mut writer = begin(ADMISSION);
         writer.raw(&self.account);
         write_operations(&mut writer, &self.operations)?;
@@ -705,7 +656,17 @@ impl Admission {
         for (epoch, key) in &self.epochs {
             writer.word(*epoch).raw(key);
         }
-        writer.bytes(&self.state)?;
+        match self.hint {
+            None => {
+                writer.byte(NO_HINT);
+            }
+            Some(hint) => {
+                writer
+                    .byte(HAS_HINT)
+                    .raw(&hint.sender)
+                    .long(hint.sequence.get());
+            }
+        }
         Ok(writer.finish())
     }
 
@@ -715,6 +676,9 @@ impl Admission {
     ///
     /// Returns a [`WireError`] for any bytes that encoding never writes.
     pub fn decode(bytes: &[u8]) -> Result<Self, WireError> {
+        if bytes.len() > LONGEST_ADMISSION {
+            return Err(WireError::Length);
+        }
         let mut reader = Reader::new(bytes);
         magic(&mut reader, ADMISSION)?;
         let account = reader.array()?;
@@ -727,13 +691,21 @@ impl Admission {
         if !ascending(epochs.iter()) {
             return Err(WireError::Order);
         }
-        let state = reader.bytes(LONGEST_STATE)?.to_vec();
+        let hint = match reader.byte()? {
+            NO_HINT => None,
+            HAS_HINT => Some(SnapshotHint {
+                sender: reader.array()?,
+                sequence: youarel_core::segment_rules::Sequence::new(reader.long()?)
+                    .ok_or(WireError::Value)?,
+            }),
+            tag => return Err(WireError::Tag(tag)),
+        };
         reader.finish()?;
         Ok(Self {
             account,
             operations,
             epochs,
-            state,
+            hint,
         })
     }
 }
@@ -741,11 +713,13 @@ impl Admission {
 #[cfg(test)]
 mod tests {
     use super::{
-        Action, Admission, Bundle, DevicePublic, Entry, Join, Joined, LONGEST_OPERATION,
-        LONGEST_PAKE, LONGEST_STATE, MOST_EPOCHS, MOST_OPERATIONS, MOST_PARENTS, MOST_SLOTS,
-        Operation, Rotation, Welcome, account_of, operation_digest,
+        Action, Admission, DevicePublic, Entry, Join, Joined, LONGEST_OPERATION, LONGEST_PAKE,
+        LONGEST_STATE, MOST_EPOCHS, MOST_OPERATIONS, MOST_PARENTS, MOST_SLOTS, Operation, Rotation,
+        Welcome, account_of, operation_digest,
     };
+    use crate::segment::{LONGEST_SEGMENT, Segment};
     use crate::wire::WireError;
+    use youarel_core::segment_rules::{Header, Kind, Sequence};
     use youarel_crypto::Label;
     use youarel_crypto::kem::KeyPair;
     use youarel_crypto::seal::Sealed;
@@ -760,6 +734,60 @@ mod tests {
             kem: Box::new(*kem.public()),
         };
         (signing, public)
+    }
+
+    #[test]
+    fn an_admission_carries_a_snapshot_hint_and_refuses_the_retired_state_format() {
+        use super::SnapshotHint;
+        use youarel_core::segment_rules::Sequence;
+        let admission = Admission {
+            account: [1; 32],
+            operations: Vec::new(),
+            epochs: vec![(1, [2; 32])],
+            hint: Some(SnapshotHint {
+                sender: [3; 32],
+                sequence: Sequence::FIRST,
+            }),
+        };
+        let bytes = admission.encode().unwrap();
+        assert_eq!(&bytes[..4], b"YRH1");
+        assert_eq!(admission.byte_count().unwrap(), bytes.len());
+        assert_eq!(Admission::decode(&bytes).unwrap(), admission);
+        for end in 0..bytes.len() {
+            Admission::decode(&bytes[..end]).unwrap_err();
+        }
+        let mut retired = bytes.clone();
+        retired[..4].copy_from_slice(b"YRA1");
+        assert_eq!(Admission::decode(&retired), Err(WireError::Magic));
+        let mut zero = bytes;
+        let at = zero.len().checked_sub(size_of::<u64>()).unwrap();
+        zero[at..].fill(0);
+        assert_eq!(Admission::decode(&zero), Err(WireError::Value));
+        let absent = Admission {
+            hint: None,
+            ..admission
+        };
+        let mut absent_bytes = absent.encode().unwrap();
+        assert_eq!(absent.byte_count().unwrap(), absent_bytes.len());
+        let tag_at = absent_bytes.len().checked_sub(1).unwrap();
+        absent_bytes[tag_at] = 2;
+        assert_eq!(Admission::decode(&absent_bytes), Err(WireError::Tag(2)));
+        absent_bytes[tag_at] = 0;
+        absent_bytes.push(0);
+        assert_eq!(Admission::decode(&absent_bytes), Err(WireError::Trailing));
+    }
+
+    #[test]
+    fn an_entry_refuses_a_ciphertext_past_the_admission_limit() {
+        let mut entry = Entry {
+            invitation: 1,
+            sealed: sealed(),
+        };
+        entry
+            .sealed
+            .ciphertext
+            .resize(LONGEST_STATE.saturating_add(1), 0);
+        assert!(matches!(entry.encode(), Err(WireError::Length)));
     }
 
     /// An operation of `author` in `account`, signed by `keys`.
@@ -787,7 +815,7 @@ mod tests {
         Sealed {
             commitment: [1; 32],
             nonce: [2; 24],
-            ciphertext: b"ciphertext".to_vec(),
+            ciphertext: vec![3; youarel_crypto::seal::TAG],
         }
     }
 
@@ -823,20 +851,24 @@ mod tests {
         );
         let mut operations = vec![genesis_bytes, rotation.encode().unwrap()];
         operations.sort_by_key(|bytes| operation_digest(bytes));
-        let bundle = Bundle {
+        let segment = Segment {
             account,
             operations: operations.clone(),
             sender: public.id(),
             epoch: 1,
+            header: Header::new(Sequence::FIRST, [0; 32], Kind::Delta).unwrap(),
             sealed: sealed(),
-            signature: keys.sign(Label::Bundle, b"x").unwrap(),
+            signature: keys.sign(Label::Segment, b"x").unwrap(),
         };
-        assert_eq!(Bundle::decode(&bundle.encode().unwrap()).unwrap(), bundle);
+        assert_eq!(
+            Segment::decode(&segment.encode().unwrap()).unwrap(),
+            segment
+        );
         let admission = Admission {
             account,
             operations,
             epochs: vec![(0, [12; 32]), (1, [13; 32])],
-            state: b"{}".to_vec(),
+            hint: None,
         };
         assert_eq!(
             Admission::decode(&admission.encode().unwrap()).unwrap(),
@@ -941,68 +973,100 @@ mod tests {
         );
     }
 
-    /// The state of the largest account a relay keeps, ten thousand shortcuts of five hundred bytes each, fits in one bundle, and a state past the limit does not.
+    /// Segment ciphertext bounds apply before allocation of a declared longer payload.
     #[test]
-    fn a_bundle_holds_the_largest_account_and_refuses_a_longer_state() {
+    fn a_segment_holds_a_large_body_and_refuses_a_longer_ciphertext() {
         const SHORTCUTS: usize = 10_000;
         const SHORTCUT_BYTES: usize = 500;
+        const CIPHER_LENGTH: usize = super::MAGIC
+            + size_of::<u16>()
+            + 4 * size_of::<super::Digest>()
+            + 2 * size_of::<u32>()
+            + size_of::<u64>()
+            + size_of::<u8>()
+            + youarel_crypto::seal::NONCE;
+        const CIPHER_LENGTH_END: usize = CIPHER_LENGTH + size_of::<u32>();
         let (keys, public) = device();
-        let bundle = |length: usize| Bundle {
+        let segment = |length: usize| Segment {
             account: [1; 32],
             operations: Vec::new(),
             sender: public.id(),
             epoch: 1,
+            header: Header::new(Sequence::FIRST, [0; 32], Kind::Delta).unwrap(),
             sealed: Sealed {
                 commitment: [1; 32],
                 nonce: [2; 24],
                 ciphertext: vec![7; length],
             },
-            signature: keys.sign(Label::Bundle, b"x").unwrap(),
+            signature: keys.sign(Label::Segment, b"x").unwrap(),
         };
-        let largest = bundle(SHORTCUTS * SHORTCUT_BYTES);
-        assert_eq!(Bundle::decode(&largest.encode().unwrap()).unwrap(), largest);
+        let largest = segment(SHORTCUTS * SHORTCUT_BYTES);
         assert_eq!(
-            Bundle::decode(&bundle(LONGEST_STATE + 1).encode().unwrap()),
-            Err(WireError::Length)
+            Segment::decode(&largest.encode().unwrap()).unwrap(),
+            largest
         );
+        assert!(matches!(
+            segment(
+                LONGEST_SEGMENT
+                    .saturating_add(youarel_crypto::seal::TAG)
+                    .saturating_add(1)
+            )
+            .encode(),
+            Err(WireError::Length)
+        ));
+        let mut oversized = largest.encode().unwrap();
+        oversized[CIPHER_LENGTH..CIPHER_LENGTH_END].copy_from_slice(
+            &u32::try_from(
+                LONGEST_SEGMENT
+                    .saturating_add(youarel_crypto::seal::TAG)
+                    .saturating_add(1),
+            )
+            .unwrap()
+            .to_be_bytes(),
+        );
+        assert_eq!(Segment::decode(&oversized), Err(WireError::Length));
     }
 
     #[test]
-    fn a_bundle_holds_the_most_operations_and_the_longest_state() {
+    fn a_segment_holds_the_most_operations_and_the_longest_body() {
         let (keys, public) = device();
         let mut operations: Vec<Vec<u8>> = (0..MOST_OPERATIONS)
             .map(|index| key(index).to_vec())
             .collect();
         operations.sort_by_key(|bytes| operation_digest(bytes));
-        let bundle = Bundle {
+        let segment = Segment {
             account: [1; 32],
             operations: operations.clone(),
             sender: public.id(),
             epoch: 1,
+            header: Header::new(Sequence::FIRST, [0; 32], Kind::Delta).unwrap(),
             sealed: Sealed {
                 commitment: [1; 32],
                 nonce: [2; 24],
-                ciphertext: vec![7; LONGEST_STATE],
+                ciphertext: vec![7; LONGEST_SEGMENT.saturating_add(youarel_crypto::seal::TAG)],
             },
-            signature: keys.sign(Label::Bundle, b"x").unwrap(),
+            signature: keys.sign(Label::Segment, b"x").unwrap(),
         };
-        assert_eq!(Bundle::decode(&bundle.encode().unwrap()).unwrap(), bundle);
+        assert_eq!(
+            Segment::decode(&segment.encode().unwrap()).unwrap(),
+            segment
+        );
         let mut more = operations.clone();
         more.push(key(MOST_OPERATIONS).to_vec());
         more.sort_by_key(|bytes| operation_digest(bytes));
         assert_eq!(
-            Bundle {
+            Segment {
                 operations: more,
-                ..bundle.clone()
+                ..segment.clone()
             }
             .encode(),
             Err(WireError::Order)
         );
         let unordered: Vec<Vec<u8>> = operations.iter().take(2).rev().cloned().collect();
         assert_eq!(
-            Bundle {
+            Segment {
                 operations: unordered,
-                ..bundle
+                ..segment
             }
             .encode(),
             Err(WireError::Order)
@@ -1057,7 +1121,7 @@ mod tests {
             account: [1; 32],
             operations: Vec::new(),
             epochs: epochs.clone(),
-            state: Vec::new(),
+            hint: None,
         };
         assert_eq!(
             Admission::decode(&admission.encode().unwrap()).unwrap(),
@@ -1107,12 +1171,12 @@ mod tests {
         let mut tag = bytes.clone();
         tag[tag_at] = 9;
         assert_eq!(Operation::decode(&tag), Err(WireError::Tag(9)));
-        assert_eq!(Bundle::decode(&bytes), Err(WireError::Magic));
+        assert_eq!(Segment::decode(&bytes), Err(WireError::Magic));
         let admission = Admission {
             account: [0; 32],
             operations: Vec::new(),
             epochs: vec![(1, [0; 32]), (1, [0; 32])],
-            state: Vec::new(),
+            hint: None,
         };
         assert_eq!(admission.encode(), Err(WireError::Order));
         let long = Join {

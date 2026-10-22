@@ -37,7 +37,7 @@ function short(sync: SyncView): string {
     case "off":
       return "On this device";
     case "noAccount":
-      return "No account";
+      return "Add a device";
     case "waiting":
       return "Waiting to sync";
     case "syncing":
@@ -53,9 +53,9 @@ function short(sync: SyncView): string {
 function long(sync: SyncView): string {
   switch (sync.state) {
     case "off":
-      return "The window keeps your shortcuts on this device; “youarel sync” still syncs by hand.";
+      return "Your shortcuts stay on this device until you enable sync.";
     case "noAccount":
-      return "This device belongs to no account yet: run “youarel account create”, or “youarel pair join” with a code from one of your devices.";
+      return "Open Devices to add another device or join with an invitation code.";
     case "waiting":
       return "The first sync starts in a moment.";
     case "syncing":
@@ -63,7 +63,7 @@ function long(sync: SyncView): string {
     case "synced":
       return sync.last === null ? "Synced." : `Last synced ${ago(sync.last)}.`;
     case "failed":
-      return `The last sync failed: ${sync.error ?? "for no reason given"}.`;
+      return `The last sync failed: ${(sync.error ?? "for no reason given").replace(/\baccounts\b/giu, "libraries").replace(/\baccount\b/giu, "library")}.`;
   }
 }
 
@@ -72,10 +72,10 @@ function pace(sync: SyncView): string {
   if (sync.state === "off" || sync.state === "noAccount") {
     return "";
   }
-  const writes = "The window writes this device's bundle only after a change here.";
+  const writes = "The window sends this device's changes after an edit here.";
   return sync.watched
-    ? `${writes} It reads the other devices' bundles as soon as the folder changes, and every five minutes.`
-    : `${writes} It reads the other devices' bundles every five minutes.`;
+    ? `${writes} It reads the other devices' changes as soon as the folder changes, and every five minutes.`
+    : `${writes} It reads the other devices' changes every five minutes.`;
 }
 
 let editing = false;

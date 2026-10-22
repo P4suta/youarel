@@ -1,7 +1,7 @@
 ---
 status: amended
 date: 2026-10-15
-amended-by: membership-replayed-from-a-signed-log.md
+amended-by: membership-replayed-from-a-signed-log.md, the-device-keys-live-beside-the-state.md, devices-join-from-a-screen.md
 ---
 # Passwordless identity held by devices
 

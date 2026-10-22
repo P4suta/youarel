@@ -1,9 +1,9 @@
-//! The state as the binary records of `record_rules`, which a device keeps on its disk and seals into its bundles.
+//! The state as the binary records of `record_rules`, which a device seals into its bundles and reads from the bundles of the others.
 //!
-//! Reading admits every link again, as the JSON reader does, so the records of a state hold only links a shortcut may hold.
+//! Reading admits every link again, so the records of a state hold only links a shortcut may hold.
 
-use crate::codec::{self, DecodeError};
-use youarel_core::record_rules::{self, Body, MAGIC};
+use crate::codec::DecodeError;
+use youarel_core::record_rules::{self, Body};
 use youarel_core::state::State;
 use youarel_core::wire_rules::WireError;
 use youarel_link::Link;
@@ -23,6 +23,15 @@ pub fn encode(state: &State) -> Result<Vec<u8>, WireError> {
 ///
 /// Returns [`DecodeError::Records`] for bytes that the records' writer would not have written, and [`DecodeError::Link`] for a link a shortcut may not hold.
 pub fn decode(bytes: &[u8]) -> Result<State, DecodeError> {
+    Ok(decode_body(bytes)?.into_state())
+}
+
+/// The bounded body's records, with every link admitted before a streaming merge.
+///
+/// # Errors
+///
+/// Refuses the same malformed or unadmitted records as [`decode`].
+pub fn decode_body(bytes: &[u8]) -> Result<Body, DecodeError> {
     let body = record_rules::decode_body(bytes).map_err(DecodeError::Records)?;
     for (_, shortcut) in &body.shortcuts {
         match Link::parse(&shortcut.link.value) {
@@ -30,30 +39,18 @@ pub fn decode(bytes: &[u8]) -> Result<State, DecodeError> {
             Ok(_) | Err(_) => return Err(DecodeError::Link(shortcut.link.value.clone())),
         }
     }
-    Ok(body.into_state())
-}
-
-/// The state that a bundle carries: its records, or the JSON form that a build from before the records sends, whose icons the state leaves behind.
-///
-/// # Errors
-///
-/// Returns the error of [`decode`] for bytes that begin as records, the JSON reader's for other text, and [`DecodeError::Records`] for other bytes.
-pub fn decode_received(bytes: &[u8]) -> Result<State, DecodeError> {
-    if bytes.starts_with(&MAGIC) {
-        return decode(bytes);
-    }
-    core::str::from_utf8(bytes).map_or(Err(DecodeError::Records(WireError::Magic)), |text| {
-        codec::decode(text).map(|decoded| decoded.state)
-    })
+    Ok(body)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{decode, decode_received, encode};
-    use crate::codec::{self, DecodeError};
+    use super::{decode, encode};
+    use crate::codec::DecodeError;
     use youarel_core::clock_rules::{DeviceId, Stamp};
+    use youarel_core::merge_rules::Register;
+    use youarel_core::position_rules::Key;
     use youarel_core::record_rules::{self, Body};
-    use youarel_core::state::{Edit, ItemId, State};
+    use youarel_core::state::{Edit, Entry, ItemId, Presence, Shortcut, State};
     use youarel_core::wire_rules::WireError;
 
     const fn at(wall: u64) -> Stamp {
@@ -114,33 +111,37 @@ mod tests {
         assert!(std::error::Error::source(&error).is_some());
     }
 
+    /// A state with a shortcut in the trash inside a folder in the trash, and a shortcut gone for good.
+    fn trashed() -> State {
+        let mut trashed = holding("https://example.com/");
+        let gone = ItemId([4; 16]);
+        let edits = [
+            Edit::Trash {
+                entry: Entry::Shortcut(ItemId([2; 16])),
+            },
+            Edit::Trash {
+                entry: Entry::Folder(ItemId([1; 16])),
+            },
+            Edit::AddShortcut {
+                id: gone,
+                link: "https://example.net/".to_owned(),
+                title: "Gone".to_owned(),
+                folder: None,
+            },
+            Edit::Remove {
+                entry: Entry::Shortcut(gone),
+            },
+        ];
+        for (wall, edit) in (5..).zip(edits) {
+            trashed.apply(edit, at(wall)).unwrap();
+        }
+        trashed
+    }
+
     #[test]
-    fn a_received_state_reads_as_its_records_or_as_the_json_form_of_an_older_build() {
-        let state = holding("https://example.com/");
-        assert_eq!(decode_received(&encode(&state).unwrap()).unwrap(), state);
-        let text = codec::encode(&state).unwrap();
-        assert_eq!(decode_received(text.as_bytes()).unwrap(), state);
-        let mut unadmitted = encode(&holding("file:///etc/passwd")).unwrap();
-        assert!(matches!(
-            decode_received(&unadmitted),
-            Err(DecodeError::Link(_))
-        ));
-        unadmitted.truncate(record_rules::MAGIC.len());
-        assert!(
-            matches!(
-                decode_received(&unadmitted),
-                Err(DecodeError::Records(WireError::Truncated))
-            ),
-            "bytes that begin as records read only as records"
-        );
-        assert!(matches!(
-            decode_received(b"not a state"),
-            Err(DecodeError::Json(_))
-        ));
-        assert!(matches!(
-            decode_received(&[0xff, b'{']),
-            Err(DecodeError::Records(WireError::Magic))
-        ));
+    fn a_state_with_a_trash_reads_back_from_its_records() {
+        let state = trashed();
+        assert_eq!(decode(&encode(&state).unwrap()).unwrap(), state);
     }
 
     /// Writes records into the seed corpus of their fuzz target, which `cargo nextest run --run-ignored only seeds` regenerates.
@@ -151,6 +152,16 @@ mod tests {
             .join("../../fuzz/corpus/record_decode");
         crate::fs::create_dir_all(&corpus).unwrap();
         let mut noted = holding("https://example.com/");
+        let mut named = State::default();
+        named
+            .apply(
+                Edit::NameDevice {
+                    id: youarel_core::device_rules::MemberId([8; 32]),
+                    name: "仕事の Mac".to_owned(),
+                },
+                at(3),
+            )
+            .unwrap();
         noted
             .apply(
                 Edit::SetNote {
@@ -164,21 +175,53 @@ mod tests {
                 },
             )
             .unwrap();
+        let mut stored = holding("https://example.com/");
+        // A shortcut at a position that bisection wrote before integers, which every later build reads.
+        stored.shortcuts.insert(
+            ItemId([3; 16]),
+            Shortcut {
+                link: Register {
+                    value: "https://example.org/".to_owned(),
+                    stamp: at(4),
+                },
+                title: Register {
+                    value: "Kept".to_owned(),
+                    stamp: at(4),
+                },
+                alias: Register {
+                    value: String::new(),
+                    stamp: at(4),
+                },
+                folder: Register {
+                    value: Some(ItemId([1; 16])),
+                    stamp: at(4),
+                },
+                position: Register {
+                    value: Key::parse("zzzV").unwrap(),
+                    stamp: at(4),
+                },
+                presence: Register {
+                    value: Presence::Live,
+                    stamp: at(4),
+                },
+                note: Register {
+                    value: String::new(),
+                    stamp: at(4),
+                },
+            },
+        );
         let seeds = [
             ("empty", State::default()),
             ("folder-and-shortcut", holding("https://example.com/")),
             ("two-devices", noted),
+            ("stored-positions", stored),
+            ("trash", trashed()),
+            ("device-names", named),
         ];
         for (name, state) in seeds {
             let bytes = encode(&state).unwrap();
             assert_eq!(decode(&bytes).unwrap(), state, "{name}");
             crate::fs::replace(&corpus.join(name), &bytes).unwrap();
         }
-        let older = codec::encode(&holding("https://example.com/")).unwrap();
-        assert_eq!(
-            decode_received(older.as_bytes()).unwrap(),
-            holding("https://example.com/")
-        );
-        crate::fs::replace(&corpus.join("json-form"), older.as_bytes()).unwrap();
     }
 }

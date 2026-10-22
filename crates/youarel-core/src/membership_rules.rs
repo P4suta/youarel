@@ -261,11 +261,91 @@ pub fn resolve(genesis: Digest, operations: &[Operation]) -> Resolution {
 /// The replay keeps its order in B-trees and its members in a vector, which a bounded model checker cannot unroll, so Kani proves the pure decision, and an exhaustive sweep and the Quint model cover the rest.
 #[cfg(any(test, kani))]
 mod proofs {
-    use super::{Action, Device};
+    fn historical_rotation(current: u32, historical: u32, revoked: bool) -> bool {
+        let founder = [1; 32];
+        let recovery = [2; 32];
+        let genesis = [1; 32];
+        let canonical = [3; 32];
+        let grant = [5; 32];
+        let mut operations = alloc::vec![
+            Operation {
+                digest: genesis,
+                parents: alloc::vec![],
+                author: founder,
+                action: Action::Genesis
+            },
+            Operation {
+                digest: [2; 32],
+                parents: alloc::vec![genesis],
+                author: founder,
+                action: Action::Add(recovery)
+            },
+            Operation {
+                digest: canonical,
+                parents: alloc::vec![[2; 32]],
+                author: founder,
+                action: Action::Rotate(current)
+            },
+        ];
+        let parent = if revoked {
+            operations.push(Operation {
+                digest: [4; 32],
+                parents: alloc::vec![canonical],
+                author: recovery,
+                action: Action::Remove(founder),
+            });
+            [4; 32]
+        } else {
+            canonical
+        };
+        operations.push(Operation {
+            digest: grant,
+            parents: alloc::vec![parent],
+            author: founder,
+            action: Action::Rotate(historical),
+        });
+        let resolution = resolve(genesis, &operations);
+        resolution.epoch == current
+            && resolution.rotation == Some(canonical)
+            && resolution.rotations.contains(&grant) != revoked
+    }
+
+    #[cfg(kani)]
+    #[kani::proof]
+    #[kani::unwind(65)]
+    fn historical_key_grants_preserve_the_epoch_and_require_a_current_author() {
+        let current: u32 = kani::any();
+        let historical: u32 = kani::any();
+        let revoked: bool = kani::any();
+        kani::assume(current > 0 && historical > 0 && historical <= current);
+        kani::assert(
+            historical_rotation(current, historical, revoked),
+            "only an active member retains an historical grant, without advancing the canonical epoch",
+        );
+        kani::cover!(historical < current, "an earlier epoch");
+        kani::cover!(
+            historical == current,
+            "a concurrent key of the current epoch"
+        );
+        kani::cover!(!revoked, "an active author grants a key");
+        kani::cover!(revoked, "a removed author grants no key");
+    }
+
+    #[test]
+    fn historical_grants_preserve_the_epoch_and_refuse_a_removed_author() {
+        for current in [1, 2, u32::MAX] {
+            for historical in [1, current] {
+                for revoked in [false, true] {
+                    assert!(historical_rotation(current, historical, revoked));
+                }
+            }
+        }
+    }
+    use super::{Action, Device, Operation, resolve};
     #[cfg(kani)]
     use super::{Decision, Facts, decide};
     #[cfg(test)]
-    use super::{Digest, Effect, Members, Operation, Resolution, Step, resolve};
+    use super::{Digest, Effect, Members, Resolution, Step};
     #[cfg(test)]
     use alloc::vec::Vec;
 

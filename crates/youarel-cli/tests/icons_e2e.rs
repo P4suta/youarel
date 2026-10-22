@@ -29,7 +29,6 @@ fn run(home: &Path, arguments: &[&str]) -> String {
     let output = youarel()
         .args(arguments)
         .env("YOUAREL_HOME", home)
-        .env("YOUAREL_KEY_STORE", "file")
         .output()
         .unwrap();
     assert!(
@@ -94,9 +93,7 @@ fn serve(icons: bool) -> Site {
 /// The length of the image each host shows on the device, by host.
 fn icons(home: &Path) -> BTreeMap<String, Option<usize>> {
     let store = Store::new(home.to_path_buf());
-    let index = store
-        .session(NOW, |session| Ok(session.icons().clone()))
-        .unwrap();
+    let index = store.session(NOW, |session| session.icons()).unwrap();
     index
         .into_iter()
         .map(|(host, icon)| {
@@ -137,17 +134,11 @@ fn an_addition_keeps_its_page_s_icon_or_its_site_s_favicon_under_the_host() {
         "one icon for each host, whatever its port and path"
     );
     assert!(held.values().all(Option::is_some), "{held:?}");
-    let records =
-        youarel_store::fs::read_bytes_if_present(&home.path().join(youarel_store::STATE_FILE))
-            .unwrap()
-            .unwrap();
-    assert_eq!(
-        youarel_store::records::decode(&records)
-            .unwrap()
-            .shortcuts
-            .len(),
-        3
-    );
+    let body = Store::new(home.path().to_path_buf())
+        .session(NOW, |session| session.records())
+        .unwrap();
+    assert_eq!(body.shortcuts.len(), 3);
+    let records = youarel_core::record_rules::encode_body(&body).unwrap();
     assert!(
         !records
             .windows(PNG_SIGNATURE.len())

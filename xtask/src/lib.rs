@@ -6,6 +6,7 @@
 pub mod adr;
 pub mod app;
 pub mod apple;
+pub mod bench;
 pub mod check;
 pub mod ci;
 pub mod ci_plan;

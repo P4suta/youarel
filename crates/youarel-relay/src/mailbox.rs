@@ -100,7 +100,7 @@ pub fn handle(store: &mut impl MailStore, now: u64, bytes: &[u8]) -> Result<Repl
             store.push(nameplate, to, &message)?;
             Ok(Reply::ok(Vec::new()))
         }
-        Mail::Pick { nameplate, to } => {
+        Mail::Pick { nameplate, to } | Mail::Poll { nameplate, to } => {
             if !live.contains(&nameplate) {
                 return Ok(Reply::refused(
                     Status::NotFound,

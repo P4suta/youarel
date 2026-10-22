@@ -35,11 +35,19 @@ enum Command {
         no_fetch: bool,
     },
     /// List the entries of a folder, or of the top.
-    Ls { folder: Option<String> },
+    Ls {
+        folder: Option<String>,
+        /// List at most this many entries, the first ones.
+        #[arg(long)]
+        limit: Option<usize>,
+    },
     /// Search the shortcuts and folders.
     Find {
         #[arg(required = true)]
         query: Vec<String>,
+        /// List at most this many matches, the best ones.
+        #[arg(long)]
+        limit: Option<usize>,
     },
     /// Open the best shortcut for a search in the default browser.
     Open {
@@ -62,6 +70,8 @@ enum Command {
     Rm { entry: String },
     /// Import a bookmark file a browser exported or keeps, such as Chrome's, Edge's, or Brave's `Bookmarks` copied from another device, or the bookmarks a browser keeps on this device.
     Import(Import),
+    /// Fill missing icons from local browser caches without contacting any site.
+    Icons,
     /// Export every folder and shortcut.
     Export {
         #[arg(long, value_enum, default_value = "html")]
@@ -79,12 +89,12 @@ enum Command {
         #[command(subcommand)]
         command: PairCommand,
     },
-    /// Carry this device's state to the others as a file.
+    /// Export or import a sealed snapshot directory.
     Bundle {
         #[command(subcommand)]
         command: BundleCommand,
     },
-    /// Sync through a shared folder, where each device writes its own bundle, or through a relay at an `https://` address.
+    /// Sync through a shared folder or a relay at an `https://` address.
     Sync { target: String },
     /// Remove a device from the account, by the start of its identifier.
     Remove { device: String },
@@ -93,7 +103,7 @@ enum Command {
         #[command(subcommand)]
         command: RecoveryCommand,
     },
-    /// On a new device: recover the account with the recovery key on standard input, from a bundle file, a shared folder, or a relay.
+    /// On a new device: recover with the key on standard input, from a snapshot directory, a shared folder, or a relay.
     Recover {
         #[command(flatten)]
         source: RecoverySource,
@@ -122,14 +132,14 @@ enum RecoveryCommand {
     Create,
 }
 
-/// Where the account's bundles wait, exactly one of them.
+/// One source of retained sealed segment chains.
 #[derive(Debug, clap::Args)]
 #[group(required = true, multiple = false)]
 struct RecoverySource {
-    /// A bundle file a member wrote.
-    #[arg(long)]
+    /// A snapshot directory a member exported.
+    #[arg(long, value_name = "DIR")]
     bundle: Option<PathBuf>,
-    /// A shared folder where the members write their bundles.
+    /// A shared folder where the members append their chains.
     #[arg(long)]
     folder: Option<PathBuf>,
     /// A relay at an `https://` address.
@@ -143,7 +153,7 @@ impl RecoverySource {
             (Some(bundle), None, None) => Ok(sync::Source::Bundle(bundle)),
             (None, Some(folder), None) => Ok(sync::Source::Folder(folder)),
             (None, None, Some(relay)) => Ok(sync::Source::Relay(relay)),
-            _ => anyhow::bail!("give one of `--bundle FILE`, `--folder DIR`, or `--relay URL`"),
+            _ => anyhow::bail!("give one of `--bundle DIR`, `--folder DIR`, or `--relay URL`"),
         }
     }
 }
@@ -187,10 +197,16 @@ enum PairCommand {
 
 #[derive(Debug, Subcommand)]
 enum BundleCommand {
-    /// Write this device's state, sealed for the account's members.
-    Export { out: PathBuf },
-    /// Merge the state of another device's bundle.
-    Import { file: PathBuf },
+    /// Write a snapshot directory sealed for the other devices.
+    Export {
+        #[arg(value_name = "DIR")]
+        directory: PathBuf,
+    },
+    /// Read a snapshot directory without writing to it.
+    Import {
+        #[arg(value_name = "DIR")]
+        directory: PathBuf,
+    },
 }
 
 fn joined(words: &[String]) -> String {
@@ -244,8 +260,12 @@ fn run(cli: Cli) -> Result<()> {
             };
             vec![commands::add(&store, now, &link, &addition)?]
         }
-        Some(Command::Ls { folder }) => commands::list(&store, now, folder.as_deref())?,
-        Some(Command::Find { query }) => commands::find(&store, now, &joined(&query))?,
+        Some(Command::Ls { folder, limit }) => {
+            commands::list(&store, now, folder.as_deref(), limit.unwrap_or(usize::MAX))?
+        }
+        Some(Command::Find { query, limit }) => {
+            commands::find(&store, now, &joined(&query), limit.unwrap_or(usize::MAX))?
+        }
         Some(Command::Open { query }) => vec![commands::open(&store, now, &joined(&query))?],
         Some(Command::Mkdir { path }) => vec![commands::make_folder(&store, now, &path)?],
         Some(Command::Mv { entry, folder }) => {
@@ -260,7 +280,19 @@ fn run(cli: Cli) -> Result<()> {
         Some(Command::Note { entry, note }) => vec![commands::note(&store, now, &entry, &note)?],
         Some(Command::Mark { folder, mark }) => vec![commands::mark(&store, now, &folder, &mark)?],
         Some(Command::Rm { entry }) => vec![commands::remove(&store, now, &entry)?],
-        Some(Command::Import(what)) => vec![import(&store, now, what)?.to_string()],
+        Some(Command::Import(what)) => {
+            let browser = what.from.map(Into::into);
+            let imported = import(&store, now, what)?;
+            let mut lines = vec![imported.to_string()];
+            match local_icons(&store, now, browser) {
+                Ok(icons) => lines.extend(icons),
+                Err(error) => lines.push(format!(
+                    "Shortcuts imported; local icons could not finish: {error:#}"
+                )),
+            }
+            lines
+        }
+        Some(Command::Icons) => local_icons(&store, now, None)?,
         Some(Command::Export { format }) => {
             let text = commands::export(&store, now, format)?;
             vec![text.trim_end().to_owned()]
@@ -272,8 +304,8 @@ fn run(cli: Cli) -> Result<()> {
         },
         Some(Command::Pair { command }) => pair(&store, now, command)?,
         Some(Command::Bundle { command }) => match command {
-            BundleCommand::Export { out } => sync::export(&store, now, &out)?,
-            BundleCommand::Import { file } => sync::import(&store, now, &file)?,
+            BundleCommand::Export { directory } => sync::export(&store, now, &directory)?,
+            BundleCommand::Import { directory } => sync::import(&store, now, &directory)?,
         },
         Some(Command::Sync { target }) => sync::sync(&store, now, &target)?,
         Some(Command::Remove { device }) => sync::remove(&store, now, &device)?,
@@ -312,6 +344,23 @@ fn import(store: &Store, now: u64, what: Import) -> Result<commands::Imported> {
         (Some(file), None) => commands::import(store, now, &read_file(&file)?, folder),
         (None, None) => anyhow::bail!("give a bookmark file or `--from` a browser"),
     }
+}
+
+fn local_icons(
+    store: &Store,
+    now: u64,
+    browser: Option<youarel_core::browser_rules::Browser>,
+) -> Result<Vec<String>> {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let interrupt = Arc::clone(&cancelled);
+    ctrlc::set_handler(move || interrupt.store(true, Ordering::Relaxed))?;
+    let discovery = match browser {
+        Some(browser) => youarel_cli::browsers::cache::discover_browser(browser)?,
+        None => youarel_cli::browsers::cache::discover()?,
+    };
+    Ok(youarel_cli::icons::local::fill_all(store, now, discovery, cancelled)?.lines())
 }
 
 /// What a person allows an update to do.

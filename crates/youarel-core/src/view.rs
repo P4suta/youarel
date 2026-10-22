@@ -2,7 +2,7 @@
 
 use crate::match_rules::score;
 use crate::rank_rules::{Rank, Visits, frecency};
-use crate::state::{Entry, ItemId, State, Tree};
+use crate::state::{Entry, Folder, ItemId, Shortcut, State, Tree};
 use crate::ui_rules::{Row, Ui};
 use alloc::collections::BTreeMap;
 use alloc::string::String;
@@ -38,10 +38,20 @@ fn best<'a>(query: &str, texts: impl IntoIterator<Item = &'a str>) -> Option<u32
         .max()
 }
 
-/// The search score of a live shortcut, over its alias, title, link, place, and each word of its note.
+/// The search score of a shortcut that shows, over its alias, title, link, place, and each word of its note.
 pub(crate) fn shortcut_score(state: &State, tree: &Tree, query: &str, id: ItemId) -> Option<u32> {
-    let shortcut = state.shortcut(id)?;
-    let path = joined(&state.path(tree, state.folder_of(tree, id)));
+    let shortcut = state.shown(tree, id)?;
+    score_shortcut(
+        query,
+        shortcut,
+        &state.path(tree, state.folder_of(tree, id)),
+    )
+}
+
+/// The search score of a shortcut that sits under the folders `path` names from the top, over its alias, title, link, place, and each word of its note.
+#[must_use]
+pub fn score_shortcut(query: &str, shortcut: &Shortcut, path: &[&str]) -> Option<u32> {
+    let path = joined(path);
     let located = alloc::format!("{path}/{}", shortcut.title.value);
     let found = best(
         query,
@@ -63,10 +73,16 @@ pub(crate) fn shortcut_score(state: &State, tree: &Tree, query: &str, id: ItemId
     })
 }
 
-/// The search score of a live folder.
+/// The search score of a folder that shows.
 fn folder_score(state: &State, tree: &Tree, query: &str, id: ItemId) -> Option<u32> {
-    let folder = state.folder(id)?;
-    let path = joined(&state.path(tree, Some(id)));
+    let folder = state.folders.get(&id).filter(|_| tree.shows(id))?;
+    score_folder(query, folder, &state.path(tree, Some(id)))
+}
+
+/// The search score of a folder whose own path from the top `path` names, over its name and that path.
+#[must_use]
+pub fn score_folder(query: &str, folder: &Folder, path: &[&str]) -> Option<u32> {
+    let path = joined(path);
     best(query, [folder.name.value.as_str(), path.as_str()])
 }
 
@@ -75,7 +91,7 @@ fn folder_score(state: &State, tree: &Tree, query: &str, id: ItemId) -> Option<u
 pub fn rows(state: &State, ui: &Ui, visits: &BTreeMap<ItemId, Visits>, now: u64) -> Vec<Row> {
     let tree = state.tree();
     if ui.query.is_empty() {
-        let folder = ui.folder.filter(|folder| tree.holds(*folder));
+        let folder = ui.folder.filter(|folder| tree.shows(*folder));
         let mut rows = Vec::new();
         if let Some(folder) = folder {
             rows.push(Row::Parent(tree.parent(folder)));

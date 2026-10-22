@@ -235,6 +235,7 @@ pub fn run(root: &Path, words: &[&str]) -> Result<()> {
         ["assurance"] => {
             check::run(root, check::Scope::Hosted)?;
             crate::app::linux(root)?;
+            crate::worker::run(root)?;
             proofs::run(
                 root,
                 proofs::Options {

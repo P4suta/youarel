@@ -30,7 +30,6 @@ impl Device {
         let mut child = youarel()
             .args(arguments)
             .env("YOUAREL_HOME", self.home.path())
-            .env("YOUAREL_KEY_STORE", "file")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())

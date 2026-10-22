@@ -9,6 +9,8 @@ use youarel_link::Link;
 use youarel_store::icons::IconId;
 use youarel_store::{Session, Store, StoreError};
 
+pub mod local;
+
 /// The icon every site may keep at its root, which a page that names no icon still has.
 const FAVICON: &str = "/favicon.ico";
 
@@ -77,7 +79,7 @@ pub fn keep(
     link: &Link,
     (image, bytes): (IconId, Vec<u8>),
 ) -> Result<(), StoreError> {
-    session.keep_icon(link.host(), image, bytes)
+    session.keep_icon(link.host(), image, &bytes)
 }
 
 /// Whether this device keeps no icon for the host of `link`.
@@ -86,9 +88,7 @@ pub fn keep(
 ///
 /// Returns an error when the store cannot be read.
 pub fn lacking(store: &Store, now: u64, link: &Link) -> Result<bool> {
-    Ok(store.session(now, |session| {
-        Ok(!session.icons().contains_key(link.host()))
-    })?)
+    Ok(store.session(now, |session| Ok(session.icon(link.host())?.is_none()))?)
 }
 
 /// Gathers the favicon of the site of a link a person opened, when this device keeps no icon for its host.

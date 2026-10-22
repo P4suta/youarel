@@ -1,5 +1,6 @@
 //! What the window asks for, as its script sends it: plain words and identifiers in hexadecimal, which the library reads into the core's values.
 
+use crate::library::Place;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use youarel_core::browser_rules::Browser;
@@ -46,7 +47,6 @@ pub enum SortName {
     Title,
     Link,
     Opened,
-    Manual,
 }
 
 impl From<SortName> for Sort {
@@ -57,7 +57,6 @@ impl From<SortName> for Sort {
             SortName::Title => Self::Title,
             SortName::Link => Self::Link,
             SortName::Opened => Self::Opened,
-            SortName::Manual => Self::Manual,
         }
     }
 }
@@ -70,7 +69,6 @@ impl From<Sort> for SortName {
             Sort::Title => Self::Title,
             Sort::Link => Self::Link,
             Sort::Opened => Self::Opened,
-            Sort::Manual => Self::Manual,
         }
     }
 }
@@ -174,7 +172,7 @@ pub enum Extend {
     Range,
 }
 
-/// A scope as the window names it, which the view also sends back.
+/// A place as the window names it, a scope of the library or the trash, which the view also sends back.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum ScopeName {
@@ -182,31 +180,34 @@ pub enum ScopeName {
     Unsorted,
     Recent,
     Collection { id: String },
+    Trash,
 }
 
 impl ScopeName {
-    /// The scope the name stands for.
+    /// The place the name stands for.
     ///
     /// # Errors
     ///
     /// Returns an error when the identifier is no identifier.
-    pub fn scope(&self) -> Result<Scope> {
+    pub fn place(&self) -> Result<Place> {
         Ok(match self {
-            Self::All => Scope::All,
-            Self::Unsorted => Scope::Unsorted,
-            Self::Recent => Scope::Recent,
-            Self::Collection { id } => Scope::Collection(item(id)?),
+            Self::All => Place::Scope(Scope::All),
+            Self::Unsorted => Place::Scope(Scope::Unsorted),
+            Self::Recent => Place::Scope(Scope::Recent),
+            Self::Collection { id } => Place::Scope(Scope::Collection(item(id)?)),
+            Self::Trash => Place::Trash,
         })
     }
 }
 
-impl From<&Scope> for ScopeName {
-    fn from(scope: &Scope) -> Self {
-        match scope {
-            Scope::All => Self::All,
-            Scope::Unsorted => Self::Unsorted,
-            Scope::Recent => Self::Recent,
-            Scope::Collection(id) => Self::Collection { id: text(*id) },
+impl From<&Place> for ScopeName {
+    fn from(place: &Place) -> Self {
+        match place {
+            Place::Scope(Scope::All) => Self::All,
+            Place::Scope(Scope::Unsorted) => Self::Unsorted,
+            Place::Scope(Scope::Recent) => Self::Recent,
+            Place::Scope(Scope::Collection(id)) => Self::Collection { id: text(*id) },
+            Place::Trash => Self::Trash,
         }
     }
 }
@@ -233,6 +234,15 @@ impl EntryName {
     }
 }
 
+/// What a move or a removal acts on, as the window names it: shortcuts and folders by their identifiers, or the selection as the library holds it.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum TargetName {
+    Ids { ids: Vec<String> },
+    Selection,
+    Drag { token: String },
+}
+
 /// The fields of a shortcut as the edit sheet sends them.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -251,12 +261,37 @@ pub struct Fields {
 pub enum Intent {
     /// The view as the store holds it now.
     Show,
+    Undo,
+    Redo,
+    Cut,
+    CancelCut,
+    Cancel,
+    Paste {
+        text: String,
+    },
+    EndDrag {
+        token: String,
+    },
+    Spring {
+        token: String,
+        folder: String,
+    },
     Scope {
         scope: ScopeName,
     },
-    /// Shows the shortcuts in another layout, which the window opens with again.
+    Back,
+    Forward,
+    ShowInFolder {
+        id: Option<String>,
+    },
+    /// Shows the shortcuts in another layout until the window opens again.
     Layout {
         layout: LayoutName,
+    },
+    /// Chooses the layout and the collection the window opens with, or every shortcut for none, which the settings keep.
+    Opening {
+        layout: LayoutName,
+        start: Option<String>,
     },
     Sort {
         sort: SortName,
@@ -273,10 +308,16 @@ pub enum Intent {
     Search {
         text: String,
     },
+    Type {
+        key: char,
+    },
+    /// A click on a row, with the place the page shows it at, which the library checks before it trusts it.
     Select {
         id: String,
         #[serde(default)]
         extend: Extend,
+        #[serde(default)]
+        place: Option<usize>,
     },
     /// Selects every folder and shortcut the cards or the list show.
     SelectAll,
@@ -284,6 +325,8 @@ pub enum Intent {
     Disclose {
         id: String,
         open: bool,
+        #[serde(default)]
+        deep: bool,
     },
     /// Opens or closes a collection of the sidebar's tree.
     DiscloseSidebar {
@@ -299,11 +342,17 @@ pub enum Intent {
     Step {
         key: KeyName,
         across: usize,
+        #[serde(default)]
+        extend: bool,
     },
-    /// A click on an entry of the column at `depth`.
+    /// A click on an entry of the column at `depth`, with the place the page shows it at.
     Column {
         depth: usize,
         entry: EntryName,
+        #[serde(default)]
+        place: Option<usize>,
+        #[serde(default)]
+        extend: Extend,
     },
     /// Opens the shortcut, or the focused one.
     Open {
@@ -317,14 +366,25 @@ pub enum Intent {
         id: String,
         title: String,
     },
-    /// Files the shortcuts dropped on a collection, or on no collection.
+    /// Files the shortcuts and folders dropped on a collection, or on no collection.
     File {
-        ids: Vec<String>,
+        target: TargetName,
         collection: Option<String>,
     },
-    Remove {
-        ids: Vec<String>,
+    /// Moves shortcuts and folders to the trash, where a folder hides everything inside it.
+    Trash {
+        target: TargetName,
     },
+    /// Puts shortcuts and folders in the trash back where they were.
+    PutBack {
+        target: TargetName,
+    },
+    /// Deletes shortcuts and folders for good, a folder with everything inside it.
+    Remove {
+        target: TargetName,
+    },
+    /// Deletes everything in the trash for good.
+    EmptyTrash,
     NewCollection {
         name: String,
         parent: Option<String>,
@@ -332,14 +392,6 @@ pub enum Intent {
     RenameCollection {
         id: String,
         name: String,
-    },
-    RemoveCollection {
-        id: String,
-    },
-    /// Moves the folders dropped on a collection into it, or to the top for none.
-    MoveFolders {
-        ids: Vec<String>,
-        collection: Option<String>,
     },
     /// Imports a bookmark file of any kind a browser exports or keeps, as its bytes.
     Import {
@@ -380,21 +432,35 @@ impl Intent {
             Self::Edit { .. }
             | Self::Retitle { .. }
             | Self::File { .. }
+            | Self::Trash { .. }
+            | Self::PutBack { .. }
             | Self::Remove { .. }
+            | Self::EmptyTrash
             | Self::NewCollection { .. }
             | Self::RenameCollection { .. }
-            | Self::RemoveCollection { .. }
-            | Self::MoveFolders { .. }
             | Self::MarkCollection { .. }
             | Self::Import { .. }
             | Self::ImportBrowser { .. } => true,
             Self::Show
+            | Self::Undo
+            | Self::Redo
+            | Self::Cut
+            | Self::CancelCut
+            | Self::Cancel
+            | Self::Paste { .. }
+            | Self::EndDrag { .. }
+            | Self::Spring { .. }
+            | Self::Back
+            | Self::Forward
+            | Self::ShowInFolder { .. }
             | Self::Scope { .. }
             | Self::Layout { .. }
+            | Self::Opening { .. }
             | Self::Sort { .. }
             | Self::Group { .. }
             | Self::ShowColumn { .. }
             | Self::Search { .. }
+            | Self::Type { .. }
             | Self::Select { .. }
             | Self::SelectAll
             | Self::Disclose { .. }
@@ -478,8 +544,10 @@ pub fn text(id: ItemId) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        EntryName, Extend, GroupName, Intent, KeyName, LayoutName, ScopeName, SortName, item,
+        EntryName, Extend, GroupName, Intent, KeyName, LayoutName, ScopeName, SortName, TargetName,
+        item,
     };
+    use crate::library::Place;
     use youarel_core::library_rules::{Grouping, Layout, Move, Scope, Sort};
     use youarel_core::state::{Entry, ItemId};
 
@@ -491,14 +559,30 @@ mod tests {
             read(r#"{"kind":"select","id":"ab"}"#),
             Intent::Select {
                 id: "ab".to_owned(),
-                extend: Extend::Replace
+                extend: Extend::Replace,
+                place: None,
+            }
+        );
+        assert_eq!(
+            read(r#"{"kind":"select","id":"ab","extend":"range","place":7}"#),
+            Intent::Select {
+                id: "ab".to_owned(),
+                extend: Extend::Range,
+                place: Some(7),
+            }
+        );
+        assert_eq!(
+            read(r#"{"kind":"remove","target":{"kind":"selection"}}"#),
+            Intent::Remove {
+                target: TargetName::Selection
             }
         );
         assert_eq!(
             read(r#"{"kind":"step","key":"down","across":3}"#),
             Intent::Step {
                 key: KeyName::Down,
-                across: 3
+                across: 3,
+                extend: false,
             }
         );
         assert_eq!(
@@ -509,9 +593,25 @@ mod tests {
                 }
             }
         );
+        assert_eq!(
+            read(r#"{"kind":"scope","scope":{"kind":"trash"}}"#),
+            Intent::Scope {
+                scope: ScopeName::Trash
+            }
+        );
         assert!(serde_json::from_str::<Intent>(r#"{"kind":"tag","ids":[],"tag":"x"}"#).is_err());
         assert!(serde_json::from_str::<Intent>(r#"{"kind":"launch"}"#).is_err());
-        assert!(read(r#"{"kind":"remove","ids":[]}"#).edits());
+        assert!(
+            serde_json::from_str::<Intent>(r#"{"kind":"removeCollection","id":"ab"}"#).is_err()
+        );
+        for edit in [
+            r#"{"kind":"remove","target":{"kind":"ids","ids":[]}}"#,
+            r#"{"kind":"trash","target":{"kind":"selection"}}"#,
+            r#"{"kind":"putBack","target":{"kind":"selection"}}"#,
+            r#"{"kind":"emptyTrash"}"#,
+        ] {
+            assert!(read(edit).edits(), "{edit}");
+        }
         assert!(!read(r#"{"kind":"syncNow"}"#).edits());
     }
 
@@ -526,10 +626,13 @@ mod tests {
             Sort::Title,
             Sort::Link,
             Sort::Opened,
-            Sort::Manual,
         ] {
             assert_eq!(Sort::from(SortName::from(sort)), sort);
         }
+        assert!(
+            serde_json::from_str::<Intent>(r#"{"kind":"sort","sort":"manual"}"#).is_err(),
+            "the window sorts only automatically"
+        );
         for grouping in [
             Grouping::None,
             Grouping::Site,
@@ -550,13 +653,14 @@ mod tests {
             assert_eq!(Move::from(name), key);
         }
         let id = ItemId([0xab; 16]);
-        for scope in [
-            Scope::All,
-            Scope::Unsorted,
-            Scope::Recent,
-            Scope::Collection(id),
+        for place in [
+            Place::Scope(Scope::All),
+            Place::Scope(Scope::Unsorted),
+            Place::Scope(Scope::Recent),
+            Place::Scope(Scope::Collection(id)),
+            Place::Trash,
         ] {
-            assert_eq!(ScopeName::from(&scope).scope().unwrap(), scope);
+            assert_eq!(ScopeName::from(&place).place().unwrap(), place);
         }
         assert_eq!(item(&super::text(id)).unwrap(), id);
         assert!(item("zz").is_err());

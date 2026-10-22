@@ -33,7 +33,15 @@ pub const EDGES: [(&str, &[&str]); 14] = [
     ("youarel-crypto", &[]),
     ("youarel-html", &[]),
     ("youarel-icon", &[]),
-    ("youarel-import", &["youarel-html"]),
+    (
+        "youarel-import",
+        &[
+            "youarel-core",
+            "youarel-html",
+            "youarel-link",
+            "youarel-store",
+        ],
+    ),
     ("youarel-theme", &["youarel-core"]),
     ("youarel-link", &["youarel-core"]),
     ("youarel-protocol", &["youarel-core", "youarel-crypto"]),
@@ -68,7 +76,15 @@ pub const EDGES: [(&str, &[&str]); 14] = [
             "youarel-sync",
         ],
     ),
-    ("xtask", &["youarel-core", "youarel-release"]),
+    (
+        "xtask",
+        &[
+            "youarel-core",
+            "youarel-release",
+            "youarel-store",
+            "youarel-sync",
+        ],
+    ),
 ];
 
 const DEPENDENCY_TABLES: [&str; 3] = ["dependencies", "dev-dependencies", "build-dependencies"];

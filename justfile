@@ -43,6 +43,10 @@ proofs-linux:
 structure: trust
     mise x -- cargo xtask structure
 
+# Reproducible native store and segment measurements; timings never gate correctness.
+bench *args: trust
+    mise x -- cargo run --release --package xtask -- bench {{args}}
+
 # Kani, Quint, ProVerif, Miri, fuzz corpus replays, and mutation testing, in containers limited to 8 GB of memory and 4 processors at most.
 proofs *args: trust
     mise x -- cargo xtask contain proofs {{args}}

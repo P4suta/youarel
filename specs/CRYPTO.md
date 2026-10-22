@@ -25,7 +25,7 @@ A signed message is the label, a zero byte, and the payload.
 | `youarel/v1/device` | A device identifier, the digest of its public keys |
 | `youarel/v1/account` | An account identifier, the digest of its genesis operation |
 | `youarel/v1/operation` | The signature and the digest of a membership operation |
-| `youarel/v1/bundle` | The signature of a bundle |
+| `youarel/v1/segment` | A segment's signature and the digest of its plaintext record body |
 | `youarel/v1/state` | The encryption of a state under an epoch key |
 | `youarel/v1/commit` | The commitment to an epoch key |
 | `youarel/v1/slot` | The wrapping of an epoch key for one device |
@@ -40,8 +40,10 @@ A signed message is the label, a zero byte, and the payload.
 
 ## Constructions
 
-- **State encryption.** The key is the epoch key, the nonce is random, and the associated data is the account, the epoch, the sender, and the label `youarel/v1/state`.
-  The header carries the commitment `HKDF(epoch key, info = "youarel/v1/commit")`, which a reader compares before decrypting.
+- **Segment encryption.** The associated data is `youarel/v1/state`, a zero byte, version `u16`, account `digest`, sender `digest`, epoch `u32`, sequence `u64`, previous plaintext `digest`, and the kind with its snapshot fields, in that order and in the wire format's fixed widths.
+  The key is the epoch key, the nonce is random, and the header carries the commitment `HKDF(epoch key, info = "youarel/v1/commit")`, which a reader compares before decrypting.
+  The sender signs the complete `YRS1` envelope before its signature under `youarel/v1/segment`.
+  The predecessor digest is SHA-512/256 over `youarel/v1/segment`, a zero byte, and the canonical plaintext record body, so a retry preserves its chain identity independently of its nonce.
 - **Key slots.** The writer encapsulates to the device's X-Wing key and derives `HKDF(shared secret, info = "youarel/v1/slot" ‖ account ‖ epoch ‖ device)`, a key it uses once to encrypt the epoch key.
 - **Pairing.** Both sides run SPAKE2 with the code's forty bits as the password and the label with the invitation number as the identity.
   The inviter encapsulates to the joiner's X-Wing key.
@@ -53,5 +55,7 @@ A signed message is the label, a zero byte, and the payload.
 
 ## Secrets at rest
 
-A device keeps its secret keys in a file encrypted under a key that the operating system's key store holds: the Keychain on macOS, the Credential Manager on Windows, and the Secret Service on Linux.
+A device keeps its identity, its epoch keys, and the secrets of a pairing in plain files in its account directory, beside its state.
+They keep the permissions of the user's data directory on every operating system, as the state does.
+The operating system's boundary between users and its disk encryption protect them as they protect the state, and no youarel program reaches the operating system's credential store.
 Secrets leave memory through `zeroize` and never reach a log.

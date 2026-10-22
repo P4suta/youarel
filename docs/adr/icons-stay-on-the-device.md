@@ -1,8 +1,9 @@
 ---
-status: proposed
+status: amended
 date: 2026-10-19
 supersedes: icons-travel-inside-the-sealed-state.md
 amends: local-first-state-in-sealed-bundles.md
+amended-by: the-state-is-kept-in-an-indexed-store.md, a-store-reads-only-the-format-it-writes.md, icons-are-read-from-the-browsers-caches.md
 ---
 # Icons stay on the device
 

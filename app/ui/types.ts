@@ -2,18 +2,20 @@
 // The shapes mirror `app/src/view.rs` and `app/src/intent.rs`, which name every field the same way.
 
 export type Layout = "cards" | "list" | "columns";
-export type Sort = "newest" | "oldest" | "title" | "link" | "opened" | "manual";
+export type Sort = "newest" | "oldest" | "title" | "link" | "opened";
 /** A column of the list that a person may hide. */
 export type ColumnName = "link" | "collection" | "added";
 export type Grouping = "none" | "site" | "collection" | "added";
 export type Key = "up" | "down" | "left" | "right" | "first" | "last";
 export type Extend = "replace" | "toggle" | "range";
 
+/** A place the window stands in: a scope of the library, or the trash. */
 export type ScopeName =
   | { readonly kind: "all" }
   | { readonly kind: "unsorted" }
   | { readonly kind: "recent" }
-  | { readonly kind: "collection"; readonly id: string };
+  | { readonly kind: "collection"; readonly id: string }
+  | { readonly kind: "trash" };
 
 export interface UrlView {
   readonly scheme: string;
@@ -60,12 +62,16 @@ export interface Sidebar {
   readonly all: number;
   readonly unsorted: number;
   readonly recent: number;
+  /** The folders and the shortcuts that wait in the trash themselves. */
+  readonly trash: number;
   /** The collections from the top, each open one followed by the folders inside it. */
   readonly collections: readonly SidebarFolder[];
 }
 
 export interface ColumnEntry {
-  readonly kind: "folder" | "shortcut";
+  readonly cut: boolean;
+  /** A folder, a shortcut, or an entry that went while the column was read. */
+  readonly kind: "folder" | "shortcut" | "gone";
   readonly id: string;
   readonly name: string;
   readonly selected: boolean;
@@ -75,8 +81,107 @@ export interface ColumnEntry {
   readonly site: string;
   /** What a folder shows in place of its glyph, or empty for the glyph and for a shortcut. */
   readonly mark: string;
-  /** The heading this entry and the shortcuts after it fall under, on the first of each. */
-  readonly heading: string | null;
+}
+
+/** A heading over the rows of a listing: its label, the place of the first row under it, and how many rows follow under it. */
+export interface Group {
+  readonly label: string;
+  readonly place: number;
+  readonly count: number;
+}
+
+/** One row of a listing: a folder, a shortcut, or a row whose entry went while the page was read. */
+export type RowView =
+  | {
+      readonly kind: "folder";
+      readonly folder: CollectionCount;
+      /** The path of the folder it came from while it waits in the trash, or null. */
+      readonly origin: string | null;
+      readonly depth: number;
+      /** Whether the outline shows the folder's rows, or null outside the outline. */
+      readonly open: boolean | null;
+      readonly selected: boolean;
+      readonly cut: boolean;
+    }
+  | { readonly kind: "shortcut"; readonly item: Item; readonly depth: number; readonly selected: boolean; readonly cut: boolean }
+  | { readonly kind: "gone" };
+
+/** The page of the listing the cards or the list show. */
+export interface AnchoredRow {
+  readonly id: string;
+  readonly place: number;
+}
+
+export interface ListingView {
+  readonly identity: string;
+    readonly anchor: AnchoredRow | null;
+  /** What tells the listing apart in the state of the store it was read in. */
+  readonly key: string;
+  readonly total: number;
+  /** The place of the first of the rows. */
+  readonly first: number;
+  readonly rows: readonly RowView[];
+  /** The place of the focused row, when the listing holds it. */
+  readonly focus: number | null;
+  /** The place of a row the page brings into sight, after an intent that moved the focus to it. */
+  readonly reveal: number | null;
+  /** Whether the listing is another than the one shown before, so the page starts from its top. */
+  readonly fresh: boolean;
+  /** How many of the first rows are folders. */
+  readonly folders: number;
+  readonly groups: readonly Group[];
+  /** Whether the rows form the list's outline, whose folders open in place. */
+  readonly outline: boolean;
+}
+
+/** Rows of the listing from a place on, which the page asks for as a person scrolls. */
+export interface RowsView {
+  readonly key: string;
+  readonly total: number;
+  readonly first: number;
+  readonly rows: readonly RowView[];
+}
+
+/** A column of the folder walk: a page of its entries, the place of the one selected, and its headings. */
+export interface ColumnView {
+  readonly identity: string;
+    readonly anchor: AnchoredRow | null;
+  readonly key: string;
+  readonly total: number;
+  readonly first: number;
+  readonly entries: readonly ColumnEntry[];
+  readonly selected: number | null;
+  readonly groups: readonly Group[];
+}
+
+/** Entries of a column from a place on, which the page asks for as a person scrolls the column. */
+export interface EntriesView {
+  readonly key: string;
+  readonly total: number;
+  readonly first: number;
+  readonly entries: readonly ColumnEntry[];
+}
+
+/** What a person selected, counted: how many rows, and how many of them are folders. */
+export interface SelectionView {
+  readonly count: number;
+  readonly folders: number;
+}
+
+/** How far a move or a removal came. */
+export interface Progress {
+  readonly done: number;
+  readonly total: number;
+  readonly text: string;
+}
+
+/** What a move or a removal acts on: shortcuts and folders by their identifiers, or the selection as the library holds it. */
+export type Target = { readonly kind: "ids"; readonly ids: readonly string[] } | { readonly kind: "selection" } | { readonly kind: "drag"; readonly token: string };
+
+export interface DragMaterial {
+  readonly token: string;
+  readonly links: string;
+  readonly count: number;
 }
 
 export interface Choice {
@@ -105,6 +210,7 @@ export interface Worn {
 }
 
 export interface View {
+  readonly cut: number;
   readonly sidebar: Sidebar;
   readonly title: string;
   readonly count: number;
@@ -112,45 +218,38 @@ export interface View {
   readonly sort: Sort;
   readonly grouping: Grouping;
   readonly search: string;
-  /** The folders the cards and the list show before the shortcuts while they stand in a folder. */
-  readonly folders: readonly CollectionCount[];
+  /** The page of the listing the cards or the list show. */
+  readonly listing: ListingView;
   /** The columns the list draws after the name, in their order. */
   readonly listColumns: readonly ColumnName[];
-  /** The rows of the list's outline, in their order, or none when the list shows the folders and the items as they come. */
-  readonly outline: readonly OutlineRow[];
   /** The columns of the list a person hid. */
   readonly hiddenColumns: readonly ColumnName[];
-  readonly items: readonly Item[];
-  /** The headings the items fall under in turn, or none. */
-  readonly groups: readonly Group[];
-  readonly columns: readonly (readonly ColumnEntry[])[];
+  /** The columns of the folder walk, from the left. */
+  readonly columns: readonly ColumnView[];
   readonly preview: Item | null;
   readonly focus: string | null;
-  readonly selected: readonly string[];
+  readonly selection: SelectionView;
   readonly notice: Notice | null;
-  readonly collections: readonly Choice[];
-  /** The folder a new folder or a new link goes into, or null for the top. */
-  readonly here: string | null;
+  /** The folder a new folder or a new link goes into, with its path, or null for the top. */
+  readonly here: Choice | null;
   /** The folders the columns open, from the left, or, in the cards and the list, the folders from the top down to the one they stand in. */
   readonly trail: readonly Step[];
   readonly theme: Worn | null;
   /** The browsers that keep bookmarks on this kind of host. */
   readonly browsers: readonly Browser[];
   readonly sync: SyncView;
+  /** What the window opens with, which the settings show. */
+  readonly opening: Opening;
+  readonly back: boolean;
+  readonly forward: boolean;
+  readonly undo: string | null;
+  readonly redo: string | null;
 }
 
-export interface Group {
-  readonly label: string;
-  /** How many of the items that follow the heading fall under it. */
-  readonly count: number;
-}
-
-/** One row of the list's outline: a folder or a shortcut, how deep it sits, and whether a folder shows its rows. */
-export interface OutlineRow {
-  readonly kind: "folder" | "shortcut";
-  readonly id: string;
-  readonly depth: number;
-  readonly open: boolean;
+/** What the window opens with: a layout, and a collection or every shortcut for null. */
+export interface Opening {
+  readonly layout: Layout;
+  readonly start: Choice | null;
 }
 
 /** An emoji the mark picker offers, with the name its shortcode writes. */
@@ -193,33 +292,47 @@ export interface Fields {
 }
 
 export type Intent =
+  | { readonly kind: "endDrag"; readonly token: string }
+  | { readonly kind: "spring"; readonly token: string; readonly folder: string }
+  | { readonly kind: "type"; readonly key: string }
+  | { readonly kind: "cut" | "cancelCut" | "cancel" }
+  | { readonly kind: "paste"; readonly text: string }
   | { readonly kind: "show" }
   | { readonly kind: "scope"; readonly scope: ScopeName }
   | { readonly kind: "layout"; readonly layout: Layout }
+  | { readonly kind: "opening"; readonly layout: Layout; readonly start: string | null }
   | { readonly kind: "sort"; readonly sort: Sort }
   | { readonly kind: "group"; readonly grouping: Grouping }
   | { readonly kind: "showColumn"; readonly column: ColumnName; readonly shown: boolean }
   | { readonly kind: "search"; readonly text: string }
-  | { readonly kind: "select"; readonly id: string; readonly extend: Extend }
+  | { readonly kind: "select"; readonly id: string; readonly extend: Extend; readonly place: number | null }
   | { readonly kind: "selectAll" }
-  | { readonly kind: "disclose"; readonly id: string; readonly open: boolean }
+  | { readonly kind: "disclose"; readonly id: string; readonly open: boolean; readonly deep: boolean }
   | { readonly kind: "discloseSidebar"; readonly id: string; readonly open: boolean }
   | { readonly kind: "markCollection"; readonly id: string; readonly mark: string }
-  | { readonly kind: "step"; readonly key: Key; readonly across: number }
+  | { readonly kind: "step"; readonly key: Key; readonly across: number; readonly extend: boolean }
+  | { readonly kind: "back" }
+  | { readonly kind: "undo" }
+  | { readonly kind: "redo" }
+  | { readonly kind: "forward" }
+  | { readonly kind: "showInFolder"; readonly id: string | null }
   | {
       readonly kind: "column";
       readonly depth: number;
       readonly entry: { readonly kind: "folder" | "shortcut"; readonly id: string };
+      readonly place: number | null;
+      readonly extend: Extend;
     }
   | { readonly kind: "open"; readonly id: string | null }
   | { readonly kind: "edit"; readonly fields: Fields }
   | { readonly kind: "retitle"; readonly id: string; readonly title: string }
-  | { readonly kind: "file"; readonly ids: readonly string[]; readonly collection: string | null }
-  | { readonly kind: "remove"; readonly ids: readonly string[] }
+  | { readonly kind: "file"; readonly target: Target; readonly collection: string | null }
+  | { readonly kind: "trash"; readonly target: Target }
+  | { readonly kind: "putBack"; readonly target: Target }
+  | { readonly kind: "remove"; readonly target: Target }
+  | { readonly kind: "emptyTrash" }
   | { readonly kind: "newCollection"; readonly name: string; readonly parent: string | null }
   | { readonly kind: "renameCollection"; readonly id: string; readonly name: string }
-  | { readonly kind: "removeCollection"; readonly id: string }
-  | { readonly kind: "moveFolders"; readonly ids: readonly string[]; readonly collection: string | null }
   | { readonly kind: "import"; readonly bytes: readonly number[] }
   | { readonly kind: "theme"; readonly follow: boolean; readonly light: string; readonly dark: string }
   | { readonly kind: "importTheme"; readonly text: string }
@@ -257,6 +370,24 @@ export function listen(event: string, handler: () => void): Promise<() => void> 
 export function listenText(event: string, handler: (text: string) => void): Promise<() => void> {
   return window.__TAURI__.event.listen(event, (raised) => {
     if (typeof raised.payload === "string") {
+      handler(raised.payload);
+    }
+  });
+}
+
+/** Whether a payload is the progress of a job. */
+function isProgress(payload: unknown): payload is Progress {
+  if (typeof payload !== "object" || payload === null) {
+    return false;
+  }
+  const fields = payload as Record<string, unknown>;
+  return typeof fields["done"] === "number" && typeof fields["total"] === "number" && typeof fields["text"] === "string";
+}
+
+/** Calls `handler` with each progress the library raises under `event`, and ignores a payload of another shape. */
+export function listenProgress(event: string, handler: (progress: Progress) => void): Promise<() => void> {
+  return window.__TAURI__.event.listen(event, (raised) => {
+    if (isProgress(raised.payload)) {
       handler(raised.payload);
     }
   });

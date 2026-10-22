@@ -1,4 +1,4 @@
-//! The optional relay: it admits a member's signed request, keeps each member's newest sealed bundle, hands the bundles to the members, and carries the mail of pairings.
+//! The optional relay: authenticated immutable segment chains, cursor pages, and pairing mail.
 //!
 //! The relay never holds a key that opens a state; it checks the membership log and the signatures with the code the devices run.
 //! Its storage sits behind traits, so the Worker keeps it in a Durable Object's database, and a test or a local relay keeps it in memory.
@@ -30,10 +30,12 @@ pub enum Status {
     BadRequest,
     /// A stale, replayed, or forged request.
     Unauthorized,
-    /// A request from a device that is no member, or a bundle another device signed.
+    /// A request from a device that is no member, or a segment whose signature fails.
     Forbidden,
     NotFound,
-    /// A bundle or a message beyond what the relay keeps.
+    /// An occupied sequence or a missing chain predecessor.
+    Conflict,
+    /// A segment or message beyond the relay's quota.
     TooLarge,
     /// The relay keeps as many mailboxes as it allows.
     Busy,
@@ -46,6 +48,7 @@ const HTTP_BAD_REQUEST: u16 = 400;
 const HTTP_UNAUTHORIZED: u16 = 401;
 const HTTP_FORBIDDEN: u16 = 403;
 const HTTP_NOT_FOUND: u16 = 404;
+const HTTP_CONFLICT: u16 = 409;
 const HTTP_CONTENT_TOO_LARGE: u16 = 413;
 const HTTP_SERVICE_UNAVAILABLE: u16 = 503;
 
@@ -60,6 +63,7 @@ impl Status {
             Self::Unauthorized => HTTP_UNAUTHORIZED,
             Self::Forbidden => HTTP_FORBIDDEN,
             Self::NotFound => HTTP_NOT_FOUND,
+            Self::Conflict => HTTP_CONFLICT,
             Self::TooLarge => HTTP_CONTENT_TOO_LARGE,
             Self::Busy => HTTP_SERVICE_UNAVAILABLE,
         }

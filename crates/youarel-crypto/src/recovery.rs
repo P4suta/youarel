@@ -1,7 +1,6 @@
 //! The recovery key: thirty-two random bytes that a person prints and keeps.
 //!
 //! The key grows into the keys of an identity that the account lists as a member, so every rotation gives it a slot like any device's, and a new device that learns the key acts as that member to join the account.
-//! A passkey's PRF output, which an authenticator gives back for the same credential each time, can seed an identity the same way.
 
 use crate::{CryptoError, KEY, Label, crockford, derive, digest, random};
 use zeroize::Zeroizing;
@@ -58,7 +57,7 @@ impl RecoveryKey {
         Ok(Self::from_secret(random::<SECRET>()?))
     }
 
-    /// The key whose secret is `secret`, such as an authenticator's PRF output.
+    /// The key whose secret is `secret`.
     #[must_use]
     pub fn from_secret(secret: [u8; SECRET]) -> Self {
         Self {

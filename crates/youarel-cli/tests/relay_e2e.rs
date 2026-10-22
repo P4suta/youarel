@@ -28,8 +28,7 @@ impl Device {
         let mut command = youarel();
         command
             .args(arguments)
-            .env("YOUAREL_HOME", self.home.path())
-            .env("YOUAREL_KEY_STORE", "file");
+            .env("YOUAREL_HOME", self.home.path());
         command
     }
 

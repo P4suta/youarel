@@ -227,10 +227,22 @@ probes = [
 verifier = "kani"
 source = "crates/youarel-core/src/sync_rules.rs"
 harnesses = [
-  { name = "proofs::a_sync_waits_its_turn_and_stays_due_once_due", covers = 2, contract = "the backoff lies between its first wait and the longest and never shrinks with another failure, a wait lies between the settling and the longer of the longest backoff and the interval, the first sync is due at once, a sync is due only once its wait has passed since its last attempt, and a due sync stays due as the clock moves on", input_domain = "every schedule of any last attempt, any count of failures, and either edit state, and every pair of clock readings", bound = "complete" },
+  { name = "proofs::a_sync_waits_its_turn_and_stays_due_once_due", covers = 4, contract = "the backoff lies between its first wait and the longest and never shrinks with another failure, a wait lies between the settling and the longer of the longest backoff and the interval, the first sync publishes at once, a due sync stays due and a due publish stays a publish as the clock moves on, a publish is due only once its wait has passed since the last publish, or after failures since the last attempt past the backoff, and a notice brings no publish forward, a merge is due only once the folder rested from a notice for the quiet span with no failure and no publish due, and such a notice is always answered", input_domain = "every schedule of any last attempt, any last publish, any count of failures, either edit state, and any notice or none, and every pair of clock readings", bound = "complete" },
+  { name = "proofs::a_begun_sync_is_due_no_more", covers = 2, contract = "for every sync due at a clock reading, the schedule once it begins then has nothing due, records the attempt, answers the notices, and keeps the failures, a publish also answers the edits and restarts the interval, and a merge keeps the edit and the clock of the last publish", input_domain = "every schedule of any last attempt, any last publish, any count of failures, either edit state, and any notice or none, and every clock reading at which a sync is due", bound = "complete" },
 ]
 probes = [
   { harness = "proofs::rejects_a_retry_without_a_backoff", assertion = "NEGATIVE_SYNC_CONTROL" },
+  { harness = "proofs::rejects_a_merge_during_a_backoff", assertion = "NEGATIVE_SYNC_CONTROL" },
+]
+
+[[obligation]]
+verifier = "kani"
+source = "crates/youarel-core/src/folder_rules.rs"
+harnesses = [
+  { name = "proofs::only_another_device_s_bundle_counts", covers = 4, contract = "a read never counts, a rescan always does, and a touched file counts exactly when its name ends with the bundle suffix after at least one byte, starts with neither the hidden mark nor the lock mark, and differs from this device's own bundle", input_domain = "every part of the text `~$._a.youarel.tmp`, which holds a bundle, its hidden sidecar, its lock file, the suffix with no stem, a partial download, and names with no suffix, with no own bundle, the name itself, or another device's bundle as the own one; tests check the same parts and every name joined of three pieces of six, and show real sidecar, download, and lock names count for nothing", bound = "the parts of a seventeen-byte text; longer names differ only in their stem, which counting reads only for being empty" },
+]
+probes = [
+  { harness = "proofs::rejects_the_device_s_own_bundle", assertion = "NEGATIVE_FOLDER_CONTROL" },
 ]
 
 [[obligation]]

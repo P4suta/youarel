@@ -3,14 +3,46 @@
 
 use std::path::Path;
 use std::process::Output;
+use youarel_store::{Store, fs};
 
-/// A command for the built program.
+/// The variable that names where a device keeps the key that seals its secrets.
+const KEY_STORE: &str = "YOUAREL_KEY_STORE";
+/// The key store of every device in these tests: a file beside the account.
+const FILE_KEY_STORE: &str = "file";
+
+/// A command for a program the test starts: the built program, or this test binary again.
 #[expect(
     clippy::disallowed_methods,
-    reason = "the end-to-end test starts the built program itself, which it names in one place"
+    reason = "the end-to-end test starts the built program and itself, which it names in one place"
 )]
+fn command(program: &Path) -> std::process::Command {
+    std::process::Command::new(program)
+}
+
+/// A command for the built program.
 fn youarel() -> std::process::Command {
-    std::process::Command::new(env!("CARGO_BIN_EXE_youarel"))
+    command(Path::new(env!("CARGO_BIN_EXE_youarel")))
+}
+
+/// Whether the test named `test` may sync inside this process, which it may once the environment names the file key store.
+///
+/// A test cannot set its own environment while others run, so otherwise this runs the test again in a child of this binary whose environment names the store, and asserts that the child ran it and passed.
+fn syncs_here(test: &str) -> bool {
+    if std::env::var(KEY_STORE).as_deref() == Ok(FILE_KEY_STORE) {
+        return true;
+    }
+    let output = command(&std::env::current_exe().unwrap())
+        .args([test, "--exact", "--nocapture"])
+        .env(KEY_STORE, FILE_KEY_STORE)
+        .output()
+        .unwrap();
+    let printed = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success() && printed.contains("1 passed"),
+        "{printed}{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    false
 }
 
 struct Device {
@@ -28,9 +60,14 @@ impl Device {
         youarel()
             .args(arguments)
             .env("YOUAREL_HOME", self.home.path())
-            .env("YOUAREL_KEY_STORE", "file")
+            .env(KEY_STORE, FILE_KEY_STORE)
             .output()
             .unwrap()
+    }
+
+    /// The name of the device's bundle in a shared folder.
+    fn bundle(&self) -> String {
+        format!("{}{}", self.id(), youarel_cli::sync::BUNDLE_SUFFIX)
     }
 
     /// Runs a command that must succeed and returns what it printed.
@@ -212,4 +249,63 @@ fn a_removed_device_receives_nothing_more_and_sends_nothing_that_counts() {
     assert!(second.run(&["find", "secret"]).contains("secret.example"));
     let shown = first.run(&["account", "show"]);
     assert!(!shown.contains(&removed), "{shown}");
+}
+
+#[test]
+fn files_beside_the_bundles_count_for_nothing_and_an_unreadable_bundle_is_skipped() {
+    let files = tempfile::tempdir().unwrap();
+    let shared = tempfile::tempdir().unwrap();
+    let (first, second) = (Device::new(), Device::new());
+    first.run(&["account", "create"]);
+    pair(&first, &second, files.path());
+    first.run(&["sync", path(shared.path())]);
+    let bundle = first.bundle();
+    for beside in [
+        format!("._{bundle}"),
+        format!("{bundle}.sdtmp"),
+        format!("~${bundle}"),
+        String::from(".DS_Store"),
+    ] {
+        fs::replace(&shared.path().join(beside), b"no bundle").unwrap();
+    }
+    let synced = second.run(&["sync", path(shared.path())]);
+    assert!(!synced.contains("skipped"), "{synced}");
+    assert!(synced.contains(&format!("merged {bundle}")), "{synced}");
+    fs::create_dir_all(&shared.path().join("unread.youarel")).unwrap();
+    let unread = second.run(&["sync", path(shared.path())]);
+    assert!(unread.contains("skipped unread.youarel"), "{unread}");
+    assert!(
+        unread.contains(&format!("merged {bundle}")) && unread.contains(&second.bundle()),
+        "the sync goes on past the file it cannot read: {unread}"
+    );
+}
+
+#[test]
+fn a_merge_writes_nothing_into_the_folder_while_the_store_gains_the_other_device_s_shortcut() {
+    if !syncs_here(
+        "a_merge_writes_nothing_into_the_folder_while_the_store_gains_the_other_device_s_shortcut",
+    ) {
+        return;
+    }
+    let files = tempfile::tempdir().unwrap();
+    let shared = tempfile::tempdir().unwrap();
+    let (first, second) = (Device::new(), Device::new());
+    first.run(&["account", "create"]);
+    pair(&first, &second, files.path());
+    first.run(&["add", "https://merged.example/", "--no-fetch"]);
+    first.run(&["sync", path(shared.path())]);
+    let store = Store::new(second.home.path().to_path_buf());
+    let now = youarel_cli::clock::now().unwrap();
+    let merged = youarel_cli::sync::merge(&store, now, path(shared.path())).unwrap();
+    assert_eq!(merged, [format!("merged {}", first.bundle())]);
+    assert_eq!(
+        fs::list(shared.path()).unwrap(),
+        [first.bundle()],
+        "the merge wrote nothing into the folder"
+    );
+    assert!(second.run(&["find", "merged"]).contains("merged.example"));
+    assert_eq!(
+        youarel_cli::sync::own_bundle(&store).unwrap(),
+        second.bundle()
+    );
 }

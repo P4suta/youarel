@@ -10,6 +10,8 @@ doc-valid-idents = [
   "WHATWG",
   "TUI",
   "CLI",
+  "FSEvents",
+  "ReadDirectoryChangesW",
 ]
 
 too-many-arguments-threshold = 4

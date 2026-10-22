@@ -9,5 +9,6 @@ mod raw;
 pub mod syncing;
 pub mod themes;
 pub mod view;
+pub mod watch;
 
 pub use raw::run;

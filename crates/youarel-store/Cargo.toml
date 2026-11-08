@@ -15,8 +15,6 @@ categories = ["filesystem"]
 [dependencies]
 getrandom.workspace = true
 redb.workspace = true
-serde.workspace = true
-serde_json.workspace = true
 youarel-core.workspace = true
 youarel-link.workspace = true
 

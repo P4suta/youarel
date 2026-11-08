@@ -1,10 +1,6 @@
 use super::{Library, web};
-use crate::view::{Notice, View};
 use anyhow::{Context as _, Result};
-use std::path::Path;
-use youarel_cli::{clock, commands};
 use youarel_core::state::{Entry, ItemId};
-use youarel_store::fs;
 
 impl Library {
     pub(super) fn open(&mut self, id: Option<ItemId>) -> Result<Option<String>> {
@@ -38,22 +34,5 @@ impl Library {
             "Opened {}",
             super::jobs::shortcuts(ids.len())
         )))
-    }
-
-    /// Exports the live library as a new Netscape bookmark file in the chosen directory.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the clock, store, directory, or new file cannot be read or written.
-    pub fn export_to(&mut self, directory: &Path) -> Result<View> {
-        let now = clock::now()?;
-        let html = commands::export(&self.store, now, commands::Format::Html)?;
-        let path = directory.join(format!("youarel-bookmarks-{now}.html"));
-        fs::write_new(&path, html.as_bytes())?;
-        self.notice = Some(Notice {
-            text: format!("Exported {}", path.display()),
-            error: false,
-        });
-        self.view()
     }
 }

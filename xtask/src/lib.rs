@@ -17,13 +17,11 @@ pub mod icons;
 pub mod obligations;
 pub mod package;
 pub mod proofs;
-pub mod proverif;
 pub mod quint;
 pub mod release;
 pub mod report;
 pub mod structure;
 pub mod tool;
-pub mod worker;
 
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};

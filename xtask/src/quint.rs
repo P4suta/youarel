@@ -438,7 +438,7 @@ fn models(manifest: &obligations::Manifest) -> Vec<(String, &QuintModel)> {
         .iter()
         .filter_map(|obligation| match obligation {
             Obligation::Quint(quint) => Some((format!("{SOURCE}/{}", quint.spec), quint)),
-            Obligation::Kani { .. } | Obligation::Proverif(_) => None,
+            Obligation::Kani { .. } => None,
         })
         .collect()
 }

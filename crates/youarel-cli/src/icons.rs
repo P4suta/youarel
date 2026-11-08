@@ -4,20 +4,23 @@
 
 use crate::web::{self, Page};
 use anyhow::{Context, Result, anyhow};
-use youarel_crypto::{Label, digest};
+use sha2::{Digest as _, Sha512_256};
 use youarel_link::Link;
 use youarel_store::icons::IconId;
 use youarel_store::{Session, Store, StoreError};
 
-pub mod local;
-
 /// The icon every site may keep at its root, which a page that names no icon still has.
 const FAVICON: &str = "/favicon.ico";
+/// The persisted namespace of icon identifiers, including its separator.
+const ICON_DOMAIN: &[u8] = b"youarel/v1/icon\0";
 
 /// An icon's identifier: the digest of its drawn image.
 #[must_use]
 pub fn identify(image: &[u8]) -> IconId {
-    IconId(digest(Label::Icon, &[image]))
+    let mut digest = Sha512_256::new();
+    digest.update(ICON_DOMAIN);
+    digest.update(image);
+    IconId(digest.finalize().into())
 }
 
 /// The admitted addresses to try for the icon of the page at `link`: the ones the page names, best first, then the site's favicon.
@@ -111,6 +114,16 @@ pub fn opened(store: &Store, now: u64, link: &Link) -> Result<()> {
 mod tests {
     use super::{Page, candidates, identify};
     use youarel_link::Link;
+
+    #[test]
+    fn icon_identifiers_preserve_the_existing_namespace() {
+        const EXPECTED: super::IconId = super::IconId([
+            0x96, 0x10, 0xc7, 0x6b, 0xc7, 0x5d, 0x0e, 0x5b, 0xea, 0x2e, 0xde, 0xd0, 0x90, 0x88,
+            0xca, 0xf2, 0x33, 0x80, 0xe5, 0x48, 0x52, 0xf6, 0x5c, 0xad, 0x8f, 0xad, 0xee, 0x62,
+            0x82, 0xc3, 0xbb, 0xc3,
+        ]);
+        assert_eq!(identify(b"one"), EXPECTED);
+    }
 
     #[test]
     fn a_page_s_icons_come_first_and_its_favicon_last_each_once() {

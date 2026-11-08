@@ -17,7 +17,7 @@ const WORKFLOW_JOBS: [&str; 6] = ["plan", "check", "proofs", "app", "macos", "wi
 const fn workflow_job(job: Job, campaign: bool) -> &'static str {
     match job {
         Job::App if !campaign => "check",
-        Job::Kani | Job::Quint | Job::Proverif | Job::Miri | Job::Fuzz | Job::Mutants => "proofs",
+        Job::Kani | Job::Quint | Job::Miri | Job::Fuzz | Job::Mutants => "proofs",
         Job::Check | Job::App | Job::Macos | Job::Windows => job_name(job),
     }
 }
@@ -174,7 +174,7 @@ fn run_selected(root: &Path, name: &str) -> Result<()> {
             );
             check::run(root, check::Scope::Platform)
         }
-        Job::Kani | Job::Quint | Job::Proverif | Job::Miri | Job::Fuzz | Job::Mutants => {
+        Job::Kani | Job::Quint | Job::Miri | Job::Fuzz | Job::Mutants => {
             let step = proofs::Step::named(name).context("the proof job names a verifier")?;
             proofs::scoped(root, step, &plan.proofs)
         }
@@ -235,7 +235,6 @@ pub fn run(root: &Path, words: &[&str]) -> Result<()> {
         ["assurance"] => {
             check::run(root, check::Scope::Hosted)?;
             crate::app::linux(root)?;
-            crate::worker::run(root)?;
             proofs::run(
                 root,
                 proofs::Options {

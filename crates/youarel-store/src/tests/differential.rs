@@ -50,11 +50,13 @@ const TITLES: [&str; 8] = [
 const TEXTS: [&str; 4] = ["", "gh", "read later", "Zed"];
 const NAMES: [&str; 3] = ["Work", "work", "Docs"];
 const SEARCHES: [&str; 6] = ["", "a", "al", "ex", "work", "zz"];
-const SORTS: [Sort; 5] = [
+const SORTS: [Sort; 7] = [
     Sort::Newest,
     Sort::Oldest,
     Sort::Title,
+    Sort::TitleDescending,
     Sort::Link,
+    Sort::LinkDescending,
     Sort::Opened,
 ];
 const POSITIONS: [&str; 5] = ["1", "V", "VV", "a1", "z"];

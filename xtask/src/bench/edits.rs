@@ -76,38 +76,4 @@ impl Campaign {
         );
         Ok(())
     }
-
-    pub(super) fn import(&self) -> Result<()> {
-        let store = self.store("import");
-        let mut generator = Generator::new(self.options.workload.seed());
-        let mut records = Vec::new();
-        for number in 1..=self.options.workload.imported() {
-            if usize::try_from(number)?.is_multiple_of(BUDGET_CHECK_RECORDS) {
-                self.guard.check()?;
-            }
-            records.push(generator.shortcut(Namespace::Imported, number, None)?);
-        }
-        self.measure(
-            Measurement::operation("record_import", self.options.workload.imported()),
-            |metric| {
-                store.session(NOW, |session| {
-                    for (index, record) in records.into_iter().enumerate() {
-                        if index.is_multiple_of(BUDGET_CHECK_RECORDS) {
-                            self.guard.publication()?;
-                        }
-                        session.merge_record(record)?;
-                    }
-                    Ok(())
-                })?;
-                metric.rows = usize::try_from(self.options.workload.imported())?;
-                Ok(())
-            },
-        )?;
-        ensure!(
-            u64::try_from(store.session(NOW, |session| session.home_count(None))?)?
-                == self.options.workload.imported(),
-            "the record import did not keep every shortcut"
-        );
-        Ok(())
-    }
 }

@@ -16,9 +16,7 @@ mod selection;
 mod viewport;
 
 use crate::emoji;
-use crate::intent::{BrowserChoice, Extend, Fields, Intent, TargetName, item, optional};
-use crate::syncing::Syncing;
-use crate::themes::{self, ThemeOption};
+use crate::intent::{Extend, Fields, Intent, TargetName, item, optional};
 use crate::view::{
     Choice, EntriesView, Notice, PATH_SEPARATOR, RowsView, View, choice, tree_order,
 };
@@ -29,13 +27,10 @@ use build::{Reader, column_entries, row_views};
 use history::{Direction, Step as EditStep};
 use jobs::Work;
 use listing::{Laid, Shown};
-use navigation::{Disclosure, Visit};
+use navigation::Visit;
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::PathBuf;
 use std::sync::Arc;
-use youarel_cli::browsers;
-use youarel_cli::{clock, commands, icons, web};
-use youarel_core::folder_rules::Seen;
+use youarel_cli::{clock, icons, web};
 use youarel_core::history_rules::History;
 use youarel_core::library_rules::{
     Grouping, Layout, Move, Period, Scope, column_moved, grouped_moved,
@@ -45,12 +40,10 @@ use youarel_core::page_rules;
 use youarel_core::rank_rules::Rank;
 use youarel_core::selection_rules::{self, Selection};
 use youarel_core::state::{Edit, EditError, Entry, Folder, ItemId, Presence, Shortcut, Slot};
-use youarel_core::sync_rules;
 use youarel_core::view as rows;
 use youarel_link::Link;
 use youarel_store::folders::Folders;
 use youarel_store::icons::IconId;
-use youarel_store::settings::{Imported, Settings, ThemeChoice};
 use youarel_store::{Group, Listing, Session, Span, Store, StoreError};
 
 pub use jobs::{Begun, Job};
@@ -67,7 +60,7 @@ const MOST_LAID: usize = 8;
 pub const MOST_CHOICES: usize = 500;
 
 /// The heading of the scope of every shortcut.
-const ALL: &str = "All";
+const ALL: &str = "Bookmarks";
 /// The heading of the shortcuts in no collection.
 const UNSORTED: &str = "Unsorted";
 /// The heading of the shortcuts added lately.
@@ -114,7 +107,7 @@ pub enum Place {
 enum Root {
     /// The entries of a folder, or of the top for `None`.
     Folder(Option<ItemId>),
-    /// The listing of a scope that is no folder, or of a search.
+    /// The listing of a scope that is no folder.
     Listing,
 }
 
@@ -160,20 +153,6 @@ pub fn fetch(link: &Link) -> Fetched {
         icon,
         missing,
     }
-}
-
-/// Whether the store holds a write or an operation of this device that no publish to the sync target carried, for a window that syncs.
-///
-/// A store that cannot tell leaves it to the first merge, which reads the same facts and reports what failed.
-fn unpublished(store: &Store, settings: &Settings) -> bool {
-    let sync = &settings.sync;
-    if !sync.enabled || sync.target.is_empty() {
-        return false;
-    }
-    matches!(
-        clock::now().and_then(|now| youarel_cli::sync::unpublished(store, now, &sync.target)),
-        Ok(true)
-    )
 }
 
 /// The identifier of a folder or a shortcut.
@@ -254,21 +233,6 @@ fn selection_shown(laid: &Laid) -> selection_rules::Shown {
     }
 }
 
-/// Puts a value in a set or takes it out.
-fn set<T: Ord>(values: &mut BTreeSet<T>, value: T, held: bool) {
-    if held {
-        values.insert(value);
-    } else {
-        values.remove(&value);
-    }
-}
-
-/// Opens a folder of a tree or closes it, by its identifier.
-fn disclosed(open: &mut BTreeSet<ItemId>, id: &str, shown: bool) -> Result<Option<String>> {
-    set(open, item(id)?, shown);
-    Ok(None)
-}
-
 /// What an intent comes to: what the notice says, or a job that runs in batches.
 enum Answer {
     Said(Option<String>),
@@ -281,9 +245,7 @@ pub struct Library {
     store: Store,
     place: Place,
     layout: Layout,
-    /// The window's preferences: the layout it opens with, the order, and the themes.
-    settings: Settings,
-    search: String,
+    grouping: Grouping,
     selection: Selection<ItemId>,
     pins: Option<selection_rules::Pinned<ItemId>>,
     settled_generation: Option<u64>,
@@ -303,15 +265,6 @@ pub struct Library {
     drawn: BTreeMap<IconId, Option<String>>,
     /// The links a person opened whose hosts show no icon, which the window asks their sites' favicons for.
     wanted: Vec<Link>,
-    /// The folders the list's outline holds open.
-    outlined: BTreeSet<ItemId>,
-    /// The folders the sidebar's tree holds open.
-    unfolded: BTreeSet<ItemId>,
-    /// The folder whose place the sidebar's tree opened last, so a folder a person closes stays closed.
-    revealed: Option<ItemId>,
-    /// The browsers that keep bookmarks on this kind of host, which the settings offer to import.
-    browsers: Vec<BrowserChoice>,
-    syncing: Syncing,
     /// The first place the page showed of the listing, which the next view answers around.
     viewport: usize,
     /// The first place the page showed of each column.
@@ -327,31 +280,14 @@ pub struct Library {
 }
 
 impl Library {
-    /// The library over a store, opening at the place and with the layout and the order its settings name.
-    ///
-    /// When the window syncs, the store says at once whether this device holds what no publish to the target carried, which the first sync then publishes.
+    /// The bookmark library, opening at its top in a list ordered by title.
     #[must_use]
-    pub fn new(store: Store) -> Self {
-        let (settings, notice) = match store.settings() {
-            Ok(settings) => (settings, None),
-            Err(error) => (
-                Settings::default(),
-                Some(Notice {
-                    text: format!("{:#}", anyhow::Error::from(error)),
-                    error: true,
-                }),
-            ),
-        };
-        let mut syncing = Syncing::default();
-        if unpublished(&store, &settings) {
-            syncing.unpublished();
-        }
+    pub const fn new(store: Store) -> Self {
         Self {
             store,
-            place: Place::Scope(settings.start.map_or(Scope::All, Scope::Collection)),
-            layout: settings.layout,
-            settings,
-            search: String::new(),
+            place: Place::Scope(Scope::All),
+            layout: Layout::List,
+            grouping: Grouping::None,
             selection: Selection::none(),
             pins: None,
             settled_generation: None,
@@ -364,18 +300,9 @@ impl Library {
             drag: None,
             typed: None,
             path: Vec::new(),
-            notice,
+            notice: None,
             drawn: BTreeMap::new(),
             wanted: Vec::new(),
-            outlined: BTreeSet::new(),
-            unfolded: BTreeSet::new(),
-            revealed: None,
-            // A variable that is no UTF-8 offers no browser, and an import names the variable.
-            browsers: browsers::available().map_or_else(
-                |_unreadable| Vec::new(),
-                |found| found.into_iter().map(BrowserChoice::from).collect(),
-            ),
-            syncing,
             viewport: 0,
             column_viewports: Vec::new(),
             revealing: false,
@@ -383,85 +310,6 @@ impl Library {
             shown: None,
             laid: Vec::new(),
         }
-    }
-
-    /// The store, for a sync that runs outside the library's lock.
-    #[must_use]
-    pub fn store(&self) -> Store {
-        self.store.clone()
-    }
-
-    pub fn devices_changed(&mut self) {
-        self.syncing.unpublished();
-        self.syncing.now();
-    }
-
-    /// Whether this device belongs to an account; files that cannot be read count as none, and the sync that follows names them.
-    fn has_account(&self) -> bool {
-        matches!(youarel_cli::sync::has_account(&self.store), Ok(true))
-    }
-
-    /// The sync due at `now` and its target, which this call marks begun, or none.
-    pub fn begin_sync(&mut self, now: u64) -> Option<(sync_rules::Sync, String)> {
-        let has_account = self.has_account();
-        let sync = self.syncing.begin(&self.settings.sync, has_account, now)?;
-        Some((sync, self.settings.sync.target.clone()))
-    }
-
-    /// Notes what the watch of the shared folder saw at `now`, and answers whether it may bring another device's bundle, which wakes the window to merge.
-    pub fn noticed(&mut self, seen: Seen<'_>, now: u64) -> bool {
-        self.syncing.noticed(seen, now)
-    }
-
-    /// Learns the name of this device's own bundle, whose changes the watch then passes over.
-    pub fn learned_own(&mut self, own: String) {
-        self.syncing.learned(own);
-    }
-
-    /// Records whether the window watches the shared folder, which the settings show.
-    pub const fn watching(&mut self, watched: bool) {
-        self.syncing.watching(watched);
-    }
-
-    /// Whether a sync failed since the last call, so the window starts its watch again.
-    pub const fn rewatch(&mut self) -> bool {
-        self.syncing.rewatch()
-    }
-
-    /// The folder the window watches: the shared folder while the window syncs through one, and none while it syncs through a relay or not at all.
-    #[must_use]
-    pub fn watch_wanted(&self) -> Option<PathBuf> {
-        let sync = &self.settings.sync;
-        (sync.enabled && !sync.target.is_empty() && !youarel_cli::sync::is_relay(&sync.target))
-            .then(|| PathBuf::from(&sync.target))
-    }
-
-    /// Records how a sync that began at `began` ended: whether this device still has something new to say at the target, which a merge reads from the store, or why it failed.
-    pub fn end_sync(&mut self, began: u64, outcome: Result<bool>) {
-        let succeeded = self
-            .syncing
-            .end(outcome.map_err(|error| format!("{error:#}")));
-        if succeeded {
-            self.settings.sync.last = Some(began);
-            if let Err(error) = self.save_settings() {
-                self.notice = Some(Notice {
-                    text: format!("{error:#}"),
-                    error: true,
-                });
-            }
-        }
-    }
-
-    fn choose_sync(&mut self, enabled: bool, target: &str) -> Result<Option<String>> {
-        let target = target.trim();
-        if enabled && target.is_empty() {
-            bail!("a sync needs a shared folder or a relay's address");
-        }
-        self.settings.sync.enabled = enabled;
-        target.clone_into(&mut self.settings.sync.target);
-        self.save_settings()?;
-        self.syncing.now();
-        Ok(None)
     }
 
     /// Runs `work` in one session now, which keeps what it wrote only when it succeeds.
@@ -480,66 +328,6 @@ impl Library {
             Ok(())
         })?;
         outcome.context("the session ran no work")?
-    }
-
-    fn save_settings(&self) -> Result<()> {
-        Ok(self.store.save_settings(&self.settings)?)
-    }
-
-    /// Every theme the window can wear: the bundled ones, then the imported ones.
-    #[must_use]
-    pub fn themes(&self) -> Vec<ThemeOption> {
-        themes::all(&self.settings)
-    }
-
-    fn choose_theme(
-        &mut self,
-        follow: bool,
-        light: String,
-        dark: String,
-    ) -> Result<Option<String>> {
-        for id in [&light, &dark] {
-            if !themes::all(&self.settings)
-                .iter()
-                .any(|theme| &theme.id == id)
-            {
-                bail!("no theme is named `{id}`");
-            }
-        }
-        self.settings.theme = ThemeChoice {
-            follow,
-            light,
-            dark,
-        };
-        self.save_settings()?;
-        Ok(None)
-    }
-
-    fn import_theme(&mut self, text: &str) -> Result<Option<String>> {
-        let theme = youarel_theme::parse(text)?;
-        let name = theme.name.clone();
-        self.settings.imported.retain(|held| held.id != theme.id);
-        self.settings.imported.push(Imported {
-            id: theme.id,
-            name: theme.name,
-            kind: theme.kind,
-            palette: theme.palette,
-        });
-        self.save_settings()?;
-        Ok(Some(format!("Imported {name}")))
-    }
-
-    fn remove_theme(&mut self, id: &str) -> Result<Option<String>> {
-        self.settings.imported.retain(|held| held.id != id);
-        let defaults = ThemeChoice::default();
-        if self.settings.theme.light == id {
-            self.settings.theme.light = defaults.light;
-        }
-        if self.settings.theme.dark == id {
-            self.settings.theme.dark = defaults.dark;
-        }
-        self.save_settings()?;
-        Ok(None)
     }
 
     /// The images of icons the window lacks, by their names, drawn again first, so the webview's decoders only ever read an image youarel encoded.
@@ -620,14 +408,11 @@ impl Library {
     ///
     /// Returns an error when the store cannot be read for the view.
     pub fn begin(&mut self, intent: Intent) -> Result<Begun> {
-        let edits = intent.edits();
         let said = match self.answer(intent) {
             Ok(Answer::Job(job)) => return Ok(Begun::Working(job)),
             Ok(Answer::Said(said)) => Ok(said),
             Err(error) => Err(error),
         };
-        // Every edit runs in one session, so an edit that failed wrote nothing for a publish to carry.
-        let edited = edits && said.is_ok();
         self.notice = match said {
             Ok(said) => said.map(|text| Notice { text, error: false }),
             Err(error) => Some(Notice {
@@ -635,9 +420,6 @@ impl Library {
                 error: true,
             }),
         };
-        if edited {
-            self.syncing.edited(clock::now()?);
-        }
         Ok(Begun::Answered(Box::new(self.view()?)))
     }
 
@@ -670,36 +452,14 @@ impl Library {
             Intent::Back => Ok(self.back()),
             Intent::Forward => Ok(self.forward()),
             Intent::ShowInFolder { id } => self.show_in_folder(optional(id.as_deref())?),
-            Intent::Layout { layout } => Ok(self.choose_layout(layout.into())),
-            Intent::Opening { layout, start } => {
-                self.choose_opening(layout.into(), optional(start.as_deref())?)
-            }
-            Intent::Sort { sort } => self.prefer(|settings| settings.sort = sort.into()),
-            Intent::Group { grouping } => {
-                self.prefer(|settings| settings.grouping = grouping.into())
-            }
-            Intent::ShowColumn { column, shown } => {
-                self.prefer(|settings| set(&mut settings.hidden, column.into(), !shown))
-            }
-            Intent::Search { text } => Ok(self.search_for(text)),
             Intent::Type { key } => self.type_ahead(key),
             Intent::Select { id, extend, place } => self.select(item(&id)?, extend, place),
             Intent::SelectAll => self.select_all(),
-            Intent::Disclose { id, open, deep } => {
-                self.disclose(item(&id)?, open, Disclosure::from(deep))
-            }
-            Intent::DiscloseSidebar { id, open } => disclosed(&mut self.unfolded, &id, open),
             Intent::Step {
                 key,
                 across,
                 extend,
             } => self.step(key.into(), across, extend),
-            Intent::Column {
-                depth,
-                entry,
-                place,
-                extend,
-            } => self.column((depth, place), entry.entry()?, extend),
             Intent::Open { id } => self.open(optional(id.as_deref())?),
             Intent::Edit { fields } => self.save_fields(&fields),
             Intent::Retitle { id, title } => self.retitle(item(&id)?, &title),
@@ -708,17 +468,6 @@ impl Library {
             }
             Intent::RenameCollection { id, name } => self.rename_collection(item(&id)?, &name),
             Intent::MarkCollection { id, mark } => self.mark_collection(item(&id)?, &mark),
-            Intent::Import { bytes } => self.import(&bytes),
-            Intent::Theme {
-                follow,
-                light,
-                dark,
-            } => self.choose_theme(follow, light, dark),
-            Intent::ImportTheme { text } => self.import_theme(&text),
-            Intent::RemoveTheme { id } => self.remove_theme(&id),
-            Intent::ImportBrowser { browser } => self.import_browser(browser),
-            Intent::SyncSettings { enabled, target } => self.choose_sync(enabled, &target),
-            Intent::SyncNow => Ok(self.sync_now()),
         };
         said.map(Answer::Said)
     }
@@ -740,52 +489,6 @@ impl Library {
         None
     }
 
-    /// Shows the listing in another layout until the window opens again, which the settings name.
-    const fn choose_layout(&mut self, layout: Layout) -> Option<String> {
-        self.layout = layout;
-        None
-    }
-
-    /// Chooses the layout and the collection the window opens with, or every shortcut for none, which the settings keep.
-    fn choose_opening(&mut self, layout: Layout, start: Option<ItemId>) -> Result<Option<String>> {
-        self.prefer(|settings| {
-            settings.layout = layout;
-            settings.start = start;
-        })
-    }
-
-    fn search_for(&mut self, text: String) -> Option<String> {
-        self.search = text;
-        self.path.clear();
-        None
-    }
-
-    fn import(&mut self, bytes: &[u8]) -> Result<Option<String>> {
-        let now = clock::now()?;
-        let imported = commands::import(&self.store, now, bytes, None)?;
-        self.history.clear();
-        Ok(Some(imported.to_string()))
-    }
-
-    fn import_browser(&mut self, browser: BrowserChoice) -> Result<Option<String>> {
-        let now = clock::now()?;
-        let imported = commands::import_browser(&self.store, now, browser.into(), None)?;
-        self.history.clear();
-        Ok(Some(imported.to_string()))
-    }
-
-    fn sync_now(&mut self) -> Option<String> {
-        self.syncing.now();
-        None
-    }
-
-    /// Changes a preference and saves it.
-    fn prefer(&mut self, change: impl FnOnce(&mut Settings)) -> Result<Option<String>> {
-        change(&mut self.settings);
-        self.save_settings()?;
-        Ok(None)
-    }
-
     fn forget_selection(&mut self) {
         self.pins = None;
         self.settled_generation = None;
@@ -797,14 +500,9 @@ impl Library {
         self.path.clear();
     }
 
-    /// Whether the cards and the list gather the listing under headings.
-    fn gathers(&self) -> bool {
-        self.settings.grouping != Grouping::None
-    }
-
     /// The folder the cards and the list stand in, as a file explorer shows one folder at a time.
     ///
-    /// A search, a scope that is no folder, and the columns, which walk the folders themselves, show a listing instead.
+    /// A scope that is no folder and the columns, which walk the folders themselves, show a listing instead.
     const fn browsed(&self) -> Root {
         if !matches!(self.layout, Layout::Cards | Layout::List) {
             return Root::Listing;
@@ -815,51 +513,43 @@ impl Library {
     /// What the first column shows, and what the cards and the list show.
     const fn root_folder(&self) -> Root {
         match self.place {
-            _ if !self.search.is_empty() => Root::Listing,
             Place::Scope(Scope::All) => Root::Folder(None),
             Place::Scope(Scope::Collection(id)) => Root::Folder(Some(id)),
             Place::Scope(Scope::Unsorted | Scope::Recent) | Place::Trash => Root::Listing,
         }
     }
 
-    /// The listing of a scope, of a search, or of the trash, as the window orders and gathers it.
-    fn flat(&self) -> Shown {
+    /// The listing of a scope or the trash, as the window orders and gathers it.
+    const fn flat(&self) -> Shown {
         match self.place {
             Place::Scope(scope) => Shown::Flat {
                 listing: Listing {
                     span: Span::Scope(scope),
-                    sort: self.settings.sort,
-                    search: self.search.clone(),
-                    grouping: self.settings.grouping,
+                    sort: youarel_core::library_rules::Sort::Title,
+                    search: String::new(),
+                    grouping: self.grouping,
                 },
             },
             Place::Trash => Shown::Trash {
-                search: self.search.clone(),
+                search: String::new(),
             },
         }
     }
 
-    /// What the cards or the list show: a folder's folders and shortcuts, the list's outline of a folder, or a scope's listing.
-    fn main_shown(&self) -> Shown {
+    /// The current folder's direct contents or the Trash listing.
+    const fn main_shown(&self) -> Shown {
         match self.browsed() {
-            Root::Folder(folder) if self.layout == Layout::List && !self.gathers() => {
-                Shown::Outline {
-                    folder,
-                    sort: self.settings.sort,
-                    open: self.outlined.clone(),
-                }
-            }
             Root::Folder(folder) => Shown::Folder {
                 folder,
-                sort: self.settings.sort,
-                grouping: self.settings.grouping,
+                sort: youarel_core::library_rules::Sort::Title,
+                grouping: self.grouping,
             },
             Root::Listing => self.flat(),
         }
     }
 
     /// What the first column shows: a folder's entries, or a scope's listing.
-    fn root_column(&self) -> Shown {
+    const fn root_column(&self) -> Shown {
         match self.root_folder() {
             Root::Folder(folder) => self.column_of(folder),
             Root::Listing => self.flat(),
@@ -870,8 +560,8 @@ impl Library {
     const fn column_of(&self, folder: Option<ItemId>) -> Shown {
         Shown::Column {
             folder,
-            sort: self.settings.sort,
-            grouping: self.settings.grouping,
+            sort: youarel_core::library_rules::Sort::Title,
+            grouping: self.grouping,
         }
     }
 
@@ -914,18 +604,8 @@ impl Library {
                 Selection::of(selection.added().iter().copied())
             };
             self.focus_place = None;
-            // An outline that opens or closes a folder in place keeps the place in sight; another listing starts from its top.
-            let stays = matches!(
-                (before, &shown),
-                (
-                    Shown::Outline { folder, sort, .. },
-                    Shown::Outline { folder: other, sort: order, .. },
-                ) if folder == other && sort == order
-            );
-            if !stays {
-                self.viewport = 0;
-                self.fresh = true;
-            }
+            self.viewport = 0;
+            self.fresh = true;
         }
         self.shown = Some(shown.clone());
         self.laid(session, shown)
@@ -971,41 +651,6 @@ impl Library {
         })
     }
 
-    /// Opens or closes the focused folder of the outline, or steps from a row up to the folder over it, as an explorer's list does with the arrow keys.
-    fn disclose_step(&mut self, session: &Session, laid: &Laid, key: Move) -> Result<()> {
-        let Some(place) = self.focus_place(session, laid)? else {
-            return Ok(());
-        };
-        let Some(row) = laid.row(session, place)? else {
-            return Ok(());
-        };
-        match (row.entry, key) {
-            (Entry::Folder(id), Move::Right) => {
-                self.outlined.insert(id);
-            }
-            (Entry::Folder(id), Move::Left) if self.outlined.contains(&id) => {
-                self.outlined.remove(&id);
-            }
-            (_, Move::Left) if row.depth > 0 => {
-                let parent = match row.entry {
-                    Entry::Folder(id) => session.folders().tree().parent(id),
-                    Entry::Shortcut(id) => session
-                        .item(id)?
-                        .and_then(|shortcut| session.folders().home(&shortcut)),
-                };
-                if let Some(parent) = parent {
-                    self.focus = Some(parent);
-                    self.focus_place = None;
-                    self.select_ids([parent]);
-                    self.revealing = true;
-                }
-            }
-            (Entry::Shortcut(_), Move::Right)
-            | (_, Move::Left | Move::Up | Move::Down | Move::First | Move::Last) => {}
-        }
-        Ok(())
-    }
-
     fn step(&mut self, key: Move, across: usize, extend: bool) -> Result<Option<String>> {
         self.reading(|library, session| {
             if library.layout == Layout::Columns {
@@ -1013,13 +658,6 @@ impl Library {
                 return Ok(None);
             }
             let laid = library.main_laid(session)?;
-            if !extend
-                && matches!(key, Move::Left | Move::Right)
-                && matches!(laid.shown, Shown::Outline { .. })
-            {
-                library.disclose_step(session, &laid, key)?;
-                return Ok(None);
-            }
             let current = library.focus_place(session, &laid)?;
             // The list shows one entry to a row, whatever the page counts.
             let across = if library.layout == Layout::List {
@@ -1145,28 +783,6 @@ impl Library {
         self.select_ids(self.focus);
     }
 
-    /// Selects an entry of the column at `depth`, which closes the columns after it, and says nothing.
-    fn column(
-        &mut self,
-        (depth, place): (usize, Option<usize>),
-        entry: Entry,
-        extend: Extend,
-    ) -> Result<Option<String>> {
-        self.reading(|library, session| {
-            let (columns, _) = library.walk(session)?;
-            let laid = columns
-                .get(depth)
-                .context("the selected column is missing")?;
-            library.select_in(session, laid, (entry_id(entry), extend, place))?;
-            library.path.truncate(depth);
-            library
-                .path
-                .push((entry, library.focus_place.unwrap_or_default()));
-            library.typed = None;
-            Ok(None)
-        })
-    }
-
     /// Where the page showed the column at `depth` before, while that column shows the same listing, or its top.
     fn column_sight(&self, depth: usize, column: &Laid) -> usize {
         match self.column_viewports.get(depth) {
@@ -1203,13 +819,7 @@ impl Library {
             if !session.folders().shows(id) {
                 return Ok(false);
             }
-            // The list's outline opens or closes a folder in place; elsewhere a folder opens as the one the window stands in.
-            if matches!(library.main_shown(), Shown::Outline { .. }) {
-                let open = !library.outlined.contains(&id);
-                set(&mut library.outlined, id, open);
-            } else {
-                library.choose_place(Place::Scope(Scope::Collection(id)));
-            }
+            library.choose_place(Place::Scope(Scope::Collection(id)));
             Ok(true)
         })?;
         if folder {
@@ -1238,14 +848,8 @@ impl Library {
         self.session(|session| session.holder(collection, link.as_str()))
     }
 
-    /// Opens the columns down to an entry, when the folder the first column shows holds it.
+    /// Reveals an entry's ancestors in the list or column path.
     fn open_to(&mut self, session: &Session, id: ItemId) -> Result<()> {
-        let Root::Folder(root) = self.root_folder() else {
-            return Ok(());
-        };
-        if self.layout != Layout::Columns {
-            return Ok(());
-        }
         let entry = entry_of(session.folders(), id);
         let home = match entry {
             Entry::Folder(folder) => session.folders().tree().parent(folder),
@@ -1254,6 +858,17 @@ impl Library {
                 .and_then(|held| session.folders().home(&held)),
         };
         let lineage = session.folders().tree().lineage(home);
+        if self.layout == Layout::List {
+            self.choose_place(Place::Scope(home.map_or(Scope::All, Scope::Collection)));
+            self.focus_on(id);
+            return Ok(());
+        }
+        let Root::Folder(root) = self.root_folder() else {
+            return Ok(());
+        };
+        if self.layout != Layout::Columns {
+            return Ok(());
+        }
         let below = root.map_or(Some(lineage.as_slice()), |root| {
             lineage
                 .iter()
@@ -1330,12 +945,11 @@ impl Library {
             if let Some(icon) = addition.icon.clone() {
                 icons::keep(session, &addition.link, icon)?;
             }
-            Ok(Ok((id, session.now(), reversal)))
+            Ok(Ok((id, reversal)))
         });
         self.notice = Some(match added {
-            Ok(Ok((id, now, reversal))) => {
+            Ok(Ok((id, reversal))) => {
                 self.remember("New Link", vec![reversal]);
-                self.syncing.edited(now);
                 self.focus_on(id);
                 // The view names a failure to read the store, so the columns stay as they were.
                 drop(self.reading(|library, session| library.open_to(session, id)));
@@ -1413,7 +1027,7 @@ impl Library {
     fn new_collection(&mut self, name: &str, parent: Option<ItemId>) -> Result<Option<String>> {
         let name = name.trim().to_owned();
         if name.is_empty() {
-            bail!("a collection needs a name");
+            bail!("a folder needs a name");
         }
         let (id, reversal) = self.session(|session| {
             let id = session.fresh_id()?;
@@ -1424,33 +1038,16 @@ impl Library {
             })?;
             Ok((id, reversal))
         })?;
-        self.remember("New Collection", vec![reversal]);
-        // In the columns a folder made where they stand opens in place, as an explorer selects a new folder.
-        let opened = parent.and_then(|parent| {
-            self.path
-                .iter()
-                .position(|(entry, _)| *entry == Entry::Folder(parent))
-                .map(|place| place.saturating_add(1))
-        });
-        let kept = opened.or_else(|| (self.root_folder() == Root::Folder(parent)).then_some(0));
-        match kept {
-            Some(kept) if self.layout == Layout::Columns => {
-                self.path.truncate(kept);
-                self.path.push((Entry::Folder(id), 0));
-                self.focus_path();
-            }
-            Some(_) | None => {
-                self.place = Place::Scope(Scope::Collection(id));
-                self.forget_selection();
-            }
-        }
+        self.remember("New Folder", vec![reversal]);
+        self.choose_place(Place::Scope(parent.map_or(Scope::All, Scope::Collection)));
+        self.focus_on(id);
         Ok(Some(format!("Created {name}")))
     }
 
     fn rename_collection(&mut self, id: ItemId, name: &str) -> Result<Option<String>> {
         let name = name.trim().to_owned();
         if name.is_empty() {
-            bail!("a collection needs a name");
+            bail!("a folder needs a name");
         }
         self.edit_remembered("Rename", Edit::RenameFolder { id, name })?;
         Ok(None)

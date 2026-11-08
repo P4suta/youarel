@@ -411,15 +411,28 @@ struct Keyed<'a> {
     prefixed: bool,
 }
 
+impl Keyed<'_> {
+    fn read(&self, row: Option<RowResult<'_>>) -> Option<Ordered<Vec<u8>>> {
+        Some(row?.map_err(failed).and_then(|(key, _)| {
+            let kept = after_home(key.value(), self.prefixed);
+            Ok((kept.to_vec(), identified(kept)?))
+        }))
+    }
+}
+
 impl Iterator for Keyed<'_> {
     type Item = Ordered<Vec<u8>>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let row = self.rows.next()?;
-        Some(row.map_err(failed).and_then(|(key, _)| {
-            let kept = after_home(key.value(), self.prefixed);
-            Ok((kept.to_vec(), identified(kept)?))
-        }))
+        let row = self.rows.next();
+        self.read(row)
+    }
+}
+
+impl DoubleEndedIterator for Keyed<'_> {
+    fn next_back(&mut self) -> Option<Self::Item> {
+        let row = self.rows.next_back();
+        self.read(row)
     }
 }
 
@@ -807,8 +820,8 @@ impl Session {
         order: TextOrder,
     ) -> Result<Stream<'a>, StoreError> {
         let (whole, homed) = match order.sort {
-            Sort::Link => (&tables.link, &tables.home_link),
-            Sort::Title | Sort::Newest | Sort::Oldest | Sort::Opened => {
+            Sort::Link | Sort::LinkDescending => (&tables.link, &tables.home_link),
+            Sort::Title | Sort::TitleDescending | Sort::Newest | Sort::Oldest | Sort::Opened => {
                 (&tables.title, &tables.home_title)
             }
         };
@@ -829,8 +842,24 @@ impl Session {
                 })
                 .collect::<Result<Vec<_>, StoreError>>()?,
         };
+        let rows: Box<dyn Iterator<Item = Ordered<Vec<u8>>> + 'a> =
+            if matches!(order.sort, Sort::TitleDescending | Sort::LinkDescending) {
+                let reversed = sources
+                    .into_iter()
+                    .map(|source| {
+                        source
+                            .rev()
+                            .map(|found| found.map(|(key, id)| (Reverse(key), id)))
+                    })
+                    .collect();
+                Box::new(
+                    Merge::new(reversed)?.map(|found| found.map(|(Reverse(key), id)| (key, id))),
+                )
+            } else {
+                Box::new(Merge::new(sources)?)
+            };
         let times = filter.times;
-        let kept = Merge::new(sources)?.filter_map(move |found| match found {
+        let kept = rows.filter_map(move |found| match found {
             Ok((key, id)) => match self.timely(tables, times, id) {
                 Ok(true) => Some(Ok((key, id))),
                 Ok(false) => None,
@@ -893,7 +922,7 @@ impl Session {
         match sort {
             Sort::Oldest => self.oldest(tables, filter),
             Sort::Newest => self.newest(tables, filter),
-            Sort::Title | Sort::Link => self.texts(
+            Sort::Title | Sort::TitleDescending | Sort::Link | Sort::LinkDescending => self.texts(
                 tables,
                 filter,
                 TextOrder {

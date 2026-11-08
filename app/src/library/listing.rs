@@ -27,12 +27,6 @@ pub(super) enum Shown {
         sort: Sort,
         grouping: Grouping,
     },
-    /// The list's outline of a folder: each folder's folders, the open ones with their own rows beneath them, then its shortcuts.
-    Outline {
-        folder: Option<ItemId>,
-        sort: Sort,
-        open: BTreeSet<ItemId>,
-    },
     /// The shortcuts of a scope, or the matches of a search, gathered under a grouping.
     Flat { listing: Listing },
     /// A folder's entries as a column shows them: its folders by their names, then its shortcuts in an order, under the headings of a grouping once there are two of them.
@@ -60,46 +54,28 @@ impl Shown {
         match (self, other) {
             (Self::Folder { folder, .. }, Self::Folder { folder: other, .. })
             | (Self::Column { folder, .. }, Self::Column { folder: other, .. }) => folder == other,
-            (
-                Self::Outline { folder, open, .. },
-                Self::Outline {
-                    folder: other,
-                    open: others,
-                    ..
-                },
-            ) => folder == other && open == others,
             (Self::Flat { listing }, Self::Flat { listing: other }) => {
                 listing.span == other.span && listing.search == other.search
             }
             (Self::Trash { search }, Self::Trash { search: other }) => search == other,
             (
-                Self::Folder { .. }
-                | Self::Outline { .. }
-                | Self::Flat { .. }
-                | Self::Column { .. }
-                | Self::Trash { .. },
+                Self::Folder { .. } | Self::Flat { .. } | Self::Column { .. } | Self::Trash { .. },
                 _,
             ) => false,
         }
     }
 }
 
-/// One row of a listing: an entry, how deep the outline sets it, and whether a folder of the outline shows its rows.
+/// One entry in a folder, search, or Trash listing.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct Row {
     pub(super) entry: Entry,
-    pub(super) depth: usize,
-    pub(super) open: Option<bool>,
 }
 
 impl Row {
-    /// A row outside the outline.
+    /// A row containing one folder or bookmark.
     const fn flat(entry: Entry) -> Self {
-        Self {
-            entry,
-            depth: 0,
-            open: None,
-        }
+        Self { entry }
     }
 }
 
@@ -108,18 +84,8 @@ impl Row {
 enum Part {
     /// Folders in their order.
     Folders(Vec<ItemId>),
-    /// One folder of the outline, which shows its rows or not.
-    Opened {
-        id: ItemId,
-        depth: usize,
-        open: bool,
-    },
     /// Shortcuts the store pages through its indexes.
-    Paged {
-        part: Pageable,
-        depth: usize,
-        count: usize,
-    },
+    Paged { part: Pageable, count: usize },
     /// Shortcuts the store gathered in memory.
     Gathered(Vec<ItemId>),
     /// The shortcuts that wait in the trash themselves, by their titles, which the store pages.
@@ -131,7 +97,6 @@ impl Part {
     const fn size(&self) -> usize {
         match self {
             Self::Folders(ids) | Self::Gathered(ids) => ids.len(),
-            Self::Opened { .. } => 1,
             Self::Paged { count, .. } | Self::Trash { count } => *count,
         }
     }
@@ -174,14 +139,7 @@ fn shortcut_parts(
                     sort: listing.sort,
                     within,
                 };
-                (
-                    Part::Paged {
-                        part,
-                        depth: 0,
-                        count,
-                    },
-                    label.filter(|_| headed),
-                )
+                (Part::Paged { part, count }, label.filter(|_| headed))
             })
             .collect(),
         Parts::Gathered(parts) => parts
@@ -192,56 +150,6 @@ fn shortcut_parts(
             })
             .collect(),
     }
-}
-
-/// What an outline shows of every folder: its shortcuts in an order, and its rows beneath it while it is open.
-#[derive(Clone, Copy, Debug)]
-struct Opening<'a> {
-    sort: Sort,
-    open: &'a BTreeSet<ItemId>,
-}
-
-/// The parts of the outline of a folder at a depth, its open folders' rows beneath them.
-fn outline(
-    session: &Session,
-    folder: Option<ItemId>,
-    depth: usize,
-    opening: Opening<'_>,
-) -> Result<Headed, StoreError> {
-    let mut parts = Vec::new();
-    for child in session.folders().named(folder) {
-        let shows = opening.open.contains(child);
-        parts.push((
-            Part::Opened {
-                id: *child,
-                depth,
-                open: shows,
-            },
-            None,
-        ));
-        if shows {
-            parts.extend(outline(
-                session,
-                Some(*child),
-                depth.saturating_add(1),
-                opening,
-            )?);
-        }
-    }
-    let part = Pageable {
-        span: Span::Home(folder),
-        sort: opening.sort,
-        within: Within::Whole,
-    };
-    parts.push((
-        Part::Paged {
-            part,
-            depth,
-            count: session.home_count(folder)?,
-        },
-        None,
-    ));
-    Ok(parts)
 }
 
 /// How many headings a column must hold before it shows them, since one heading over all tells nothing.
@@ -264,10 +172,11 @@ fn folder_parts(
         Parts::Gathered(parts) => parts.len(),
     };
     let headed = grouping != Grouping::None && (!column || headings >= HEADINGS_WORTH_SHOWING);
-    let mut parts = vec![(
-        Part::Folders(session.folders().named(folder).to_vec()),
-        None,
-    )];
+    let mut children = session.folders().named(folder).to_vec();
+    if sort == Sort::TitleDescending {
+        children.reverse();
+    }
+    let mut parts = vec![(Part::Folders(children), None)];
     parts.extend(shortcut_parts(&listing, grouped.parts, heading, headed));
     Ok((parts, grouped.ungrouped))
 }
@@ -349,9 +258,6 @@ pub(super) fn lay(
             ungrouped = gave_way;
             parts
         }
-        Shown::Outline { folder, sort, open } => {
-            outline(session, *folder, 0, Opening { sort: *sort, open })?
-        }
         Shown::Flat { listing } => {
             let grouped = session.parts(listing)?;
             ungrouped = grouped.ungrouped;
@@ -432,7 +338,6 @@ impl Laid {
         for (part, _) in &self.parts {
             let found = match part {
                 Part::Folders(ids) => ids.iter().position(|id| folders.contains(id)),
-                Part::Opened { id, .. } => folders.contains(id).then_some(0),
                 Part::Gathered(ids) => ids.iter().position(|id| shortcuts.contains(id)),
                 Part::Paged { part, .. } => session.first_of(part, &shortcuts)?,
                 Part::Trash { .. } => session.trash_first_of(&shortcuts)?,
@@ -454,9 +359,6 @@ impl Laid {
             let found = match part {
                 Part::Folders(ids) => {
                     starting_in(session, ids.iter().copied().map(Entry::Folder), letters)?
-                }
-                Part::Opened { id, .. } => {
-                    starting_in(session, core::iter::once(Entry::Folder(*id)), letters)?
                 }
                 Part::Gathered(ids) => {
                     starting_in(session, ids.iter().copied().map(Entry::Shortcut), letters)?
@@ -536,7 +438,6 @@ impl Laid {
                             .map(|(at, id)| (place.saturating_add(at), *id)),
                     );
                 }
-                Part::Opened { id, .. } => rows.push((place, *id)),
                 Part::Paged { .. } | Part::Gathered(_) | Part::Trash { .. } => {}
             }
             place = place.saturating_add(part.size());
@@ -625,18 +526,13 @@ impl Laid {
         for (part, _) in &self.parts {
             let found = match (part, entry) {
                 (Part::Folders(ids), Entry::Folder(id)) => ids.iter().position(|held| *held == id),
-                (Part::Opened { id: held, .. }, Entry::Folder(id)) => (*held == id).then_some(0),
                 (Part::Paged { part, .. }, Entry::Shortcut(id)) => session.place_of(part, id)?,
                 (Part::Gathered(ids), Entry::Shortcut(id)) => {
                     ids.iter().position(|held| *held == id)
                 }
                 (Part::Trash { .. }, Entry::Shortcut(id)) => session.trash_place(id)?,
                 (
-                    Part::Folders(_)
-                    | Part::Opened { .. }
-                    | Part::Paged { .. }
-                    | Part::Gathered(_)
-                    | Part::Trash { .. },
+                    Part::Folders(_) | Part::Paged { .. } | Part::Gathered(_) | Part::Trash { .. },
                     Entry::Folder(_) | Entry::Shortcut(_),
                 ) => None,
             };
@@ -691,22 +587,10 @@ fn part_rows(
             .take(limit)
             .map(|id| Row::flat(Entry::Folder(*id)))
             .collect(),
-        Part::Opened { id, depth, open } => (offset == 0 && limit > 0)
-            .then_some(Row {
-                entry: Entry::Folder(*id),
-                depth: *depth,
-                open: Some(*open),
-            })
-            .into_iter()
-            .collect(),
-        Part::Paged { part, depth, .. } => session
+        Part::Paged { part, .. } => session
             .page(part, offset, limit)?
             .into_iter()
-            .map(|id| Row {
-                entry: Entry::Shortcut(id),
-                depth: *depth,
-                open: None,
-            })
+            .map(|id| Row::flat(Entry::Shortcut(id)))
             .collect(),
         Part::Gathered(ids) => ids
             .iter()

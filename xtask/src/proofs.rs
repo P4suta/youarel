@@ -55,19 +55,13 @@ const MIRI_TARGET: &str = "target/miri";
 const MIRI_PROFILE: &str = "miri";
 const MUTANTS_OUTPUT: &str = "target/proofs/mutants";
 /// The crates the mutation campaign runs over, each judged by its own tests alone.
-pub const MUTANT_PACKAGES: [&str; 12] = [
+pub const MUTANT_PACKAGES: [&str; 6] = [
     "youarel-core",
     "youarel-link",
     "youarel-html",
     "youarel-icon",
-    "youarel-import",
-    "youarel-theme",
     "youarel-release",
     "youarel-store",
-    "youarel-crypto",
-    "youarel-protocol",
-    "youarel-relay",
-    "youarel-sync",
 ];
 const CORE_PACKAGE: &str = "youarel-core";
 const FIXTURE_OUTPUT: &str = "target/proofs/fixtures";
@@ -79,17 +73,15 @@ const FUZZ_SCRATCH: &str = "target/fuzz-corpus";
 pub enum Step {
     Kani,
     Quint,
-    Proverif,
     Miri,
     Fuzz,
     Mutants,
 }
 
 impl Step {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 5] = [
         Self::Kani,
         Self::Quint,
-        Self::Proverif,
         Self::Miri,
         Self::Fuzz,
         Self::Mutants,
@@ -100,7 +92,6 @@ impl Step {
         match self {
             Self::Kani => "kani",
             Self::Quint => "quint",
-            Self::Proverif => "proverif",
             Self::Miri => "miri",
             Self::Fuzz => "fuzz",
             Self::Mutants => "mutants",
@@ -111,7 +102,7 @@ impl Step {
     #[must_use]
     pub const fn contained(self) -> bool {
         match self {
-            Self::Quint | Self::Proverif => true,
+            Self::Quint => true,
             Self::Kani | Self::Miri | Self::Fuzz | Self::Mutants => false,
         }
     }
@@ -128,7 +119,6 @@ impl Step {
 pub struct Scope {
     pub kani: Vec<String>,
     pub quint: Vec<String>,
-    pub proverif: Vec<String>,
     pub miri: Vec<String>,
     pub fuzz: Vec<String>,
     pub mutants: Vec<String>,
@@ -147,7 +137,6 @@ impl Scope {
             match obligation {
                 Obligation::Kani { source, .. } => scope.kani.push(source),
                 Obligation::Quint(model) => scope.quint.push(model.spec),
-                Obligation::Proverif(model) => scope.proverif.push(model.model),
             }
         }
         scope.miri = MIRI_CRATES.iter().map(|name| (*name).to_owned()).collect();
@@ -157,10 +146,7 @@ impl Scope {
             .map(|name| (*name).to_owned())
             .collect();
         ensure!(
-            !scope.kani.is_empty()
-                && !scope.quint.is_empty()
-                && !scope.proverif.is_empty()
-                && !scope.fuzz.is_empty(),
+            !scope.kani.is_empty() && !scope.quint.is_empty() && !scope.fuzz.is_empty(),
             "the full verification inventory is incomplete"
         );
         Ok(scope)
@@ -523,7 +509,7 @@ fn kani_manifest(root: &Path, selected: &[String]) -> Result<Manifest> {
         .iter()
         .filter_map(|item| match item {
             Obligation::Kani { source, .. } => Some(source),
-            Obligation::Quint(_) | Obligation::Proverif(_) => None,
+            Obligation::Quint(_) => None,
         })
         .collect();
     ensure!(
@@ -561,7 +547,7 @@ fn verify_kani(root: &Path, selected: &[String]) -> Result<()> {
                     ..harness.clone()
                 })
                 .collect(),
-            Obligation::Kani { .. } | Obligation::Quint(_) | Obligation::Proverif(_) => Vec::new(),
+            Obligation::Kani { .. } | Obligation::Quint(_) => Vec::new(),
         })
         .collect();
     ensure!(
@@ -917,7 +903,7 @@ fn verify_mutants(root: &Path, packages: &[String]) -> Result<()> {
     Ok(())
 }
 
-const INPUT_DIRECTORIES: [&str; 11] = [
+const INPUT_DIRECTORIES: [&str; 10] = [
     "crates",
     "fuzz",
     "specs",
@@ -928,7 +914,6 @@ const INPUT_DIRECTORIES: [&str; 11] = [
     ".config",
     ".mise/locks",
     "app",
-    "server",
 ];
 const INPUT_FILES: [&str; 9] = [
     "Cargo.toml",
@@ -943,13 +928,10 @@ const INPUT_FILES: [&str; 9] = [
 ];
 const COMPILED_SCRIPT_DIRECTORY: &str = "app/ui/";
 const COMPILED_SCRIPT_SUFFIX: &str = ".js";
-const GENERATED_PATHS: [&str; 10] = [
+const GENERATED_PATHS: [&str; 7] = [
     "fuzz/target/",
     "fuzz/artifacts/",
     "fuzz/coverage/",
-    "server/target/",
-    "server/build/",
-    "server/.wrangler/",
     "app/target/",
     "app/gen/",
     "xtask/target/",
@@ -1023,7 +1005,6 @@ fn receipt(root: &Path, step: Step, scope: &Scope) -> Result<()> {
     let version = match step {
         Step::Kani => KANI_VERSION,
         Step::Quint => crate::quint::QUINT_VERSION,
-        Step::Proverif => crate::proverif::PROVERIF_VERSION,
         Step::Miri => tool::NIGHTLY,
         Step::Fuzz => FUZZ_VERSION,
         Step::Mutants => MUTANTS_VERSION,
@@ -1045,7 +1026,6 @@ fn verify(root: &Path, step: Step, scope: &Scope) -> Result<()> {
     match step {
         Step::Kani => verify_kani(root, &scope.kani)?,
         Step::Quint => crate::quint::verify_selected(root, Some(&scope.quint))?,
-        Step::Proverif => crate::proverif::verify_selected(root, Some(&scope.proverif))?,
         Step::Miri => verify_miri(root, &scope.miri)?,
         Step::Fuzz => verify_fuzz(root, &scope.fuzz)?,
         Step::Mutants => verify_mutants(root, &scope.mutants)?,
@@ -1196,13 +1176,7 @@ mod tests {
         assert_eq!(Options::from_words(&["--verbose"]), None);
         assert_eq!(
             options(true, None, None).selected(),
-            [
-                Step::Kani,
-                Step::Quint,
-                Step::Proverif,
-                Step::Miri,
-                Step::Fuzz
-            ]
+            [Step::Kani, Step::Quint, Step::Miri, Step::Fuzz]
         );
         assert_eq!(options(false, None, None).selected(), Step::ALL);
         assert_eq!(
@@ -1211,13 +1185,7 @@ mod tests {
         );
         assert_eq!(
             options(false, None, Some(Step::Quint)).selected(),
-            [
-                Step::Kani,
-                Step::Proverif,
-                Step::Miri,
-                Step::Fuzz,
-                Step::Mutants
-            ]
+            [Step::Kani, Step::Miri, Step::Fuzz, Step::Mutants]
         );
         let inside = Options::from_words(&["--inside"]).unwrap();
         assert_eq!(

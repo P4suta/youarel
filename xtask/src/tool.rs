@@ -25,6 +25,7 @@ pub const SPCTL: &str = "/usr/sbin/spctl";
 
 /// The TypeScript compiler as npm installs it: a script that Windows runs only by its `.cmd` name.
 const TSC: &str = if cfg!(windows) { "tsc.cmd" } else { "tsc" };
+const NPM: &str = if cfg!(windows) { "npm.cmd" } else { "npm" };
 
 mod raw {
     #![expect(
@@ -67,6 +68,8 @@ pub enum Tool {
     Pwsh,
     /// The TypeScript compiler, which checks the window launcher's script under strict rules.
     Tsc,
+    Npm,
+    Node,
     /// The macOS tools of a release, by their fixed system paths.
     Security,
     Codesign,
@@ -95,6 +98,8 @@ impl Tool {
             Self::Gh => "gh",
             Self::Pwsh => "pwsh",
             Self::Tsc => TSC,
+            Self::Npm => NPM,
+            Self::Node => "node",
             Self::Security => SECURITY,
             Self::Codesign => CODESIGN,
             Self::Productsign => PRODUCTSIGN,
@@ -235,6 +240,33 @@ where
 mod tests {
     use super::*;
     use std::collections::BTreeSet;
+
+    #[test]
+    fn locked_tool_downloads_have_checksums_on_every_declared_platform() {
+        const TOOL_LOCK: &str = "mise.lock";
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let locked: toml::Table =
+            toml::from_str(&crate::fs::read_to_string(&root.join(TOOL_LOCK)).unwrap()).unwrap();
+        let tools = locked.get("tools").unwrap().as_table().unwrap();
+        let mut checked = false;
+        for (name, versions) in tools {
+            for version in versions.as_array().unwrap() {
+                for (field, platform) in version.as_table().unwrap() {
+                    if field.starts_with("platforms.") && platform.get("url").is_some() {
+                        checked = true;
+                        assert!(
+                            platform
+                                .get("checksum")
+                                .and_then(toml::Value::as_str)
+                                .is_some_and(|checksum| !checksum.is_empty()),
+                            "{name} {field} downloads an artifact without a locked checksum"
+                        );
+                    }
+                }
+            }
+        }
+        assert!(checked, "the lockfile must declare platform downloads");
+    }
 
     #[test]
     fn selected_repositories_ignore_the_parent_hooks_git_context() {

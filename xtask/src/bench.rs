@@ -11,7 +11,6 @@ pub use report::{Configuration, Measurement, Report, Status};
 
 mod edits;
 mod reads;
-mod segments;
 
 use crate::fs;
 use anyhow::{Context as _, Result, ensure};
@@ -25,7 +24,7 @@ use std::sync::{Arc, atomic::AtomicBool};
 use youarel_core::bench_rules::Namespace;
 use youarel_core::record_rules::Record;
 use youarel_core::state::ItemId;
-use youarel_store::{RecordSet, Store};
+use youarel_store::Store;
 
 const GENERATION_BATCH: u64 = 512;
 const BUDGET_CHECK_RECORDS: usize = 256;
@@ -161,23 +160,6 @@ impl Campaign {
         Ok(folders)
     }
 
-    fn fingerprint(&self, store: &Store) -> Result<[u8; 32]> {
-        let mut fingerprint = Sha512_256::new();
-        let mut records = 0usize;
-        store.session(NOW, |session| {
-            session.stream_records(RecordSet::Snapshot, |record| {
-                records = records.saturating_add(1);
-                if records.is_multiple_of(BUDGET_CHECK_RECORDS) {
-                    self.guard.publication()?;
-                }
-                let bytes = data::bytes(&record).map_err(youarel_store::StoreError::Records)?;
-                fingerprint.update(bytes);
-                Ok(())
-            })
-        })?;
-        Ok(fingerprint.finalize().into())
-    }
-
     fn workloads(&self) -> Result<()> {
         let folders = self.measure(
             Measurement::operation(
@@ -199,9 +181,8 @@ impl Campaign {
             },
         )?;
         self.reads(&folders)?;
-        self.sync_and_edits(&folders)?;
+        self.own_edits(&folders)?;
         self.removal()?;
-        self.import()?;
         self.guard.check()
     }
 }
@@ -246,7 +227,7 @@ fn execute(
     Ok(report)
 }
 
-/// Measures this host's real store and segment adapters without publishing or contacting a service.
+/// Measures this host's real store adapters without publishing or contacting a service.
 ///
 /// # Errors
 ///
@@ -326,11 +307,6 @@ mod tests {
             "add",
             "move",
             "remove_folder",
-            "record_import",
-            "snapshot_publish",
-            "snapshot_apply",
-            "delta_publish",
-            "delta_apply",
         ] {
             assert!(
                 report
@@ -340,15 +316,6 @@ mod tests {
                 "{name}"
             );
         }
-        assert_eq!(
-            report
-                .measurements
-                .iter()
-                .find(|measurement| measurement.name == "record_import")
-                .unwrap()
-                .operations,
-            128
-        );
         assert_eq!(
             report
                 .measurements

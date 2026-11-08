@@ -28,62 +28,27 @@ pub const DENIED: [&str; 10] = [
 ];
 
 /// The workspace members and the members each may depend on.
-pub const EDGES: [(&str, &[&str]); 14] = [
+pub const EDGES: [(&str, &[&str]); 8] = [
     ("youarel-core", &[]),
-    ("youarel-crypto", &[]),
     ("youarel-html", &[]),
     ("youarel-icon", &[]),
-    (
-        "youarel-import",
-        &[
-            "youarel-core",
-            "youarel-html",
-            "youarel-link",
-            "youarel-store",
-        ],
-    ),
-    ("youarel-theme", &["youarel-core"]),
     ("youarel-link", &["youarel-core"]),
-    ("youarel-protocol", &["youarel-core", "youarel-crypto"]),
-    (
-        "youarel-relay",
-        &["youarel-core", "youarel-crypto", "youarel-protocol"],
-    ),
     ("youarel-release", &["youarel-core"]),
     ("youarel-store", &["youarel-core", "youarel-link"]),
-    (
-        "youarel-sync",
-        &[
-            "youarel-core",
-            "youarel-crypto",
-            "youarel-protocol",
-            "youarel-store",
-        ],
-    ),
     (
         "youarel-cli",
         &[
             "youarel-core",
-            "youarel-crypto",
             "youarel-html",
             "youarel-icon",
-            "youarel-import",
             "youarel-link",
-            "youarel-protocol",
-            "youarel-relay",
             "youarel-release",
             "youarel-store",
-            "youarel-sync",
         ],
     ),
     (
         "xtask",
-        &[
-            "youarel-core",
-            "youarel-release",
-            "youarel-store",
-            "youarel-sync",
-        ],
+        &["youarel-core", "youarel-release", "youarel-store"],
     ),
 ];
 

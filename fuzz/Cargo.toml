@@ -15,31 +15,13 @@ tempfile = "3"
 youarel-core = { path = "../crates/youarel-core" }
 youarel-html = { path = "../crates/youarel-html" }
 youarel-icon = { path = "../crates/youarel-icon" }
-youarel-import = { path = "../crates/youarel-import" }
 youarel-link = { path = "../crates/youarel-link" }
 youarel-release = { path = "../crates/youarel-release" }
 youarel-store = { path = "../crates/youarel-store" }
-youarel-crypto = { path = "../crates/youarel-crypto" }
-youarel-protocol = { path = "../crates/youarel-protocol" }
-youarel-theme = { path = "../crates/youarel-theme" }
-
-[[bin]]
-name = "browser_icons"
-path = "fuzz_targets/browser_icons.rs"
-test = false
-doc = false
-bench = false
 
 [[bin]]
 name = "link_parse"
 path = "fuzz_targets/link_parse.rs"
-test = false
-doc = false
-bench = false
-
-[[bin]]
-name = "bookmarks_parse"
-path = "fuzz_targets/bookmarks_parse.rs"
 test = false
 doc = false
 bench = false
@@ -80,57 +62,8 @@ doc = false
 bench = false
 
 [[bin]]
-name = "wire_decode"
-path = "fuzz_targets/wire_decode.rs"
-test = false
-doc = false
-bench = false
-
-[[bin]]
-name = "folder_name"
-path = "fuzz_targets/folder_name.rs"
-test = false
-doc = false
-bench = false
-
-[[bin]]
-name = "invitation_code"
-path = "fuzz_targets/invitation_code.rs"
-test = false
-doc = false
-bench = false
-
-[[bin]]
-name = "recovery_key"
-path = "fuzz_targets/recovery_key.rs"
-test = false
-doc = false
-bench = false
-
-[[bin]]
 name = "icon_normalize"
 path = "fuzz_targets/icon_normalize.rs"
-test = false
-doc = false
-bench = false
-
-[[bin]]
-name = "settings_decode"
-path = "fuzz_targets/settings_decode.rs"
-test = false
-doc = false
-bench = false
-
-[[bin]]
-name = "theme_parse"
-path = "fuzz_targets/theme_parse.rs"
-test = false
-doc = false
-bench = false
-
-[[bin]]
-name = "browser_bookmarks"
-path = "fuzz_targets/browser_bookmarks.rs"
 test = false
 doc = false
 bench = false

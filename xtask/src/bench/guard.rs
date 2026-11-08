@@ -18,7 +18,6 @@ pub(super) struct Guard {
     began: Timer,
     cancelled: Arc<AtomicBool>,
     available: Available,
-    spooled: Cell<u64>,
     pub peak: Cell<u64>,
     pub stopped: Cell<Option<Stop>>,
     pub failure: RefCell<Option<String>>,
@@ -28,14 +27,13 @@ impl Guard {
     pub(super) fn new(root: &Path, cancelled: Arc<AtomicBool>, available: Available) -> Self {
         Self {
             root: root.to_owned(),
-            files: ["source", "peer", "import", "remove"]
+            files: ["source", "remove"]
                 .iter()
                 .map(|name| root.join(name).join(youarel_store::DATABASE_FILE))
                 .collect(),
             began: Timer::start(),
             cancelled,
             available,
-            spooled: Cell::new(0),
             peak: Cell::new(0),
             stopped: Cell::new(None),
             failure: RefCell::new(None),
@@ -43,12 +41,9 @@ impl Guard {
     }
 
     fn facts(&self) -> Result<Resources> {
-        let bytes = self
-            .files
-            .iter()
-            .try_fold(self.spooled.get(), |bytes, path| {
-                Ok::<_, anyhow::Error>(bytes.saturating_add(fs::file_bytes_if_present(path)?))
-            })?;
+        let bytes = self.files.iter().try_fold(0_u64, |bytes, path| {
+            Ok::<_, anyhow::Error>(bytes.saturating_add(fs::file_bytes_if_present(path)?))
+        })?;
         self.peak.set(self.peak.get().max(bytes));
         Ok(Resources {
             synthetic_bytes: bytes,
@@ -70,20 +65,5 @@ impl Guard {
             *self.failure.borrow_mut() = Some(format!("{error:#}"));
         }
         result
-    }
-
-    pub(super) fn publication(&self) -> Result<(), youarel_store::PublicationError> {
-        self.check()
-            .map_err(|_stopped| youarel_store::PublicationError::Interrupted)
-    }
-
-    pub(super) fn spool(&self, count: usize) -> Result<()> {
-        self.spooled.set(
-            self.spooled
-                .get()
-                .checked_add(u64::try_from(count)?)
-                .ok_or_else(|| anyhow::anyhow!("synthetic byte count overflow"))?,
-        );
-        self.check()
     }
 }

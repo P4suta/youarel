@@ -1,15 +1,14 @@
-//! The view the window draws, read in one session: the sidebar, a page of the listing the cards or the list show, a page of each column, and the selection counted.
+//! The view the window draws, read in one session: the current location, a page of its listing, and the selection.
 
-use super::listing::{Laid, Row, Shown};
+use super::listing::{Laid, Row};
 use super::{
     ALL, LEAD, Library, PAGE, Place, RECENT, Root, TRASH, UNSORTED, entry_id, listable,
     listed_shortcut, selection_shown, trashed_folder,
 };
-use crate::intent::{ColumnName, GroupName, SortName, text};
-use crate::themes;
+use crate::intent::{GroupName, text};
 use crate::view::{
     Choice, CollectionCount, ColumnEntry, ColumnView, Context, EntryKind, Item, ListingView,
-    Notice, OpeningView, PATH_SEPARATOR, RowView, SelectionView, Sidebar, Step, View, choice, url,
+    Notice, PATH_SEPARATOR, RowView, SelectionView, Step, View, url,
 };
 use anyhow::Result;
 use std::collections::BTreeSet;
@@ -20,7 +19,6 @@ use youarel_core::selection_rules::{self, Selection};
 use youarel_core::state::{Entry, Folder, ItemId};
 use youarel_link::Link;
 use youarel_store::folders::Folders;
-use youarel_store::settings::{Column, HIDEABLE};
 use youarel_store::{Session, StoreError};
 
 /// How a view pages a listing: [`PAGE`] rows, [`LEAD`] of them before a row it brings into sight.
@@ -98,8 +96,7 @@ fn folder_count(
 
 /// One row as the window draws it, marked when the selection takes it.
 fn row_view(
-    session: &Session,
-    counts: &Counts,
+    (session, counts): (&Session, &Counts),
     row: Row,
     marks: Marks,
 ) -> Result<RowView, StoreError> {
@@ -109,8 +106,6 @@ fn row_view(
                 RowView::Folder {
                     folder: Box::new(folder),
                     origin,
-                    depth: row.depth,
-                    open: row.open,
                     selected: marks.selected,
                     cut: marks.cut,
                 }
@@ -118,7 +113,6 @@ fn row_view(
         }
         Entry::Shortcut(id) => item(session, id)?.map_or(RowView::Gone, |item| RowView::Shortcut {
             item: Box::new(item),
-            depth: row.depth,
             selected: marks.selected,
             cut: marks.cut,
         }),
@@ -149,8 +143,7 @@ pub(super) fn row_views(
     for (place, row) in (window.start..).zip(rows) {
         let selected = reader.selection.contains(shown, place, entry_id(row.entry));
         views.push(row_view(
-            reader.session,
-            counts,
+            (reader.session, counts),
             row,
             Marks {
                 selected,
@@ -288,17 +281,6 @@ impl Library {
             }
             self.settled_generation = Some(generation);
         }
-        self.outlined.retain(|id| folders.shows(*id));
-        self.unfolded.retain(|id| folders.shows(*id));
-        // The sidebar opens the folders over the one the window stands in once, so that folder shows in its tree.
-        if let Place::Scope(Scope::Collection(id)) = self.place
-            && self.revealed != Some(id)
-        {
-            let lineage = folders.tree().lineage(Some(id));
-            let over = lineage.len().saturating_sub(1);
-            self.unfolded.extend(lineage.into_iter().take(over));
-            self.revealed = Some(id);
-        }
         Ok(())
     }
 
@@ -336,18 +318,7 @@ impl Library {
         }
     }
 
-    /// The columns the list draws after the name: those a person keeps, without the collection while every row sits in the one folder shown.
-    fn list_columns(&self) -> Vec<ColumnName> {
-        let browsing = matches!(self.browsed(), Root::Folder(_));
-        HIDEABLE
-            .into_iter()
-            .filter(|column| !self.settings.hidden.contains(column))
-            .filter(|column| !(browsing && *column == Column::Collection))
-            .map(ColumnName::from)
-            .collect()
-    }
-
-    /// The count beside the heading: every shortcut inside the folder the window stands in, as the sidebar counts it, or the length of the listing shown.
+    /// The shortcuts inside the current folder, or the length of a search or Trash listing.
     fn count(&self, counts: &Counts, listed: usize) -> usize {
         let root = if self.layout == Layout::Columns {
             self.root_folder()
@@ -431,7 +402,6 @@ impl Library {
             fresh: core::mem::take(&mut self.fresh),
             folders: laid.folders(),
             groups: laid.groups(),
-            outline: matches!(laid.shown, Shown::Outline { .. }),
         };
         Ok((listing, selection))
     }
@@ -508,22 +478,13 @@ impl Library {
             redo: self.history.next().map(|step| step.action.to_owned()),
             back: self.places.last().is_some(),
             forward: self.places.next().is_some(),
-            sidebar: Sidebar::new(folders, (&self.place).into(), &counts, &self.unfolded),
+            scope: (&self.place).into(),
+            trash: counts.trash,
             title: self.title(folders),
             count: self.count(&counts, listed),
             layout: self.layout.into(),
-            sort: SortName::from(self.settings.sort),
-            grouping: GroupName::from(self.settings.grouping),
-            search: self.search.clone(),
+            grouping: GroupName::from(self.grouping),
             listing,
-            list_columns: self.list_columns(),
-            hidden_columns: self
-                .settings
-                .hidden
-                .iter()
-                .copied()
-                .map(ColumnName::from)
-                .collect(),
             columns,
             preview,
             focus: self.focus.map(text),
@@ -534,17 +495,6 @@ impl Library {
                 path: folders.path(Some(id)).join(PATH_SEPARATOR),
             }),
             trail: self.trail(folders),
-            theme: themes::worn(&self.settings),
-            browsers: self.browsers.clone(),
-            sync: self.syncing.view(&self.settings.sync, self.has_account()),
-            opening: OpeningView {
-                layout: self.settings.layout.into(),
-                start: self
-                    .settings
-                    .start
-                    .filter(|id| folders.shows(*id))
-                    .map(|id| choice(folders, id)),
-            },
         })
     }
 }

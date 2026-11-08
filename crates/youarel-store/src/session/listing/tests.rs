@@ -117,7 +117,9 @@ fn a_title_prefix_finds_the_first_match_of_each_scope_and_order() {
             ] {
                 for sort in [
                     Sort::Title,
+                    Sort::TitleDescending,
                     Sort::Link,
+                    Sort::LinkDescending,
                     Sort::Newest,
                     Sort::Oldest,
                     Sort::Opened,
@@ -189,6 +191,18 @@ fn a_run_of_tied_kept_starts_sorts_by_its_records_as_far_as_its_bound() {
                 all(session.texts(&tables, &filter, order(1))?),
                 [early, late, middle],
                 "a run past the bound keeps the order of its keys"
+            );
+            let descending = |bound| TextOrder {
+                sort: Sort::TitleDescending,
+                ..order(bound)
+            };
+            assert_eq!(
+                all(session.texts(&tables, &filter, descending(2))?),
+                [middle, early, late]
+            );
+            assert_eq!(
+                all(session.texts(&tables, &filter, descending(1))?),
+                [middle, late, early]
             );
             drop(tables);
             for id in [late, early] {

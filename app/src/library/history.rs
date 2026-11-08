@@ -77,16 +77,12 @@ impl Library {
         }
         .cloned();
         let Some(step) = step else { return Ok(None) };
-        let now = self.session(|session| {
-            step.apply(session, direction)?;
-            Ok(session.now())
-        })?;
+        self.session(|session| step.apply(session, direction))?;
         match direction {
             Direction::Undo => self.history.back(),
             Direction::Redo => self.history.forward(),
         }
         .context("the applied history step disappeared")?;
-        self.syncing.edited(now);
         let verb = match direction {
             Direction::Undo => "Undid",
             Direction::Redo => "Redid",

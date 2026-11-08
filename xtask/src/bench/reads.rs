@@ -5,9 +5,11 @@ use youarel_core::state::{ItemId, Shortcut};
 use youarel_store::{Listing, Part, Parts, Span, StoreError, Within};
 
 pub(super) const PAGE: usize = 200;
-const SORTS: [Sort; 5] = [
+const SORTS: [Sort; 7] = [
     Sort::Title,
+    Sort::TitleDescending,
     Sort::Link,
+    Sort::LinkDescending,
     Sort::Newest,
     Sort::Oldest,
     Sort::Opened,

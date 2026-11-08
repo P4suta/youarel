@@ -34,7 +34,6 @@ toml.workspace = true
 youarel-core.workspace = true
 youarel-release.workspace = true
 youarel-store.workspace = true
-youarel-sync.workspace = true
 zip.workspace = true
 
 [lints]

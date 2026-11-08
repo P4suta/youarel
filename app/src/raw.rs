@@ -2,49 +2,35 @@
 
 use crate::intent::{Intent, item};
 use crate::library::{Job, Library};
-use crate::themes::ThemeOption;
 use crate::view::{Progress, View};
-use crate::watch::Watch;
 use std::collections::BTreeMap;
 use std::process::ExitCode;
 use std::sync::{Mutex, MutexGuard, PoisonError};
-use std::time::Duration;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Emitter, Manager, RunEvent, WebviewWindow, WindowEvent};
 use tauri_plugin_clipboard_manager::ClipboardExt;
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
-use tokio::sync::Notify;
-use youarel_core::folder_rules::Seen;
-use youarel_core::sync_rules;
 use youarel_link::Link;
 use youarel_store::Store;
 
 /// The label of the library's one window in `tauri.conf.json`.
 const WINDOW: &str = "library";
-/// The global shortcut that brings the window forward with the search focused, or hides it.
+/// The global shortcut that brings the window forward with the folder focused, or hides it.
 const SHORTCUT: &str = "Alt+Space";
 /// The argument that toggles the window of the running library, for a desktop whose shortcuts it cannot hold.
 const TOGGLE: &str = "--toggle";
 /// The tray menu's items.
 const SHOW: &str = "show";
 const QUIT: &str = "quit";
-/// The event that tells the page the person summoned the window, so it focuses the search.
+/// The event that tells the page to focus the current folder after a summon.
 const SUMMONED: &str = "summoned";
-/// The event that tells the page a sync began or ended, so it draws the view again.
-const SYNCED: &str = "synced";
-/// How often the window asks whether a sync is due.
-const TICK: Duration = Duration::from_secs(5);
-/// How long the shared folder rests after a notice before the window asks, the span the core's schedule waits for.
-const QUIET: Duration = Duration::from_millis(sync_rules::QUIET);
 /// The event that tells the page shortcuts got their icons, so it draws the view again.
 const ICONED: &str = "iconed";
 /// The event that tells the page how far a move or a removal came, which it shows while the job works.
 const PROGRESS: &str = "progress";
 
 type Shared = Mutex<Library>;
-mod device_commands;
-mod local_icons;
 
 fn locked(shared: &Shared) -> MutexGuard<'_, Library> {
     shared.lock().unwrap_or_else(PoisonError::into_inner)
@@ -53,25 +39,6 @@ fn locked(shared: &Shared) -> MutexGuard<'_, Library> {
 /// Carries out the next batch of a job under the library's lock, which it lets go before the next batch.
 fn advance(shared: &Shared, job: &mut Job) -> Option<Progress> {
     locked(shared).advance(job)
-}
-
-/// Wakes the ticker once the watch notices what may be another device's bundle.
-#[derive(Debug, Default)]
-struct Wake(Notify);
-
-/// The watch of the shared folder, held apart from the library so that it drops with no lock of the library held.
-#[derive(Debug, Default)]
-struct Watching(Mutex<Held>);
-
-/// The watch the window holds, and why its last start failed, which the log names once.
-#[derive(Debug, Default)]
-struct Held {
-    watch: Option<Watch>,
-    refused: Option<String>,
-}
-
-fn held(watching: &Watching) -> MutexGuard<'_, Held> {
-    watching.0.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 /// Brings the window forward with the keyboard.
@@ -85,7 +52,7 @@ fn bring_forward(app: &AppHandle) {
     drop(window.set_focus());
 }
 
-/// Brings the window forward and tells the page to focus the search.
+/// Brings the window forward and tells the page to focus the folder.
 fn show(app: &AppHandle) {
     bring_forward(app);
     drop(app.emit(SUMMONED, ()));
@@ -120,31 +87,22 @@ mod commands {
     )]
 
     use super::{
-        AppHandle, BTreeMap, ClipboardExt, Emitter as _, Intent, Link, PROGRESS, Shared,
-        ThemeOption, View, advance, gather_icons, item, locked, reported,
+        AppHandle, BTreeMap, ClipboardExt, Emitter as _, FILE_COMMANDS, Intent, Link, PROGRESS,
+        Shared, View, advance, gather_icons, item, locked, reported,
     };
     use crate::library::{Addition, Begun, fetch};
-    use crate::view::{Choice, EntriesView, RowsView};
+    use crate::view::{Choice, RowsView};
     use tauri::{Manager as _, State};
 
     /// Carries out what the window asks for and answers with the view, then asks the sites of the links it opened for their missing favicons.
     ///
-    /// A move or a removal runs in batches and lets the library's lock go between them, so the window pages and searches meanwhile and hears how far the job came.
+    /// A move or a removal runs in batches and releases the library's lock between them, so the window pages and reports progress meanwhile.
     #[tauri::command(async)]
     pub(super) fn act(
         app: AppHandle,
         shared: State<'_, Shared>,
         intent: Intent,
     ) -> Result<View, String> {
-        let restart_icons = matches!(
-            &intent,
-            Intent::Import { .. } | Intent::ImportBrowser { .. }
-        );
-        let icon_browser = if let Intent::ImportBrowser { browser } = &intent {
-            Some((*browser).into())
-        } else {
-            None
-        };
         let begun = locked(&shared).begin(intent);
         let view = match begun {
             Ok(Begun::Answered(view)) => Ok(*view),
@@ -158,50 +116,19 @@ mod commands {
             Err(error) => Err(error),
         };
         gather_icons(&app);
-        if restart_icons {
-            app.state::<crate::local_icons::LocalIcons>()
-                .restart(icon_browser);
-        }
-        if let Ok(view) = &view {
-            app.state::<crate::local_icons::LocalIcons>()
-                .queue_view(view);
-        }
-        super::local_icons::tick(&app);
         view.map_err(|error| reported(&error))
     }
 
-    /// Rows of the listing the cards or the list show, from a place on, as the page scrolls.
+    /// Rows of the bookmark list, from a place on as the page scrolls.
     #[tauri::command(async)]
     pub(super) fn page(
-        app: AppHandle,
         shared: State<'_, Shared>,
         first: usize,
         limit: usize,
     ) -> Result<RowsView, String> {
-        let page = locked(&shared)
+        locked(&shared)
             .page(first, limit)
-            .map_err(|error| reported(&error))?;
-        app.state::<crate::local_icons::LocalIcons>()
-            .queue_rows(&page.rows);
-        super::local_icons::tick(&app);
-        Ok(page)
-    }
-
-    /// Entries of a column of the folder walk, from a place on, as the page scrolls that column.
-    #[tauri::command(async)]
-    pub(super) fn column_page(
-        app: AppHandle,
-        depth: usize,
-        first: usize,
-        limit: usize,
-    ) -> Result<EntriesView, String> {
-        let page = locked(&app.state::<Shared>())
-            .column_page(depth, first, limit)
-            .map_err(|error| reported(&error))?;
-        app.state::<crate::local_icons::LocalIcons>()
-            .queue_columns(&page.entries);
-        super::local_icons::tick(&app);
-        Ok(page)
+            .map_err(|error| reported(&error))
     }
 
     /// The collections a picker offers for what a person typed, from a place on.
@@ -217,40 +144,45 @@ mod commands {
             .map_err(|error| reported(&error))
     }
 
-    /// Answers with the view as it stands, keeping its notice, as after a sync began or ended.
+    /// Answers with the view as it stands, keeping its notice, after background icon collection.
     #[tauri::command(async)]
-    pub(super) fn view(app: AppHandle, shared: State<'_, Shared>) -> Result<View, String> {
+    pub(super) fn view(shared: State<'_, Shared>) -> Result<View, String> {
         let view = locked(&shared).view().map_err(|error| reported(&error))?;
-        app.state::<crate::local_icons::LocalIcons>()
-            .queue_view(&view);
-        super::local_icons::tick(&app);
         Ok(view)
     }
 
     /// Refreshes around the entries the page already shows, without moving its selection.
     #[tauri::command(async)]
     pub(super) fn view_anchored(
-        app: AppHandle,
         shared: State<'_, Shared>,
         anchors: Vec<crate::view::ViewportAnchor>,
     ) -> Result<View, String> {
         let view = locked(&shared)
             .view_anchored(&anchors)
             .map_err(|error| reported(&error))?;
-        app.state::<crate::local_icons::LocalIcons>()
-            .queue_view(&view);
-        super::local_icons::tick(&app);
         Ok(view)
     }
 
-    /// Names the library's undo and redo steps, or offers text editing while a field has focus.
-    #[tauri::command(async)]
-    pub(super) fn history_menu(
-        app: AppHandle,
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    pub(super) struct MenuState {
         undo: Option<String>,
         redo: Option<String>,
         field: bool,
-    ) -> Result<(), String> {
+        enabled: Vec<String>,
+        in_trash: bool,
+    }
+
+    /// Updates command availability and names the library's undo and redo steps.
+    #[tauri::command(async)]
+    pub(super) fn history_menu(app: AppHandle, state: MenuState) -> Result<(), String> {
+        let MenuState {
+            undo,
+            redo,
+            field,
+            enabled,
+            in_trash,
+        } = state;
         let Some(menu) = app.menu() else {
             return Ok(());
         };
@@ -271,6 +203,26 @@ mod commands {
             item.set_enabled(field || step.is_some())
                 .map_err(|error| error.to_string())?;
         }
+        let file = menu
+            .get("file")
+            .and_then(|item| item.as_submenu().cloned())
+            .ok_or("the File menu is missing")?;
+        for id in FILE_COMMANDS {
+            let item = file
+                .get(id)
+                .and_then(|item| item.as_menuitem().cloned())
+                .ok_or_else(|| format!("the {id} menu item is missing"))?;
+            item.set_enabled(enabled.iter().any(|command| command == id))
+                .map_err(|error| error.to_string())?;
+            if id == "trash-selection" {
+                item.set_text(if in_trash {
+                    "Delete Immediately…"
+                } else {
+                    "Move to Trash"
+                })
+                .map_err(|error| error.to_string())?;
+            }
+        }
         Ok(())
     }
 
@@ -285,7 +237,7 @@ mod commands {
         collection: Option<String>,
     ) -> Result<View, String> {
         let link =
-            Link::parse(link.trim()).map_err(|error| format!("cannot add `{link}`: {error}"))?;
+            Link::from_input(&link).map_err(|error| format!("cannot add `{link}`: {error}"))?;
         let collection = collection
             .as_deref()
             .map(item)
@@ -316,10 +268,19 @@ mod commands {
             .map_err(|error| reported(&error))
     }
 
+    /// Completes a typed web address without fetching its page.
+    #[tauri::command]
+    pub(super) fn normalize_link(link: String) -> Option<String> {
+        match Link::from_input(&link) {
+            Ok(link) => Some(link.as_str().to_owned()),
+            Err(_not_a_web_address) => None,
+        }
+    }
+
     /// The title of a link's page, which the add sheet offers before the person types one.
     #[tauri::command(async)]
     pub(super) fn title(link: String) -> Result<Option<String>, String> {
-        let link = Link::parse(link.trim()).map_err(|error| error.to_string())?;
+        let link = Link::from_input(&link).map_err(|error| error.to_string())?;
         youarel_cli::web::fetch_page(&link)
             .map(|page| page.title)
             .map_err(|error| reported(&error))
@@ -333,7 +294,7 @@ mod commands {
             Ok(text) => text,
             Err(_no_text) => return None,
         };
-        match Link::parse(text.trim()) {
+        match Link::from_input(&text) {
             Ok(link) => Some(link.as_str().to_owned()),
             Err(_no_link) => None,
         }
@@ -380,21 +341,6 @@ mod commands {
         act(app, shared, Intent::Paste { text })
     }
 
-    /// Writes the bookmark export to the operating system's Downloads directory.
-    #[tauri::command(async)]
-    pub(super) fn export_bookmarks(
-        app: AppHandle,
-        shared: State<'_, Shared>,
-    ) -> Result<View, String> {
-        let directory = app
-            .path()
-            .download_dir()
-            .map_err(|error| error.to_string())?;
-        locked(&shared)
-            .export_to(&directory)
-            .map_err(|error| reported(&error))
-    }
-
     /// Hides the window, as its close button does.
     #[tauri::command(async)]
     pub(super) fn close(app: AppHandle) -> Result<(), String> {
@@ -430,12 +376,6 @@ mod commands {
             .map_err(|error| reported(&error))
     }
 
-    /// Every theme the window can wear, for the settings to draw.
-    #[tauri::command(async)]
-    pub(super) fn themes(shared: State<'_, Shared>) -> Vec<ThemeOption> {
-        locked(&shared).themes()
-    }
-
     /// What the mark picker shows for a search: every category for an empty one, or the emoji whose names hold it.
     #[tauri::command(async)]
     pub(super) fn emoji(query: String) -> Vec<crate::emoji::EmojiGroup> {
@@ -454,128 +394,6 @@ mod commands {
     }
 }
 
-/// Runs the sync the schedule says is due, outside the library's lock, and tells the page before and after.
-///
-/// A publish writes this device's bundle as `youarel sync` does, and a merge only reads the other devices' bundles and says whether this device has something new to publish.
-/// The sync then learns the name of this device's own bundle, whose changes the watch passes over from then on.
-async fn sync_when_due(app: &AppHandle) {
-    if app
-        .state::<device_commands::SharedDevices>()
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .busy()
-    {
-        return;
-    }
-    let Ok(began) = youarel_cli::clock::now() else {
-        // A clock that cannot be read leaves the sync to the next tick.
-        return;
-    };
-    let shared = app.state::<Shared>();
-    let (due, store) = {
-        let mut library = locked(&shared);
-        (library.begin_sync(began), library.store())
-    };
-    let Some((sync, target)) = due else {
-        return;
-    };
-    drop(app.emit(SYNCED, ()));
-    let ran = tauri::async_runtime::spawn_blocking(move || {
-        let outcome = match sync {
-            // A publish carries everything this device held when it read the store.
-            sync_rules::Sync::Publish => {
-                youarel_cli::sync::sync_checked(&store, began, &target).map(|_published| false)
-            }
-            sync_rules::Sync::Merge => youarel_cli::sync::merge(&store, began, &target)
-                .and_then(|merged| merged.checked_pending()),
-        };
-        (outcome, youarel_cli::sync::own_chain(&store))
-    })
-    .await;
-    let (outcome, own) = ran.unwrap_or_else(|stopped| {
-        let reason = format!("the sync stopped: {stopped}");
-        (
-            Err(anyhow::anyhow!("{reason}")),
-            Err(anyhow::anyhow!(reason)),
-        )
-    });
-    {
-        let mut library = locked(&shared);
-        match own {
-            Ok(own) => library.learned_own(own),
-            // An account that cannot be opened names no bundle of its own yet, and the sync's outcome says why.
-            Err(_unopened) => {}
-        }
-        library.end_sync(began, outcome);
-    }
-    drop(app.emit(SYNCED, ()));
-}
-
-/// What the watch does with each change it sees: the library notes it, and one that may bring another device's bundle wakes the ticker.
-fn tell(app: &AppHandle) -> impl Fn(Seen<'_>) + Send + 'static {
-    let handle = app.clone();
-    move |seen| {
-        // A clock that cannot be read leaves the change to the next scheduled sync.
-        let Ok(now) = youarel_cli::clock::now() else {
-            return;
-        };
-        if locked(&handle.state::<Shared>()).noticed(seen, now) {
-            handle.state::<Wake>().0.notify_one();
-        }
-    }
-}
-
-/// Keeps the watch on the folder the settings name: starts it, starts it again once it is lost or a sync failed, and stops one no longer wanted.
-///
-/// The old watch drops with no lock held, since dropping it waits for its thread, which may wait for the library's lock to tell of a change.
-fn keep_watch(app: &AppHandle) {
-    let shared = app.state::<Shared>();
-    let (wanted, again) = {
-        let mut library = locked(&shared);
-        (library.watch_wanted(), library.rewatch())
-    };
-    let watching = app.state::<Watching>();
-    let stale = {
-        let mut held = held(&watching);
-        let kept = held.watch.as_ref().is_some_and(|watch| {
-            !again && !watch.lost() && Some(watch.folder()) == wanted.as_deref()
-        });
-        if kept {
-            return;
-        }
-        held.watch.take()
-    };
-    drop(stale);
-    let started = wanted.map(|folder| {
-        Watch::start(&folder, tell(app))
-            .map_err(|error| format!("cannot watch {}: {error}", folder.display()))
-    });
-    let watched = matches!(started, Some(Ok(_)));
-    {
-        let mut held = held(&watching);
-        match started {
-            Some(Ok(watch)) => {
-                eprintln!(
-                    "youarel-launcher: watching {} for the other devices' bundles",
-                    watch.folder().display()
-                );
-                held.watch = Some(watch);
-                held.refused = None;
-            }
-            Some(Err(reason)) => {
-                if held.refused.as_ref() != Some(&reason) {
-                    eprintln!(
-                        "youarel-launcher: {reason}; the window checks the folder on its schedule"
-                    );
-                    held.refused = Some(reason);
-                }
-            }
-            None => held.refused = None,
-        }
-    }
-    locked(&shared).watching(watched);
-}
-
 /// Fetches the favicons of the sites whose links a person just opened and whose hosts show no icon, outside the library's lock, and tells the page once one arrives.
 ///
 /// The browser reaches each site at that moment anyway, and the window reaches no other site on its own.
@@ -588,7 +406,7 @@ fn gather_icons(app: &AppHandle) {
     drop(tauri::async_runtime::spawn_blocking(move || {
         let mut kept = false;
         for link in wanted {
-            // A site without a favicon keeps its tile, and the next opening asks it again.
+            // A site without a favicon keeps its link icon, and the next opening asks it again.
             let Ok(icon) = youarel_cli::icons::favicon(&link) else {
                 continue;
             };
@@ -603,35 +421,12 @@ fn gather_icons(app: &AppHandle) {
     }));
 }
 
-/// Keeps the watch in step with the settings and asks whether a sync is due, at every tick and once the folder rests after a notice, for as long as the library runs.
-fn ticker(app: &AppHandle) {
-    let handle = app.clone();
-    tauri::async_runtime::spawn(async move {
-        let wake = handle.state::<Wake>();
-        loop {
-            local_icons::tick(&handle);
-            keep_watch(&handle);
-            sync_when_due(&handle).await;
-            let nudged = tokio::time::timeout(TICK, wake.0.notified()).await;
-            if nudged.is_ok() {
-                // A bundle that another device or its cloud drive still writes settles while the folder rests.
-                tokio::time::sleep(QUIET).await;
-            }
-        }
-    });
-}
-
 /// The event that hands the page a command a person chose from the app's menu, by its identifier.
 const COMMAND: &str = "command";
 /// The commands of the app's menu that the page carries out, as its keys do.
-const COMMANDS: [&str; 18] = [
-    "settings",
+const COMMANDS: [&str; 23] = [
     "new-link",
     "new-collection",
-    "import",
-    "cards",
-    "list",
-    "columns",
     "undo",
     "redo",
     "cut",
@@ -639,13 +434,37 @@ const COMMANDS: [&str; 18] = [
     "paste",
     "select-all",
     "open",
-    "export",
     "back",
     "forward",
     "show-in-folder",
+    "zoom-in",
+    "zoom-out",
+    "zoom-reset",
+    "edit-bookmark",
+    "copy-url",
+    "rename-folder",
+    "move-folder",
+    "mark-folder",
+    "trash-selection",
+    "put-back",
+    "empty-trash",
 ];
 
-/// The app's menu on macOS: the app with its settings, the file commands, editing, the layouts, and the window.
+const FILE_COMMANDS: [&str; 11] = [
+    "new-link",
+    "new-collection",
+    "open",
+    "edit-bookmark",
+    "copy-url",
+    "rename-folder",
+    "move-folder",
+    "mark-folder",
+    "trash-selection",
+    "put-back",
+    "empty-trash",
+];
+
+/// The app's menu on macOS: bookmark commands, editing, navigation, and the window.
 #[cfg(target_os = "macos")]
 mod app_menu {
     use super::{AppHandle, Menu, MenuItem};
@@ -669,8 +488,6 @@ mod app_menu {
             &[
                 &Item::about(app, None, None)?,
                 &Item::separator(app)?,
-                &command(app, "settings", "Settings…", Some("CmdOrCtrl+,"))?,
-                &Item::separator(app)?,
                 &Item::services(app, None)?,
                 &Item::separator(app)?,
                 &Item::hide(app, None)?,
@@ -683,23 +500,35 @@ mod app_menu {
     }
 
     fn file(app: &AppHandle) -> tauri::Result<Submenu<Wry>> {
-        Submenu::with_items(
+        Submenu::with_id_and_items(
             app,
+            "file",
             "File",
             true,
             &[
-                &command(app, "new-link", "New Link…", Some("CmdOrCtrl+N"))?,
+                &command(app, "new-link", "New Bookmark…", Some("CmdOrCtrl+N"))?,
                 &command(
                     app,
                     "new-collection",
-                    "New Collection…",
+                    "New Folder…",
                     Some("Shift+CmdOrCtrl+N"),
                 )?,
                 &Item::separator(app)?,
                 &command(app, "open", "Open", Some("CmdOrCtrl+O"))?,
+                &command(app, "edit-bookmark", "Edit Bookmark…", Some("CmdOrCtrl+E"))?,
+                &command(app, "copy-url", "Copy URL", None)?,
+                &command(app, "rename-folder", "Rename Folder…", Some("F2"))?,
+                &command(app, "move-folder", "Move to Folder…", None)?,
+                &command(app, "mark-folder", "Choose Emoji…", None)?,
                 &Item::separator(app)?,
-                &command(app, "import", "Import Bookmark File…", None)?,
-                &command(app, "export", "Export Bookmark File…", None)?,
+                &command(
+                    app,
+                    "trash-selection",
+                    "Move to Trash",
+                    Some("CmdOrCtrl+Backspace"),
+                )?,
+                &command(app, "put-back", "Put Back", None)?,
+                &command(app, "empty-trash", "Empty Trash…", None)?,
                 &Item::separator(app)?,
                 &Item::close_window(app, None)?,
             ],
@@ -730,13 +559,13 @@ mod app_menu {
             "View",
             true,
             &[
-                &command(app, "cards", "as Cards", Some("CmdOrCtrl+1"))?,
-                &command(app, "list", "as List", Some("CmdOrCtrl+2"))?,
-                &command(app, "columns", "as Columns", Some("CmdOrCtrl+3"))?,
-                &Item::separator(app)?,
                 &command(app, "back", "Back", Some("CmdOrCtrl+["))?,
                 &command(app, "forward", "Forward", Some("CmdOrCtrl+]"))?,
                 &command(app, "show-in-folder", "Show in Folder", Some("CmdOrCtrl+R"))?,
+                &Item::separator(app)?,
+                &command(app, "zoom-in", "Zoom In", Some("CmdOrCtrl+Plus"))?,
+                &command(app, "zoom-out", "Zoom Out", Some("CmdOrCtrl+-"))?,
+                &command(app, "zoom-reset", "Actual Size", Some("CmdOrCtrl+0"))?,
                 &Item::separator(app)?,
                 &Item::fullscreen(app, None)?,
             ],
@@ -852,33 +681,24 @@ pub fn run() -> ExitCode {
         }))
         .plugin(shortcuts())
         .plugin(tauri_plugin_clipboard_manager::init())
-        .manage(crate::local_icons::LocalIcons::new(store.clone()))
         .manage(Mutex::new(Library::new(store)))
-        .manage(Mutex::new(crate::devices::Devices::default()))
-        .manage(Wake::default())
-        .manage(Watching::default())
         .invoke_handler(tauri::generate_handler![
-            device_commands::devices,
-            device_commands::device_action,
-            device_commands::take_recovery_key,
             commands::act,
             commands::page,
-            commands::column_page,
             commands::choices,
             commands::view,
             commands::view_anchored,
             commands::history_menu,
             commands::add,
+            commands::normalize_link,
             commands::title,
             commands::clipboard,
             commands::copy,
             commands::copy_selection,
             commands::paste,
-            commands::export_bookmarks,
             commands::close,
             commands::prepare_drag,
             commands::hover,
-            commands::themes,
             commands::emoji,
             commands::icons
         ])
@@ -889,7 +709,6 @@ pub fn run() -> ExitCode {
                 eprintln!("youarel-launcher: {SHORTCUT} stays unbound ({error}); bind `youarel-launcher {TOGGLE}` to a shortcut of the desktop instead");
             }
             show(app.handle());
-            ticker(app.handle());
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -913,9 +732,6 @@ pub fn run() -> ExitCode {
 }
 
 fn handle_event(handle: &AppHandle, event: &RunEvent) {
-    if matches!(event, RunEvent::Exit) {
-        handle.state::<crate::local_icons::LocalIcons>().cancel();
-    }
     if reopened(event) {
         show(handle);
     }

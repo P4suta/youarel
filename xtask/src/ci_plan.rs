@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 use youarel_core::verification_rules::{self, Confidence, Job, Selection, Stage};
 
-const SCHEMA: u8 = 1;
+const SCHEMA: u8 = 2;
 
 /// The workflow's stable rendering of a verification job.
 #[must_use]
@@ -15,7 +15,6 @@ pub const fn job_name(job: Job) -> &'static str {
         Job::Check => "check",
         Job::Kani => "kani",
         Job::Quint => "quint",
-        Job::Proverif => "proverif",
         Job::Miri => "miri",
         Job::Fuzz => "fuzz",
         Job::Mutants => "mutants",
@@ -65,7 +64,6 @@ impl Plan {
         for (job, present) in [
             (Job::Kani, !self.proofs.kani.is_empty()),
             (Job::Quint, !self.proofs.quint.is_empty()),
-            (Job::Proverif, !self.proofs.proverif.is_empty()),
             (Job::Miri, !self.proofs.miri.is_empty()),
             (Job::Fuzz, !self.proofs.fuzz.is_empty()),
             (Job::Mutants, !self.proofs.mutants.is_empty()),
@@ -184,11 +182,7 @@ fn classify(root: &Path, paths: &[String]) -> Result<Reason> {
         if !fs::is_file(&root.join(path))? {
             return Ok(Reason::DeletedInput);
         }
-        if prose(path)
-            || path.starts_with("app/")
-            || path.starts_with("crates/")
-            || path.starts_with("server/src/")
-        {
+        if prose(path) || path.starts_with("app/") || path.starts_with("crates/") {
             continue;
         }
         return Ok(Reason::UnknownInput);
@@ -284,7 +278,7 @@ mod tests {
         fs::write(&root.join("app/ui/main.ts"), b"const first: number = 1;\n").unwrap();
         fs::write(&root.join("README.md"), b"Fixture.\n").unwrap();
         fs::write(&root.join("fuzz/fuzz_targets/parse.rs"), b"fn main() {}\n").unwrap();
-        fs::write(&root.join(obligations::MANIFEST), b"[[obligation]]\nverifier = 'kani'\nsource = 'crates/youarel-core/src/rules.rs'\nharnesses = []\nprobes = []\n[[obligation]]\nverifier = 'quint'\nspec = 'specs/test.qnt'\nmain = 'test'\nprobe = 'probe'\ninvariant = 'safe'\nwitnesses = []\nseed = '0x2a'\nsamples = 1\nsteps = 1\ndistinct_states = 1\ntraces = 1\n[[obligation]]\nverifier = 'proverif'\nmodel = 'specs/test.pv'\nlibrary = 'specs/primitives.pvl'\nqueries = 1\nprobe = 'specs/probe.pv'\n").unwrap();
+        fs::write(&root.join(obligations::MANIFEST), b"[[obligation]]\nverifier = 'kani'\nsource = 'crates/youarel-core/src/rules.rs'\nharnesses = []\nprobes = []\n[[obligation]]\nverifier = 'quint'\nspec = 'specs/test.qnt'\nmain = 'test'\nprobe = 'probe'\ninvariant = 'safe'\nwitnesses = []\nseed = '0x2a'\nsamples = 1\nsteps = 1\ndistinct_states = 1\ntraces = 1\n").unwrap();
         snapshot(root);
         directory
     }
@@ -300,7 +294,6 @@ mod tests {
         assert!(development.jobs().includes(Job::Check));
         assert!(development.jobs().includes(Job::App));
         assert!(!development.jobs().includes(Job::Mutants));
-        assert!(!development.jobs().includes(Job::Proverif));
         let candidate = build(root, &base, true).unwrap();
         assert_eq!(candidate.jobs(), Selection::all());
         assert_eq!(
@@ -331,7 +324,11 @@ mod tests {
             root,
             &base,
             false,
-            &text.replacen("\"schema\":1", "\"schema\":1,\"extra\":true", 1),
+            &text.replacen(
+                &format!("\"schema\":{SCHEMA}"),
+                &format!("\"schema\":{SCHEMA},\"extra\":true"),
+                1,
+            ),
         )
         .unwrap_err();
         fs::write(&root.join("app/ui/main.ts"), b"const dirty: number = 3;\n").unwrap();

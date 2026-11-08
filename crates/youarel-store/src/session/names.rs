@@ -1,7 +1,4 @@
-use super::{
-    Session,
-    publication::{DirtyRecord, dirty_key},
-};
+use super::Session;
 use crate::{
     StoreError,
     database::{DEVICE_NAMES, failed, open},
@@ -78,7 +75,6 @@ impl Session {
             .insert(id.0.as_slice(), writer.finish().as_slice())
             .map_err(failed)?;
         self.observe([name.stamp]);
-        self.record_dirty_key(&dirty_key(DirtyRecord::Device(id)), [name.stamp])?;
         self.changed = true;
         Ok(())
     }

@@ -1,13 +1,12 @@
-use super::{Body, DeviceTable, Record, decode_body, decode_device, encode_body, encode_device};
+use super::{Body, DeviceTable, decode_body, decode_device, encode_body, encode_device};
 use crate::{
     clock_rules::{DeviceId, Stamp},
     device_rules::{LONGEST_NAME, MemberId},
     merge_rules::Register,
-    segment_rules::Parts,
     state::{Edit, EditError, State},
     wire_rules::{Reader, WireError, Writer},
 };
-use alloc::{string::String, vec::Vec};
+use alloc::string::String;
 
 const FIRST: MemberId = MemberId([1; 32]);
 const SECOND: MemberId = MemberId([2; 32]);
@@ -128,32 +127,4 @@ fn name_records_refuse_unknown_writers_invalid_names_duplicates_and_old_bodies()
         .unwrap()
         .copy_from_slice(&1u16.to_be_bytes());
     assert_eq!(decode_body(&old), Err(WireError::Version(1)));
-}
-
-#[test]
-fn device_names_stay_whole_across_parts_and_keep_their_writer_dictionary() {
-    let mut parts = Parts::new(100).unwrap();
-    let mut emitted = Vec::new();
-    let names = [FIRST, SECOND].map(|id| {
-        (
-            id,
-            Register {
-                value: String::from("a device"),
-                stamp: at(1),
-            },
-        )
-    });
-    for (id, name) in &names {
-        if let Some(bytes) = parts.push(Record::Device(*id, name.clone())).unwrap() {
-            emitted.push(bytes);
-        }
-    }
-    emitted.push(parts.finish().unwrap());
-    assert_eq!(emitted.len(), 2);
-    let mut received = Vec::new();
-    for bytes in emitted {
-        assert!(bytes.len() <= 100);
-        received.extend(decode_body(&bytes).unwrap().devices);
-    }
-    assert_eq!(received, names);
 }

@@ -5,6 +5,8 @@
 use core::fmt;
 use youarel_core::link_rules::{self, Parts, Refusal, Scheme};
 
+const HTTPS_PREFIX: &str = "https://";
+
 /// A link the core admitted, held in the parser's normalized serialization.
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub struct Link {
@@ -22,6 +24,49 @@ pub enum LinkError {
 }
 
 impl Link {
+    /// Completes a web address entered by a person before strict parsing.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`LinkError`] when the input is not an admitted web address.
+    pub fn from_input(text: &str) -> Result<Self, LinkError> {
+        let text = text.trim();
+        let error = match Self::parse(text) {
+            Ok(link) => return Ok(link),
+            Err(error) => error,
+        };
+        let authority = text.split(['/', '?', '#']).next().unwrap_or_default();
+        let has_port = authority.rsplit_once(':').is_some_and(|(_, port)| {
+            !port.is_empty() && port.bytes().all(|byte| byte.is_ascii_digit())
+        });
+        if !(matches!(
+            error,
+            LinkError::Syntax(url::ParseError::RelativeUrlWithoutBase)
+        ) || error == LinkError::Refused(Refusal::Scheme) && has_port)
+        {
+            return Err(error);
+        }
+        if authority.is_empty() || authority.contains(['@', '\\']) {
+            return Err(error);
+        }
+        let completed = Self::parse(&format!("{HTTPS_PREFIX}{text}"))?;
+        let recognized = match completed.url.host() {
+            Some(url::Host::Domain(host)) => {
+                let host = host.trim_end_matches('.');
+                host == "localhost"
+                    || (host.contains('.') && host.split('.').all(|label| !label.is_empty()))
+            }
+            Some(url::Host::Ipv4(_)) => authority.contains('.'),
+            Some(url::Host::Ipv6(_)) => true,
+            None => false,
+        };
+        if recognized {
+            Ok(completed)
+        } else {
+            Err(error)
+        }
+    }
+
     /// The link `text` names, normalized by the WHATWG URL standard.
     ///
     /// # Errors
@@ -108,6 +153,80 @@ impl std::error::Error for LinkError {
 mod tests {
     use super::{Link, LinkError};
     use youarel_core::link_rules::{Refusal, Scheme};
+
+    #[test]
+    fn typed_host_addresses_default_to_https_and_preserve_their_parts() {
+        for (input, expected) in [
+            ("google.com", "https://google.com/"),
+            (" www.google.com ", "https://www.google.com/"),
+            (
+                "GOOGLE.com/search?q=rust#results",
+                "https://google.com/search?q=rust#results",
+            ),
+            ("google.com:8443/path", "https://google.com:8443/path"),
+            (
+                "例え.jp/日本語",
+                "https://xn--r8jz45g.jp/%E6%97%A5%E6%9C%AC%E8%AA%9E",
+            ),
+            ("例え。jp", "https://xn--r8jz45g.jp/"),
+            ("localhost:5173/path", "https://localhost:5173/path"),
+            ("127.0.0.1:8080/path", "https://127.0.0.1:8080/path"),
+            ("[::1]:8080/path", "https://[::1]:8080/path"),
+            (
+                "google.com/?next=http://example.com",
+                "https://google.com/?next=http://example.com",
+            ),
+        ] {
+            let link = Link::from_input(input).unwrap();
+            assert_eq!(link.as_str(), expected, "{input}");
+            assert_eq!(Link::parse(link.as_str()).unwrap(), link);
+        }
+    }
+
+    #[test]
+    fn explicit_web_schemes_keep_their_meaning() {
+        for input in [
+            "http://google.com/",
+            "HTTPS://GOOGLE.COM/path",
+            "http://router/",
+            "https://user:pass@example.com/",
+        ] {
+            assert_eq!(Link::from_input(input), Link::parse(input));
+        }
+    }
+
+    #[test]
+    fn completion_does_not_turn_unrelated_input_into_a_web_address() {
+        for input in [
+            "",
+            "hello",
+            "123",
+            "not a website",
+            ".",
+            "..",
+            "./google.com",
+            "../google.com",
+            "/google.com",
+            "?q=google.com",
+            "#google.com",
+            "me@google.com",
+            "user:pass@google.com",
+            "javascript:alert(1)",
+            "javascript:123/path.com",
+            "data:text/html,<p>",
+            "file:///tmp/index.html",
+            "ftp://google.com/",
+            "mailto:me@google.com",
+            "custom.scheme://google.com",
+            "custom.scheme:run",
+            "http://",
+            "https://exa mple.com",
+            "google.com:99999",
+            "\\\\google.com\\share",
+        ] {
+            assert!(Link::from_input(input).is_err(), "{input}");
+        }
+    }
 
     #[test]
     fn web_links_are_admitted_in_their_normalized_form() {

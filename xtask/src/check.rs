@@ -333,6 +333,7 @@ fn everything(root: &Path, native_app: bool) -> Result<()> {
     report.stage("taplo", || taplo(root, None));
     report.stage("typos", || typos(root, None));
     report.stage("clippy", || clippy(root));
+    report.stage("release versions", || crate::release::check_proposal(root));
     report.stage("app", || {
         if native_app {
             app(root)

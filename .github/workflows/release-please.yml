@@ -1,0 +1,51 @@
+name: Release proposal
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-please
+  cancel-in-progress: false
+
+jobs:
+  proposal:
+    name: Prepare the release proposal
+    if: github.repository == 'P4suta/youarel' && github.ref == 'refs/heads/main' && github.ref_protected && vars.RELEASE_PROPOSALS_ENABLED == 'true'
+    runs-on: ubuntu-26.04
+    timeout-minutes: 20
+    environment: release-please
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: jdx/mise-action@f5be966e4a917d54244728e6a5fdcd1d93a35e6c # v5.2.6
+        with:
+          install_args: rust node
+          cache: false
+      - name: Prepare the locked proposal controller without App credentials
+        run: |
+          npm ci --prefix xtask/release-please --ignore-scripts --no-audit --no-fund
+          cargo build --locked --package xtask
+      - name: Mint the repository token
+        id: app
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ secrets.RELEASE_PLEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_PLEASE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
+          permission-issues: write
+          permission-pull-requests: write
+      - name: Propose the product version
+        env:
+          RELEASE_PROPOSALS_ENABLED: ${{ vars.RELEASE_PROPOSALS_ENABLED }}
+          RELEASE_PLEASE_TOKEN: ${{ steps.app.outputs.token }}
+        run: ./target/debug/xtask release propose

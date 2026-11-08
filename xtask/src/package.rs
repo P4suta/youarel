@@ -244,6 +244,7 @@ pub struct Control<'a> {
     pub maintainer: &'a str,
     pub homepage: &'a str,
     pub summary: &'a str,
+    pub depends: &'a str,
 }
 
 /// A Debian package that installs `files`, which hold paths below the root such as `usr/bin/youarel`.
@@ -255,13 +256,14 @@ pub fn deb(control: &Control<'_>, files: &[Entry], time: u64) -> Result<Vec<u8>>
     let installed: usize = files.iter().map(|file| file.bytes.len()).sum();
     let kibibytes = installed.div_ceil(KIBIBYTE);
     let text = format!(
-        "Package: {}\nVersion: {}\nArchitecture: {}\nMaintainer: {}\nInstalled-Size: {kibibytes}\nSection: web\nPriority: optional\nHomepage: {}\nDescription: {}\n",
+        "Package: {}\nVersion: {}\nArchitecture: {}\nMaintainer: {}\nInstalled-Size: {kibibytes}\nSection: web\nPriority: optional\nHomepage: {}\nDescription: {}\nDepends: {}\n",
         control.package,
         control.version,
         control.architecture,
         control.maintainer,
         control.homepage,
-        control.summary
+        control.summary,
+        control.depends
     );
     let control_entry = Entry {
         path: String::from("control"),
@@ -329,6 +331,7 @@ mod tests {
             maintainer: "P4suta",
             homepage: "https://github.com/P4suta/youarel",
             summary: "web shortcuts",
+            depends: "libc6",
         };
         let file = Entry {
             path: String::from("usr/bin/youarel"),

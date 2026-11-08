@@ -26,6 +26,15 @@ mod raw {
         std::fs::metadata(path)
     }
 
+    pub(super) fn symlink_metadata(path: &Path) -> std::io::Result<std::fs::Metadata> {
+        std::fs::symlink_metadata(path)
+    }
+
+    #[cfg(unix)]
+    pub(super) fn symlink(target: &Path, link: &Path) -> std::io::Result<()> {
+        std::os::unix::fs::symlink(target, link)
+    }
+
     pub(super) fn available_space(path: &Path) -> std::io::Result<u64> {
         fs4::available_space(path)
     }
@@ -96,6 +105,31 @@ const PRIVATE_MODE: u32 = 0o600;
 /// The mode of a program's file: its owner may write it, and everyone may read and run it.
 #[cfg(unix)]
 const EXECUTABLE_MODE: u32 = 0o755;
+
+/// # Errors
+///
+/// Reports unreadable metadata without following a symbolic link.
+pub fn entry_metadata(path: &Path) -> Result<std::fs::Metadata> {
+    raw::symlink_metadata(path).with_context(|| format!("inspect {}", path.display()))
+}
+
+/// # Errors
+///
+/// Reports a failed installer link creation or an unsupported host.
+pub fn symlink(target: &Path, link: &Path) -> Result<()> {
+    #[cfg(unix)]
+    {
+        raw::symlink(target, link).with_context(|| format!("link {}", link.display()))
+    }
+    #[cfg(not(unix))]
+    {
+        anyhow::bail!(
+            "installer link {} to {} requires Unix",
+            link.display(),
+            target.display()
+        )
+    }
+}
 
 #[derive(Debug)]
 pub struct RunLock {

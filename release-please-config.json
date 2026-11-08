@@ -1,0 +1,47 @@
+{
+	"$schema": "https://raw.githubusercontent.com/googleapis/release-please/v17.11.2/schemas/config.json",
+	"release-type": "simple",
+	"bootstrap-sha": "d0fbc7afcb58bed077e9be67a956d9202e96df55",
+	"include-component-in-tag": false,
+	"include-v-in-tag": true,
+	"bump-minor-pre-major": true,
+	"bump-patch-for-minor-pre-major": true,
+	"packages": {
+		".": {
+			"package-name": "youarel",
+			"changelog-path": "CHANGELOG.md",
+			"extra-files": [
+				{
+					"type": "toml",
+					"path": "Cargo.toml",
+					"jsonpath": "$.workspace.package.version"
+				},
+				{
+					"type": "toml",
+					"path": "app/Cargo.toml",
+					"jsonpath": "$.package.version"
+				},
+				{
+					"type": "json",
+					"path": "app/tauri.conf.json",
+					"jsonpath": "$.version"
+				},
+				{
+					"type": "toml",
+					"path": "Cargo.lock",
+					"jsonpath": "$.package[?(@.name.value == 'youarel-core' || @.name.value == 'youarel-html' || @.name.value == 'youarel-icon' || @.name.value == 'youarel-link' || @.name.value == 'youarel-release' || @.name.value == 'youarel-store' || @.name.value == 'youarel-cli' || @.name.value == 'xtask')].version"
+				},
+				{
+					"type": "toml",
+					"path": "app/Cargo.lock",
+					"jsonpath": "$.package[?(@.name.value == 'youarel-core' || @.name.value == 'youarel-html' || @.name.value == 'youarel-icon' || @.name.value == 'youarel-link' || @.name.value == 'youarel-release' || @.name.value == 'youarel-store' || @.name.value == 'youarel-cli' || @.name.value == 'youarel-launcher')].version"
+				},
+				{
+					"type": "toml",
+					"path": "fuzz/Cargo.lock",
+					"jsonpath": "$.package[?(@.name.value == 'youarel-core' || @.name.value == 'youarel-html' || @.name.value == 'youarel-icon' || @.name.value == 'youarel-link' || @.name.value == 'youarel-release' || @.name.value == 'youarel-store')].version"
+				}
+			]
+		}
+	}
+}

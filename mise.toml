@@ -22,6 +22,8 @@ zizmor = "1.31.1"
 gh = "2.102.0"
 node = "24.22.0"
 "npm:typescript" = "7.0.2"
+"npm:@tauri-apps/cli" = "2.12.4"
+"cargo:cargo-cyclonedx" = "0.5.10"
 
 [settings]
 lockfile = true

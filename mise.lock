@@ -56,36 +56,43 @@ specifiers = ["0.20.2"]
 
 [tools."aqua:EmbarkStudios/cargo-deny"."platforms.linux-arm64"]
 checksum = "sha256:995c82be0defc7a025cae49a2aa2644ce8245c9a3318fc4103907c6a285e8c7d"
+checksum_source = "mise-versions"
 url = "https://github.com/EmbarkStudios/cargo-deny/releases/download/0.20.2/cargo-deny-0.20.2-aarch64-unknown-linux-musl.tar.gz"
 url_api = "https://api.github.com/repos/EmbarkStudios/cargo-deny/releases/assets/471598345"
 
 [tools."aqua:EmbarkStudios/cargo-deny"."platforms.linux-arm64-musl"]
 checksum = "sha256:995c82be0defc7a025cae49a2aa2644ce8245c9a3318fc4103907c6a285e8c7d"
+checksum_source = "mise-versions"
 url = "https://github.com/EmbarkStudios/cargo-deny/releases/download/0.20.2/cargo-deny-0.20.2-aarch64-unknown-linux-musl.tar.gz"
 url_api = "https://api.github.com/repos/EmbarkStudios/cargo-deny/releases/assets/471598345"
 
 [tools."aqua:EmbarkStudios/cargo-deny"."platforms.linux-x64"]
 checksum = "sha256:9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f"
+checksum_source = "mise-versions"
 url = "https://github.com/EmbarkStudios/cargo-deny/releases/download/0.20.2/cargo-deny-0.20.2-x86_64-unknown-linux-musl.tar.gz"
 url_api = "https://api.github.com/repos/EmbarkStudios/cargo-deny/releases/assets/471598214"
 
 [tools."aqua:EmbarkStudios/cargo-deny"."platforms.linux-x64-musl"]
 checksum = "sha256:9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f"
+checksum_source = "mise-versions"
 url = "https://github.com/EmbarkStudios/cargo-deny/releases/download/0.20.2/cargo-deny-0.20.2-x86_64-unknown-linux-musl.tar.gz"
 url_api = "https://api.github.com/repos/EmbarkStudios/cargo-deny/releases/assets/471598214"
 
 [tools."aqua:EmbarkStudios/cargo-deny"."platforms.macos-arm64"]
 checksum = "sha256:fe67d82a10d8597a3549364cb733a3f9cc1bfff9031b7ae46384a9f2a72090c3"
+checksum_source = "mise-versions"
 url = "https://github.com/EmbarkStudios/cargo-deny/releases/download/0.20.2/cargo-deny-0.20.2-aarch64-apple-darwin.tar.gz"
 url_api = "https://api.github.com/repos/EmbarkStudios/cargo-deny/releases/assets/471597689"
 
 [tools."aqua:EmbarkStudios/cargo-deny"."platforms.macos-x64"]
 checksum = "sha256:248da7f581724e470071990c088ffc55c811981715f4cbdb258621fb79f8b7a6"
+checksum_source = "mise-versions"
 url = "https://github.com/EmbarkStudios/cargo-deny/releases/download/0.20.2/cargo-deny-0.20.2-x86_64-apple-darwin.tar.gz"
 url_api = "https://api.github.com/repos/EmbarkStudios/cargo-deny/releases/assets/471598357"
 
 [tools."aqua:EmbarkStudios/cargo-deny"."platforms.windows-x64"]
 checksum = "sha256:975a22143262fd27476d19ee00c7af67978426e40e1dee94eed6bbade1cf87dc"
+checksum_source = "mise-versions"
 url = "https://github.com/EmbarkStudios/cargo-deny/releases/download/0.20.2/cargo-deny-0.20.2-x86_64-pc-windows-msvc.tar.gz"
 url_api = "https://api.github.com/repos/EmbarkStudios/cargo-deny/releases/assets/471599057"
 
@@ -96,26 +103,31 @@ specifiers = ["1.1.11"]
 
 [tools."aqua:crate-ci/committed"."platforms.linux-x64"]
 checksum = "sha256:1e5c20049eeaa4633e6798283913f92dc90a97f2b5c6dfc28e8c4b7e77a67157"
+checksum_source = "mise-versions"
 url = "https://github.com/crate-ci/committed/releases/download/v1.1.11/committed-v1.1.11-x86_64-unknown-linux-musl.tar.gz"
 url_api = "https://api.github.com/repos/crate-ci/committed/releases/assets/361544963"
 
 [tools."aqua:crate-ci/committed"."platforms.linux-x64-musl"]
 checksum = "sha256:1e5c20049eeaa4633e6798283913f92dc90a97f2b5c6dfc28e8c4b7e77a67157"
+checksum_source = "mise-versions"
 url = "https://github.com/crate-ci/committed/releases/download/v1.1.11/committed-v1.1.11-x86_64-unknown-linux-musl.tar.gz"
 url_api = "https://api.github.com/repos/crate-ci/committed/releases/assets/361544963"
 
 [tools."aqua:crate-ci/committed"."platforms.macos-arm64"]
 checksum = "sha256:b1718d951c8a90539ffb7a81145fdadf81c6c9a1f17560be433a74c5b3f7bfca"
+checksum_source = "mise-versions"
 url = "https://github.com/crate-ci/committed/releases/download/v1.1.11/committed-v1.1.11-x86_64-apple-darwin.tar.gz"
 url_api = "https://api.github.com/repos/crate-ci/committed/releases/assets/361544941"
 
 [tools."aqua:crate-ci/committed"."platforms.macos-x64"]
 checksum = "sha256:b1718d951c8a90539ffb7a81145fdadf81c6c9a1f17560be433a74c5b3f7bfca"
+checksum_source = "mise-versions"
 url = "https://github.com/crate-ci/committed/releases/download/v1.1.11/committed-v1.1.11-x86_64-apple-darwin.tar.gz"
 url_api = "https://api.github.com/repos/crate-ci/committed/releases/assets/361544941"
 
 [tools."aqua:crate-ci/committed"."platforms.windows-x64"]
 checksum = "sha256:af4f5a65320471751ed1dfbb5502f15f4857cea797b077c6049acb2b995d293b"
+checksum_source = "mise-versions"
 url = "https://github.com/crate-ci/committed/releases/download/v1.1.11/committed-v1.1.11-x86_64-pc-windows-msvc.zip"
 url_api = "https://api.github.com/repos/crate-ci/committed/releases/assets/361545840"
 
@@ -126,36 +138,49 @@ specifiers = ["0.9.146"]
 
 [tools."aqua:nextest-rs/nextest/cargo-nextest"."platforms.linux-arm64"]
 checksum = "sha256:b2e33d7c72de7ade0ff7b3a948ac37516b24f8a836b7a8870c1f634a94be9de9"
+checksum_source = "mise-versions"
 url = "https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-0.9.146/cargo-nextest-0.9.146-aarch64-unknown-linux-gnu.tar.gz"
 url_api = "https://api.github.com/repos/nextest-rs/nextest/releases/assets/579608024"
 
 [tools."aqua:nextest-rs/nextest/cargo-nextest"."platforms.linux-arm64-musl"]
 checksum = "sha256:b2e33d7c72de7ade0ff7b3a948ac37516b24f8a836b7a8870c1f634a94be9de9"
+checksum_source = "mise-versions"
 url = "https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-0.9.146/cargo-nextest-0.9.146-aarch64-unknown-linux-gnu.tar.gz"
 url_api = "https://api.github.com/repos/nextest-rs/nextest/releases/assets/579608024"
 
 [tools."aqua:nextest-rs/nextest/cargo-nextest"."platforms.linux-x64"]
 checksum = "sha256:682c21b777c333e96fd532e114d3a5a894e0729ab88d94c0a9f20f8419695428"
+checksum_source = "mise-versions"
 url = "https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-0.9.146/cargo-nextest-0.9.146-x86_64-unknown-linux-gnu.tar.gz"
 url_api = "https://api.github.com/repos/nextest-rs/nextest/releases/assets/579609342"
 
 [tools."aqua:nextest-rs/nextest/cargo-nextest"."platforms.linux-x64-musl"]
 checksum = "sha256:b64617e8640624e8f9ba99819e37d7971154e97836d7ae4774fed4715501a6aa"
+checksum_source = "mise-versions"
 url = "https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-0.9.146/cargo-nextest-0.9.146-x86_64-unknown-linux-musl.tar.gz"
 url_api = "https://api.github.com/repos/nextest-rs/nextest/releases/assets/579610024"
 
 [tools."aqua:nextest-rs/nextest/cargo-nextest"."platforms.macos-arm64"]
 checksum = "sha256:39785160b3c2f6ed9a765049cf4fa79f3b39aa02eb7598a5a0e2a1a0b9ffb9a8"
+checksum_source = "mise-versions"
 url = "https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-0.9.146/cargo-nextest-0.9.146-universal-apple-darwin.tar.gz"
 url_api = "https://api.github.com/repos/nextest-rs/nextest/releases/assets/579630774"
 
 [tools."aqua:nextest-rs/nextest/cargo-nextest"."platforms.macos-x64"]
 checksum = "sha256:39785160b3c2f6ed9a765049cf4fa79f3b39aa02eb7598a5a0e2a1a0b9ffb9a8"
+checksum_source = "mise-versions"
 url = "https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-0.9.146/cargo-nextest-0.9.146-universal-apple-darwin.tar.gz"
 url_api = "https://api.github.com/repos/nextest-rs/nextest/releases/assets/579630774"
 
+[tools."aqua:nextest-rs/nextest/cargo-nextest"."platforms.windows-arm64"]
+checksum = "sha256:809b01f2c94d031ab6cf5f4d4a4f477c8f51b69c96ab3cb2fe4db7ecb222d0d3"
+checksum_source = "mise-versions"
+url = "https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-0.9.146/cargo-nextest-0.9.146-x86_64-pc-windows-msvc.tar.gz"
+url_api = "https://api.github.com/repos/nextest-rs/nextest/releases/assets/579617057"
+
 [tools."aqua:nextest-rs/nextest/cargo-nextest"."platforms.windows-x64"]
 checksum = "sha256:809b01f2c94d031ab6cf5f4d4a4f477c8f51b69c96ab3cb2fe4db7ecb222d0d3"
+checksum_source = "mise-versions"
 url = "https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-0.9.146/cargo-nextest-0.9.146-x86_64-pc-windows-msvc.tar.gz"
 url_api = "https://api.github.com/repos/nextest-rs/nextest/releases/assets/579617057"
 
@@ -166,38 +191,50 @@ specifiers = ["0.22.2"]
 
 [tools."aqua:rustsec/rustsec/cargo-audit"."platforms.linux-arm64"]
 checksum = "sha256:c6603814ddaa45e51263dafd31c0ac98808f688d26f7395804f9670b0fd599dd"
+checksum_source = "mise-versions"
 url = "https://github.com/rustsec/rustsec/releases/download/cargo-audit/v0.22.2/cargo-audit-aarch64-unknown-linux-gnu-v0.22.2.tgz"
 url_api = "https://api.github.com/repos/rustsec/rustsec/releases/assets/439292355"
 
 [tools."aqua:rustsec/rustsec/cargo-audit"."platforms.linux-arm64-musl"]
 checksum = "sha256:c6603814ddaa45e51263dafd31c0ac98808f688d26f7395804f9670b0fd599dd"
+checksum_source = "mise-versions"
 url = "https://github.com/rustsec/rustsec/releases/download/cargo-audit/v0.22.2/cargo-audit-aarch64-unknown-linux-gnu-v0.22.2.tgz"
 url_api = "https://api.github.com/repos/rustsec/rustsec/releases/assets/439292355"
 
 [tools."aqua:rustsec/rustsec/cargo-audit"."platforms.linux-x64"]
 checksum = "sha256:ab28a1bdb54db4d5d8ad5981cf1f959410370b3d28250dbd35f6a44248620e39"
+checksum_source = "mise-versions"
 url = "https://github.com/rustsec/rustsec/releases/download/cargo-audit/v0.22.2/cargo-audit-x86_64-unknown-linux-gnu-v0.22.2.tgz"
 url_api = "https://api.github.com/repos/rustsec/rustsec/releases/assets/439291614"
 
 [tools."aqua:rustsec/rustsec/cargo-audit"."platforms.linux-x64-musl"]
 checksum = "sha256:7fb9497f8594b389e5fce5ef9b92db08432996895b2e0c5a0167a69ed445c428"
+checksum_source = "mise-versions"
 url = "https://github.com/rustsec/rustsec/releases/download/cargo-audit/v0.22.2/cargo-audit-x86_64-unknown-linux-musl-v0.22.2.tgz"
 url_api = "https://api.github.com/repos/rustsec/rustsec/releases/assets/439292222"
 
 [tools."aqua:rustsec/rustsec/cargo-audit"."platforms.macos-arm64"]
 checksum = "sha256:847831323de932155b226ab60ee4a180e13e5d007a019f0d4b7b4d89a6de2ab2"
+checksum_source = "mise-versions"
 url = "https://github.com/rustsec/rustsec/releases/download/cargo-audit/v0.22.2/cargo-audit-x86_64-apple-darwin-v0.22.2.tgz"
 url_api = "https://api.github.com/repos/rustsec/rustsec/releases/assets/439292734"
 
 [tools."aqua:rustsec/rustsec/cargo-audit"."platforms.macos-x64"]
 checksum = "sha256:847831323de932155b226ab60ee4a180e13e5d007a019f0d4b7b4d89a6de2ab2"
+checksum_source = "mise-versions"
 url = "https://github.com/rustsec/rustsec/releases/download/cargo-audit/v0.22.2/cargo-audit-x86_64-apple-darwin-v0.22.2.tgz"
 url_api = "https://api.github.com/repos/rustsec/rustsec/releases/assets/439292734"
 
 [tools."aqua:rustsec/rustsec/cargo-audit"."platforms.windows-x64"]
 checksum = "sha256:0a7316540862c13d954f648917ceacca593747baed6eec180fafa590be2710ab"
+checksum_source = "mise-versions"
 url = "https://github.com/rustsec/rustsec/releases/download/cargo-audit/v0.22.2/cargo-audit-x86_64-pc-windows-msvc-v0.22.2.zip"
 url_api = "https://api.github.com/repos/rustsec/rustsec/releases/assets/439294720"
+
+[[tools."cargo:cargo-cyclonedx"]]
+version = "0.5.10"
+backend = "cargo:cargo-cyclonedx"
+specifiers = ["0.5.10"]
 
 [[tools."cargo:cargo-fuzz"]]
 version = "0.13.2"
@@ -255,6 +292,12 @@ url = "https://github.com/cli/cli/releases/download/v2.102.0/gh_2.102.0_macOS_am
 url_api = "https://api.github.com/repos/cli/cli/releases/assets/599854716"
 provenance = "github-attestations"
 
+[tools.gh."platforms.windows-arm64"]
+checksum = "sha256:5dcf12aa8525eabd0c46ec414f323ab6cf65229fc2cd46543cc705001bbaf223"
+url = "https://github.com/cli/cli/releases/download/v2.102.0/gh_2.102.0_windows_arm64.zip"
+url_api = "https://api.github.com/repos/cli/cli/releases/assets/599854779"
+provenance = "github-attestations"
+
 [tools.gh."platforms.windows-x64"]
 checksum = "sha256:ae64e556ecc240b200f7eba60d550e4bb60d78e860e69dd88c449405b86067f4"
 url = "https://github.com/cli/cli/releases/download/v2.102.0/gh_2.102.0_windows_amd64.zip"
@@ -268,36 +311,43 @@ specifiers = ["1.59.0"]
 
 [tools.just."platforms.linux-arm64"]
 checksum = "sha256:23871b1702bfd550fb5f901778fd4290ecf2ee034a45a889fbe96d89b188086d"
+checksum_source = "mise-versions"
 url = "https://github.com/casey/just/releases/download/1.59.0/just-1.59.0-aarch64-unknown-linux-musl.tar.gz"
 url_api = "https://api.github.com/repos/casey/just/releases/assets/642950086"
 
 [tools.just."platforms.linux-arm64-musl"]
 checksum = "sha256:23871b1702bfd550fb5f901778fd4290ecf2ee034a45a889fbe96d89b188086d"
+checksum_source = "mise-versions"
 url = "https://github.com/casey/just/releases/download/1.59.0/just-1.59.0-aarch64-unknown-linux-musl.tar.gz"
 url_api = "https://api.github.com/repos/casey/just/releases/assets/642950086"
 
 [tools.just."platforms.linux-x64"]
 checksum = "sha256:409044617b6f06517c1035e55ca38c8c856ff8b650e41bc2aa1ef82d5903a23e"
+checksum_source = "mise-versions"
 url = "https://github.com/casey/just/releases/download/1.59.0/just-1.59.0-x86_64-unknown-linux-musl.tar.gz"
 url_api = "https://api.github.com/repos/casey/just/releases/assets/642949555"
 
 [tools.just."platforms.linux-x64-musl"]
 checksum = "sha256:409044617b6f06517c1035e55ca38c8c856ff8b650e41bc2aa1ef82d5903a23e"
+checksum_source = "mise-versions"
 url = "https://github.com/casey/just/releases/download/1.59.0/just-1.59.0-x86_64-unknown-linux-musl.tar.gz"
 url_api = "https://api.github.com/repos/casey/just/releases/assets/642949555"
 
 [tools.just."platforms.macos-arm64"]
 checksum = "sha256:6574cea774ed4cae12e24b6aa11857de33e80dab4667cf628fd5840df96a2a9d"
+checksum_source = "mise-versions"
 url = "https://github.com/casey/just/releases/download/1.59.0/just-1.59.0-aarch64-apple-darwin.tar.gz"
 url_api = "https://api.github.com/repos/casey/just/releases/assets/643129724"
 
 [tools.just."platforms.macos-x64"]
 checksum = "sha256:036ead9df9bc31dbae9934ae3b4236ed124d0bafcffd33439460ae084d5c9cb7"
+checksum_source = "mise-versions"
 url = "https://github.com/casey/just/releases/download/1.59.0/just-1.59.0-x86_64-apple-darwin.tar.gz"
 url_api = "https://api.github.com/repos/casey/just/releases/assets/643131819"
 
 [tools.just."platforms.windows-x64"]
 checksum = "sha256:9c5463e2d0974e31bee71346aa5cbf19167de1585a4abc1bae7b3b04604ea9c0"
+checksum_source = "mise-versions"
 url = "https://github.com/casey/just/releases/download/1.59.0/just-1.59.0-x86_64-pc-windows-msvc.zip"
 url_api = "https://api.github.com/repos/casey/just/releases/assets/643131303"
 
@@ -377,9 +427,19 @@ url = "https://nodejs.org/dist/v24.22.0/node-v24.22.0-darwin-arm64.tar.gz"
 checksum = "sha256:495e3f273c645f3c4677d438304cdfc701729ea5dec5728f5c8e76a2dece4b91"
 url = "https://nodejs.org/dist/v24.22.0/node-v24.22.0-darwin-x64.tar.gz"
 
+[tools.node."platforms.windows-arm64"]
+checksum = "sha256:3a5c209a5bc59e65b3bc0fa13ed5e166a26bd3d55332847f498b76b037408d61"
+url = "https://nodejs.org/dist/v24.22.0/node-v24.22.0-win-arm64.zip"
+
 [tools.node."platforms.windows-x64"]
 checksum = "sha256:f9683a19877e12a9b167305c8db71040d812876359de21f0d2e97c3f321f80c3"
 url = "https://nodejs.org/dist/v24.22.0/node-v24.22.0-win-x64.zip"
+
+[[tools."npm:@tauri-apps/cli"]]
+version = "2.12.4"
+aube = { path = ".mise/locks/npm-tauri-apps-cli/2.12.4", digest = "sha256:46621deddd319661d878332adea952cd3b4ff431918412c8576364c12d651eb6" }
+backend = "npm:@tauri-apps/cli"
+specifiers = ["2.12.4"]
 
 [[tools."npm:typescript"]]
 version = "7.0.2"
@@ -443,36 +503,43 @@ specifiers = ["1.51.1"]
 
 [tools.typos."platforms.linux-arm64"]
 checksum = "sha256:2ac5e37b3236b3c07dec5cdf1527acf143aec4674a6089b0bf424d021b35e099"
+checksum_source = "mise-versions"
 url = "https://github.com/crate-ci/typos/releases/download/v1.51.1/typos-v1.51.1-aarch64-unknown-linux-musl.tar.gz"
 url_api = "https://api.github.com/repos/crate-ci/typos/releases/assets/616652747"
 
 [tools.typos."platforms.linux-arm64-musl"]
 checksum = "sha256:2ac5e37b3236b3c07dec5cdf1527acf143aec4674a6089b0bf424d021b35e099"
+checksum_source = "mise-versions"
 url = "https://github.com/crate-ci/typos/releases/download/v1.51.1/typos-v1.51.1-aarch64-unknown-linux-musl.tar.gz"
 url_api = "https://api.github.com/repos/crate-ci/typos/releases/assets/616652747"
 
 [tools.typos."platforms.linux-x64"]
 checksum = "sha256:93c301fd4120ff076e2cc2a6d6a61cab4a4bdb81899287c0938b452e56d1f454"
+checksum_source = "mise-versions"
 url = "https://github.com/crate-ci/typos/releases/download/v1.51.1/typos-v1.51.1-x86_64-unknown-linux-musl.tar.gz"
 url_api = "https://api.github.com/repos/crate-ci/typos/releases/assets/616653682"
 
 [tools.typos."platforms.linux-x64-musl"]
 checksum = "sha256:93c301fd4120ff076e2cc2a6d6a61cab4a4bdb81899287c0938b452e56d1f454"
+checksum_source = "mise-versions"
 url = "https://github.com/crate-ci/typos/releases/download/v1.51.1/typos-v1.51.1-x86_64-unknown-linux-musl.tar.gz"
 url_api = "https://api.github.com/repos/crate-ci/typos/releases/assets/616653682"
 
 [tools.typos."platforms.macos-arm64"]
 checksum = "sha256:316d50a32c3726a80ab39c6d12141b70080498973c5e8a9b068b12cde78b10c1"
+checksum_source = "mise-versions"
 url = "https://github.com/crate-ci/typos/releases/download/v1.51.1/typos-v1.51.1-aarch64-apple-darwin.tar.gz"
 url_api = "https://api.github.com/repos/crate-ci/typos/releases/assets/616656668"
 
 [tools.typos."platforms.macos-x64"]
 checksum = "sha256:f3451079971633a7f769fb958fe06b0d64b5f1dc46df0854aa1ddb9a6f4031d6"
+checksum_source = "mise-versions"
 url = "https://github.com/crate-ci/typos/releases/download/v1.51.1/typos-v1.51.1-x86_64-apple-darwin.tar.gz"
 url_api = "https://api.github.com/repos/crate-ci/typos/releases/assets/616660774"
 
 [tools.typos."platforms.windows-x64"]
 checksum = "sha256:518f759fba43205f17a717656054c1d25bc883455a6296989e9d021c6edb7c59"
+checksum_source = "mise-versions"
 url = "https://github.com/crate-ci/typos/releases/download/v1.51.1/typos-v1.51.1-x86_64-pc-windows-msvc.zip"
 url_api = "https://api.github.com/repos/crate-ci/typos/releases/assets/616657506"
 

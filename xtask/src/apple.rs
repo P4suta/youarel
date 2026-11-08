@@ -226,11 +226,6 @@ impl Keychain {
     ///
     /// Rejects missing, invalid, or unexpected distribution identities.
     pub fn verify_identities(&self, application: &str, installer: &str) -> Result<()> {
-        ensure!(
-            application.starts_with("Developer ID Application:")
-                && installer.starts_with("Developer ID Installer:"),
-            "distribution identities must use Developer ID certificates"
-        );
         let listing = tool::capture(
             Tool::Security
                 .command(&self.root)
@@ -238,6 +233,12 @@ impl Keychain {
                 .arg(&self.path),
             "verify imported Developer ID identities",
         )?;
+        println!("Imported public certificate selectors:\n{listing}");
+        ensure!(
+            application.starts_with("Developer ID Application:")
+                && installer.starts_with("Developer ID Installer:"),
+            "configured distribution identity names must use the imported Developer ID publishers"
+        );
         for expected in [application, installer] {
             ensure!(
                 listing.contains(&format!("\"{expected}\"")),
@@ -499,16 +500,19 @@ pub struct NotaryKey<'a> {
     pub issuer: &'a str,
 }
 
-fn notary(root: &Path, key: &NotaryKey<'_>) -> std::process::Command {
+fn notary(root: &Path, key: &NotaryKey<'_>, operation: &str) -> std::process::Command {
     let mut command = Tool::Xcrun.command(root);
-    command.arg("notarytool").arg("--key").arg(key.file).args([
-        "--key-id",
-        key.id,
-        "--issuer",
-        key.issuer,
-        "--output-format",
-        "json",
-    ]);
+    command
+        .args(["notarytool", operation, "--key"])
+        .arg(key.file)
+        .args([
+            "--key-id",
+            key.id,
+            "--issuer",
+            key.issuer,
+            "--output-format",
+            "json",
+        ]);
     command
 }
 
@@ -519,7 +523,7 @@ fn notary(root: &Path, key: &NotaryKey<'_>) -> std::process::Command {
 /// Reports authentication or response failures without submitting an artifact.
 pub fn verify_notary(root: &Path, key: &NotaryKey<'_>) -> Result<()> {
     let reply = tool::capture(
-        notary(root, key).arg("history"),
+        &mut notary(root, key, "history"),
         "verify notarization authentication",
     )?;
     let value: serde_json::Value = serde_json::from_str(&reply)?;
@@ -572,8 +576,8 @@ fn state(reply: &str) -> Result<Notarized> {
 ///
 /// Returns an error when `notarytool` refuses the submission or names none.
 pub fn submit(root: &Path, key: &NotaryKey<'_>, package: &Path) -> Result<String> {
-    let mut command = notary(root, key);
-    command.args(["submit", "--no-wait"]);
+    let mut command = notary(root, key, "submit");
+    command.arg("--no-wait");
     command.arg(package);
     submission(&tool::capture(&mut command, "notarytool submit")?)
 }
@@ -584,8 +588,8 @@ pub fn submit(root: &Path, key: &NotaryKey<'_>, package: &Path) -> Result<String
 ///
 /// Returns an error when the submission is rejected, still pending after the wait, or the staple or the Gatekeeper assessment fails.
 pub fn finish(root: &Path, key: &NotaryKey<'_>, id: &str, package: &Path) -> Result<()> {
-    let mut command = notary(root, key);
-    command.args(["wait", id, "--timeout", NOTARY_TIMEOUT]);
+    let mut command = notary(root, key, "wait");
+    command.args([id, "--timeout", NOTARY_TIMEOUT]);
     match state(&tool::capture(&mut command, "notarytool wait")?)? {
         Notarized::Accepted => {}
         Notarized::Pending => {
@@ -716,5 +720,29 @@ mod tests {
             state("{\"status\":\"Invalid\"}").unwrap(),
             Notarized::Rejected(String::from("Invalid"))
         );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn native_notarytool_accepts_authentication_for_every_subcommand() {
+        const KEY_ID: &str = "TESTKEY1234";
+        const ISSUER: &str = "00000000-0000-0000-0000-000000000000";
+        let root = crate::root().unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let key_path = directory.path().join("fixture.p8");
+        let key = super::NotaryKey {
+            file: &key_path,
+            id: KEY_ID,
+            issuer: ISSUER,
+        };
+        for operation in ["history", "submit", "wait"] {
+            let output = super::notary(&root, &key, operation).output().unwrap();
+            assert!(!output.status.success());
+            assert!(
+                String::from_utf8_lossy(&output.stderr).contains("invalid for '--key"),
+                "{operation}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
     }
 }

@@ -13,6 +13,46 @@ const LOCKFILES: [&str; 3] = ["Cargo.lock", "app/Cargo.lock", "fuzz/Cargo.lock"]
 const CHECK_DIRECTORY: &str = "xtask/release-please";
 const TYPES: &str = "xtask/release-please/tsconfig.json";
 const TESTS: &str = "xtask/release-please/version-updates.test.ts";
+const CLI: &str =
+    "xtask/release-please/node_modules/release-please/build/src/bin/release-please.js";
+
+fn command(root: &Path, token_file: &Path) -> std::process::Command {
+    let mut command = Tool::Node.command(root);
+    command
+        .args([
+            CLI,
+            "release-pr",
+            "--repo-url",
+            "P4suta/youarel",
+            "--target-branch",
+            "main",
+            "--config-file",
+            "release-please-config.json",
+            "--manifest-file",
+            RELEASE_MANIFEST,
+            "--token",
+        ])
+        .arg(token_file);
+    command
+}
+
+pub(super) fn propose(root: &Path) -> Result<()> {
+    ensure!(
+        super::variable("RELEASE_PROPOSALS_ENABLED")?.as_deref() == Some("true")
+            && super::variable("GITHUB_REPOSITORY")?.as_deref() == Some("P4suta/youarel")
+            && super::variable("GITHUB_REF")?.as_deref() == Some("refs/heads/main")
+            && super::variable("GITHUB_REF_PROTECTED")?.as_deref() == Some("true"),
+        "proposals require the enabled protected main workflow"
+    );
+    super::candidate::valid_workflow_source(root)?;
+    let directory = tempfile::tempdir()?;
+    let token = directory.path().join("github-token");
+    fs::write_private(&token, super::required("RELEASE_PLEASE_TOKEN")?.as_bytes())?;
+    tool::succeed(
+        &mut command(root, &token),
+        "propose the product version without tags or releases",
+    )
+}
 
 fn product_package(name: &str) -> bool {
     (name.starts_with("youarel-") && name != "youarel-fuzz") || name == "xtask"
@@ -113,6 +153,21 @@ pub(super) fn check(root: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn proposals_use_the_locked_pr_command_and_pass_only_a_private_token_path() {
+        let token = Path::new("private input/github-token");
+        let command = command(Path::new("."), token);
+        let args: Vec<_> = command.get_args().collect();
+        assert_eq!(args.first().copied(), Some(std::ffi::OsStr::new(CLI)));
+        assert_eq!(
+            args.get(1).copied(),
+            Some(std::ffi::OsStr::new("release-pr"))
+        );
+        assert_eq!(args.last().copied(), Some(token.as_os_str()));
+        assert!(!args.contains(&std::ffi::OsStr::new("github-release")));
+        assert!(!args.contains(&std::ffi::OsStr::new("manifest-release")));
+    }
 
     fn fixture() -> tempfile::TempDir {
         let directory = tempfile::tempdir().unwrap();

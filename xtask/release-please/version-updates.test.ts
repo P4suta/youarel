@@ -1,14 +1,72 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { test } from "node:test";
 import { parse as parseToml } from "@iarna/toml";
+import { GitHub } from "release-please";
 import { GenericJson } from "release-please/build/src/updaters/generic-json.js";
 import { GenericToml } from "release-please/build/src/updaters/generic-toml.js";
+import { coerceOption } from "release-please/build/src/util/coerce-option.js";
 import { Version } from "release-please/build/src/version.js";
 
 const ROOT = resolve(import.meta.dirname, "../..");
 const TARGET_VERSION = Version.parse("0.7.4");
+
+test("the proposal client's repository globs keep matching with the patched minimatch dependency", async (): Promise<void> => {
+	const paths = [
+		"Cargo.lock",
+		"Cargo.toml",
+		"app/Cargo.lock",
+		"app/Cargo.toml",
+		"fuzz/Cargo.lock",
+		"app/notes.lock",
+	];
+	const client = await GitHub.create({
+		owner: "P4suta",
+		repo: "youarel",
+		defaultBranch: "main",
+		fetch: async (input: unknown): Promise<Response> => {
+			assert.equal(typeof input, "string");
+			if (typeof input !== "string")
+				throw new Error("Unexpected request input.");
+			const url = new URL(input);
+			assert.equal(url.origin, "https://api.github.com");
+			assert.equal(url.pathname, "/repos/P4suta/youarel/git/trees/main");
+			const tree = paths.map(
+				(path: string): Record<string, string> => ({
+					path,
+					mode: "100644",
+					type: "blob",
+					sha: "a".repeat(40),
+				}),
+			);
+			return new Response(JSON.stringify({ tree, truncated: false }), {
+				headers: { "content-type": "application/json" },
+			});
+		},
+	});
+	assert.deepEqual(await client.findFilesByGlob("**/Cargo.lock"), [
+		"Cargo.lock",
+		"app/Cargo.lock",
+		"fuzz/Cargo.lock",
+	]);
+	assert.deepEqual(await client.findFilesByGlob("**/*.toml", "app"), [
+		"Cargo.toml",
+	]);
+	assert.deepEqual(await client.findFilesByGlob("**/*.json"), []);
+});
+
+test("the locked CLI reads its token from a private file instead of a process argument", async (): Promise<void> => {
+	const directory = await mkdtemp(join(tmpdir(), "youarel-proposal-"));
+	try {
+		const token = join(directory, "github-token");
+		await writeFile(token, "fixture-token", { mode: 0o600 });
+		assert.equal(coerceOption(token), "fixture-token");
+	} finally {
+		await rm(directory, { recursive: true, force: true });
+	}
+});
 
 interface ParsedFields {
 	readonly [name: string]: unknown;

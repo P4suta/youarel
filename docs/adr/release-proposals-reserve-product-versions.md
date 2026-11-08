@@ -12,17 +12,18 @@ The release hold remains active.
 
 ## Decision
 
-Use the [simple strategy](https://github.com/googleapis/release-please/blob/v17.6.0/docs/customizing.md) with a manifest, Conventional Commits, and typed extra-file updates for owned versions and lockfiles.
+Use the [simple strategy](https://github.com/googleapis/release-please/blob/v17.11.2/docs/customizing.md) with a manifest, Conventional Commits, and typed extra-file updates for owned versions and lockfiles.
 Bootstrap from the last main revision before the bookmark simplification.
 Use the existing release-please App through a repository-scoped token.
-Set [skip-github-release](https://github.com/googleapis/release-please-action/tree/v5.0.0) so proposals create neither tags nor releases.
+Run the locked [release-pr command](https://github.com/googleapis/release-please/blob/v17.11.2/docs/cli.md) for version proposals.
+Use the same release-please version for proposals and updater tests.
 A merged proposal reserves its version until the separate release controller publishes that version.
 Reconcile release labels after confirmed publication.
 
 ## Alternatives
 
 The Rust strategy follows crate releases but doesn't match the private implementation packages.
-Keeping release-plz contradicts the selected proposal tool.
+The action bundles an older library version.
 
 ## Consequences
 

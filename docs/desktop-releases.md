@@ -5,6 +5,10 @@ Merging a proposal creates no tag or GitHub Release.
 The release hold remains active until the owner explicitly lifts it and sets `RELEASES_ENABLED=true`.
 `RELEASE_PROPOSALS_ENABLED` controls automatic proposals independently.
 
+The proposal runtime and updater tests use the same locked release-please package.
+A scoped minimatch override uses the patched release because the upstream range includes [affected versions](https://github.com/advisories/GHSA-g3hv-75wg-m249).
+The normal check verifies token-file input, repository glob matching, version updates, and the dependency audit.
+
 ## Distribution
 
 The native build matrix covers Apple silicon and Intel macOS, x64 and ARM64 Windows, and x64 and ARM64 Linux.
@@ -107,7 +111,7 @@ An already published version requires a new authorized version for a correction.
 
 ## Governing references
 
-[Release-please manifest configuration](https://github.com/googleapis/release-please/blob/v17.6.0/docs/manifest-releaser.md) defines proposal and extra-file behavior.
+[Release-please manifest configuration](https://github.com/googleapis/release-please/blob/v17.11.2/docs/manifest-releaser.md) defines proposal and extra-file behavior.
 [Tauri distribution](https://v2.tauri.app/distribute/) defines the production desktop build and bundle operations.
 [Apple's code-signing guidance](https://developer.apple.com/library/archive/technotes/tn2206/_index.html) explains nested code and distribution signatures.
 [GitHub artifact attestations](https://docs.github.com/en/actions/concepts/security/artifact-attestations) describe provenance verification.

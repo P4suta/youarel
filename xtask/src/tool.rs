@@ -22,10 +22,12 @@ pub const PRODUCTBUILD: &str = "/usr/bin/productbuild";
 pub const PKGUTIL: &str = "/usr/sbin/pkgutil";
 pub const XCRUN: &str = "/usr/bin/xcrun";
 pub const SPCTL: &str = "/usr/sbin/spctl";
+pub const INSTALLER: &str = "/usr/sbin/installer";
 
 /// The TypeScript compiler as npm installs it: a script that Windows runs only by its `.cmd` name.
 const TSC: &str = if cfg!(windows) { "tsc.cmd" } else { "tsc" };
 const NPM: &str = if cfg!(windows) { "npm.cmd" } else { "npm" };
+const TAURI: &str = if cfg!(windows) { "tauri.cmd" } else { "tauri" };
 
 mod raw {
     #![expect(
@@ -70,6 +72,12 @@ pub enum Tool {
     Tsc,
     Npm,
     Node,
+    Tauri,
+    Curl,
+    Doppler,
+    Sudo,
+    Dpkg,
+    Installer,
     /// The macOS tools of a release, by their fixed system paths.
     Security,
     Codesign,
@@ -100,6 +108,12 @@ impl Tool {
             Self::Tsc => TSC,
             Self::Npm => NPM,
             Self::Node => "node",
+            Self::Tauri => TAURI,
+            Self::Curl => "curl",
+            Self::Doppler => "doppler",
+            Self::Sudo => "sudo",
+            Self::Dpkg => "dpkg",
+            Self::Installer => INSTALLER,
             Self::Security => SECURITY,
             Self::Codesign => CODESIGN,
             Self::Productsign => PRODUCTSIGN,

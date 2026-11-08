@@ -1,55 +1,75 @@
-name: release
+name: Desktop release candidate
 
-# Every job runs only while the repository variable RELEASES_ENABLED is `true`, which stays unset while releases are prohibited.
 on:
-  push:
-    tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      operation:
+        description: Stop after unsigned candidates or produce signed distributions
+        type: choice
+        options: [candidate, sign]
+        default: candidate
+      source:
+        description: Exact main commit SHA, also used by the release controller
+        type: string
+        required: true
+      version:
+        description: Reserved product version without the v prefix
+        type: string
+        required: true
 
-permissions: {}
+permissions:
+  contents: read
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: desktop-release-${{ inputs.version }}
   cancel-in-progress: false
 
 env:
   MISE_AUTO_INSTALL: "false"
   MISE_TASK_RUN_AUTO_INSTALL: "false"
+  RELEASE_SOURCE_SHA: ${{ inputs.source }}
+  RELEASE_VERSION: ${{ inputs.version }}
+  RELEASE_BUILD_RUN: ${{ github.run_id }}
+  RELEASES_ENABLED: ${{ vars.RELEASES_ENABLED }}
+  WINDOWS_SIGNING_IDENTITY_SHA256: ${{ vars.WINDOWS_SIGNING_IDENTITY_SHA256 }}
+  MACOS_APPLICATION_IDENTITY_SHA1: ${{ vars.MACOS_APPLICATION_IDENTITY_SHA1 }}
+  MACOS_INSTALLER_IDENTITY_SHA1: ${{ vars.MACOS_INSTALLER_IDENTITY_SHA1 }}
 
 jobs:
   check:
-    if: vars.RELEASES_ENABLED == 'true' && github.ref_type == 'tag'
+    name: Verify the requested release
+    if: github.repository == 'P4suta/youarel' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-26.04
     timeout-minutes: 120
-    permissions:
-      contents: read
-    outputs:
-      version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 0
           persist-credentials: false
       - uses: jdx/mise-action@9b200bcecbfd6303e69a4a261b2e09e3757440a7 # v5.2.0
         with:
-          install_args: rust node npm:typescript taplo typos actionlint zizmor aqua:EmbarkStudios/cargo-deny aqua:rustsec/rustsec/cargo-audit aqua:nextest-rs/nextest/cargo-nextest cargo:kani-verifier@0.68.0 cargo:cargo-fuzz@0.13.2 cargo:cargo-mutants@27.1.0
+          install_args: rust node npm:typescript taplo typos actionlint zizmor aqua:EmbarkStudios/cargo-deny aqua:rustsec/rustsec/cargo-audit aqua:nextest-rs/nextest/cargo-nextest cargo:kani-verifier cargo:cargo-fuzz cargo:cargo-mutants
           cache: false
-      - name: Check that the tag names the workspace version
-        id: version
-        run: cargo xtask release version
+      - name: Show and validate the requested operation
+        env:
+          OPERATION: ${{ inputs.operation }}
+        run: cargo xtask release plan "$OPERATION"
       - name: Install the pinned verifier toolchain
         run: rustup toolchain install nightly-2026-08-21 --profile minimal --component miri --component rust-src
       - run: cargo kani setup
-      - name: Verify the exact candidate before builds and signing
+      - name: Require the full release verification inventory
         run: cargo xtask ci assurance
 
   build:
-    name: build (${{ matrix.target }})
+    name: Build ${{ matrix.target }}
     needs: [check]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
-    environment: release
+    timeout-minutes: 90
     permissions:
       contents: read
+      actions: read # Reuse the selected run's verified native artifacts.
+      id-token: write # Attest unsigned candidate bytes before signing.
+      attestations: write # Preserve the original native build provenance.
     strategy:
       fail-fast: false
       matrix:
@@ -60,7 +80,7 @@ jobs:
             target: aarch64-unknown-linux-gnu
           - os: macos-26
             target: aarch64-apple-darwin
-          - os: macos-26
+          - os: macos-26-intel
             target: x86_64-apple-darwin
           - os: windows-2025
             target: x86_64-pc-windows-msvc
@@ -70,33 +90,127 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Install Linux desktop build dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev patchelf
       - uses: jdx/mise-action@9b200bcecbfd6303e69a4a261b2e09e3757440a7 # v5.2.0
         with:
-          install_args: rust node npm:typescript aqua:nextest-rs/nextest/cargo-nextest
+          install_args: rust node npm:typescript npm:@tauri-apps/cli cargo:cargo-cyclonedx gh aqua:nextest-rs/nextest/cargo-nextest
           cache: false
-      - name: Add the target
+      - name: Add the native target
         shell: bash
         env:
           TARGET: ${{ matrix.target }}
         run: rustup target add "$TARGET"
-      - name: Build
+      - name: Restore a verified native candidate when available
+        id: resume
         shell: bash
         env:
           TARGET: ${{ matrix.target }}
-        run: cargo xtask release build "$TARGET"
-      - name: Test the candidate target
-        shell: bash
-        env:
-          TARGET: ${{ matrix.target }}
-        run: cargo nextest run --locked --workspace --all-targets --target "$TARGET" --no-tests=fail
-      - name: Lint the candidate target
-        shell: bash
-        env:
-          TARGET: ${{ matrix.target }}
-        run: cargo clippy --locked --workspace --all-targets --target "$TARGET" -- -D warnings
-      - name: Check native platform behavior
+          GH_TOKEN: ${{ github.token }}
+        run: cargo xtask release resume-build "$TARGET"
+      - name: Check native behavior
+        if: steps.resume.outputs.reused != 'true'
         run: cargo xtask check --platform
-      - name: Sign the macOS program
+      - name: Build and verify both programs without release credentials
+        if: steps.resume.outputs.reused != 'true'
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          cargo xtask release build "$TARGET"
+          cargo xtask release seal "$TARGET"
+      - name: Package and inspect the native candidate
+        if: steps.resume.outputs.distribution != 'true'
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          cargo xtask release bundle "$TARGET"
+          cargo xtask release check-bundle "$TARGET"
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        id: provenance
+        if: steps.resume.outputs.reused != 'true'
+        with:
+          subject-path: |
+            release-candidate/payload.tar.gz
+            release-candidate/candidate.json
+            dist/*.cdx.json
+      - name: Preserve and verify original build provenance
+        if: steps.resume.outputs.reused != 'true'
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          PROVENANCE: ${{ steps.provenance.outputs.bundle-path }}
+          GH_TOKEN: ${{ github.token }}
+        run: cargo xtask release attach-build-provenance "$TARGET" "$PROVENANCE"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: steps.resume.outputs.reused != 'true'
+        with:
+          name: candidate-${{ matrix.target }}
+          path: release-candidate/
+          if-no-files-found: error
+          retention-days: 30
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: steps.resume.outputs.distribution != 'true'
+        with:
+          name: unsigned-dist-${{ matrix.target }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 30
+
+  sign:
+    name: Sign ${{ matrix.target }}
+    if: inputs.operation == 'sign'
+    needs: [build]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    environment: release-${{ matrix.platform }}
+    permissions:
+      contents: read
+      actions: read # Inspect prior attempts and preserve original signing outputs.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-26
+            target: aarch64-apple-darwin
+            platform: macos
+          - os: macos-26-intel
+            target: x86_64-apple-darwin
+            platform: macos
+          - os: windows-2025
+            target: x86_64-pc-windows-msvc
+            platform: windows
+          - os: windows-11-arm
+            target: aarch64-pc-windows-msvc
+            platform: windows
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: jdx/mise-action@9b200bcecbfd6303e69a4a261b2e09e3757440a7 # v5.2.0
+        with:
+          install_args: rust gh
+          cache: false
+      - name: Compile the trusted controller before fetching credentials
+        run: cargo build --locked --package xtask
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: candidate-${{ matrix.target }}
+          path: release-candidate
+      - name: Verify and restore the original candidate without executing it
+        id: resume
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          GH_TOKEN: ${{ github.token }}
+          WINDOWS_SIGNING_IDENTITY_SHA256: ${{ vars.WINDOWS_SIGNING_IDENTITY_SHA256 }}
+        run: |
+          ./target/debug/xtask release restore "$TARGET"
+          ./target/debug/xtask release stage-windows "$TARGET"
+          ./target/debug/xtask release resume-windows "$TARGET"
+      - name: Sign nested macOS programs and the application
         if: runner.os == 'macOS'
         env:
           TARGET: ${{ matrix.target }}
@@ -105,35 +219,54 @@ jobs:
           APPLE_INSTALLER_CERTIFICATE: ${{ secrets.APPLE_INSTALLER_CERTIFICATE }}
           APPLE_INSTALLER_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_INSTALLER_CERTIFICATE_PASSWORD }}
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-        run: cargo xtask release sign-macos program "$TARGET"
-      - name: Sign the Windows program
-        if: runner.os == 'Windows'
+        run: |
+          ./target/debug/xtask release credential-inputs macos
+          ./target/debug/xtask release sign-macos program "$TARGET"
+      - name: Validate resolved Windows signing inputs
+        if: runner.os == 'Windows' && steps.resume.outputs.reused != 'true'
+        shell: bash
+        env:
+          SSLDOTCOM_USERNAME: ${{ secrets.SSLDOTCOM_USERNAME }}
+          SSLDOTCOM_PASSWORD: ${{ secrets.SSLDOTCOM_PASSWORD }}
+          SSLDOTCOM_CREDENTIAL_ID: ${{ secrets.SSLDOTCOM_CREDENTIAL_ID }}
+          SSLDOTCOM_TOTP_SECRET: ${{ secrets.SSLDOTCOM_TOTP_SECRET }}
+        run: ./target/debug/xtask release credential-inputs windows
+      - name: Sign and timestamp the Windows programs together
+        id: esigner
+        if: runner.os == 'Windows' && steps.resume.outputs.reused != 'true'
         uses: SSLcom/esigner-codesign@cf5f6c1d38ad10f47e3ed9aca873f429b1a8d85b # v1.3.2
         with:
-          command: sign
+          command: batch_sign
           signing_method: v2
           username: ${{ secrets.SSLDOTCOM_USERNAME }}
           password: ${{ secrets.SSLDOTCOM_PASSWORD }}
           credential_id: ${{ secrets.SSLDOTCOM_CREDENTIAL_ID }}
           totp_secret: ${{ secrets.SSLDOTCOM_TOTP_SECRET }}
-          file_path: ${{ github.workspace }}/target/${{ matrix.target }}/release/youarel.exe
+          dir_path: ${{ github.workspace }}/signing-input
           override: true
           environment_name: PROD
-      - name: Check the Windows signature, publisher, and timestamp
+      - name: Preserve Windows provider outputs before packaging
+        if: always() && runner.os == 'Windows' && ((steps.esigner.outcome != '' && steps.esigner.outcome != 'skipped') || steps.resume.outputs.reused == 'true')
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: windows-signatures-${{ matrix.target }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            signing-input/*.exe
+            release-candidate/candidate.json
+          if-no-files-found: error
+          retention-days: 90
+      - name: Check both Windows publishers and timestamps
         if: runner.os == 'Windows'
-        shell: pwsh
-        env:
-          TARGET: ${{ matrix.target }}
-          WINDOWS_SIGNING_IDENTITY_SHA256: ${{ vars.WINDOWS_SIGNING_IDENTITY_SHA256 }}
-        run: cargo xtask release verify-windows $env:TARGET
-      - name: Bundle
         shell: bash
         env:
           TARGET: ${{ matrix.target }}
-        run: |
-          SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)"
-          export SOURCE_DATE_EPOCH
-          cargo xtask release bundle "$TARGET"
+          WINDOWS_SIGNING_IDENTITY_SHA256: ${{ vars.WINDOWS_SIGNING_IDENTITY_SHA256 }}
+        run: ./target/debug/xtask release accept-windows "$TARGET"
+      - name: Package the signed bytes without candidate hooks
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+        run: ./target/debug/xtask release bundle "$TARGET"
       - name: Sign the macOS installer
         if: runner.os == 'macOS'
         env:
@@ -143,20 +276,24 @@ jobs:
           APPLE_INSTALLER_CERTIFICATE: ${{ secrets.APPLE_INSTALLER_CERTIFICATE }}
           APPLE_INSTALLER_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_INSTALLER_CERTIFICATE_PASSWORD }}
           APPLE_INSTALLER_IDENTITY: ${{ secrets.APPLE_INSTALLER_IDENTITY }}
-        run: cargo xtask release sign-macos package "$TARGET"
+        run: ./target/debug/xtask release sign-macos package "$TARGET"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: dist-${{ matrix.target }}
-          path: dist/*
+          name: signed-dist-${{ matrix.target }}
+          path: dist/
           if-no-files-found: error
+          retention-days: 30
 
   notarize:
-    needs: [build]
+    name: Notarize signed installers
+    if: inputs.operation == 'sign'
+    needs: [sign]
     runs-on: macos-26
     timeout-minutes: 150
-    environment: release
+    environment: release-notarize
     permissions:
       contents: read
+      actions: read # Resume the original submission receipts and package bytes.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -165,43 +302,111 @@ jobs:
         with:
           install_args: rust
           cache: false
+      - run: cargo build --locked --package xtask
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          pattern: dist-*-apple-darwin
+          pattern: signed-dist-*-apple-darwin
           merge-multiple: true
           path: dist
-      - name: Submit the signed installers
+      - name: Reconcile and restore previous notarization attempts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: ./target/debug/xtask release resume-notarization
+      - name: Submit each original signed package once
         env:
           APPLE_NOTARY_KEY: ${{ secrets.APPLE_NOTARY_KEY }}
           APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
           APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
-        run: cargo xtask release notarize submit
+        run: |
+          ./target/debug/xtask release credential-inputs notarize
+          ./target/debug/xtask release notarize submit
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
         with:
-          name: notarization-receipts
-          path: dist/notarization/*
+          name: notarization-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            dist/notarization/
+            dist/*.pkg
           if-no-files-found: error
-      - name: Wait for notarization, staple, and assess
+          retention-days: 90
+      - name: Wait, staple, validate, and assess both installers
         env:
           APPLE_NOTARY_KEY: ${{ secrets.APPLE_NOTARY_KEY }}
           APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
           APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
-        run: cargo xtask release notarize finish
+        run: ./target/debug/xtask release notarize finish
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: dist-notarized
+          name: notarized-dist
           path: dist/*.pkg
           if-no-files-found: error
+          retention-days: 30
 
-  publish:
-    needs: [check, build, notarize]
+  install:
+    name: Install ${{ matrix.target }}
+    if: inputs.operation == 'sign'
+    needs: [build, sign, notarize]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            artifact: unsigned-dist-x86_64-unknown-linux-gnu
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            artifact: unsigned-dist-aarch64-unknown-linux-gnu
+          - os: macos-26
+            target: aarch64-apple-darwin
+            artifact: notarized-dist
+          - os: macos-26-intel
+            target: x86_64-apple-darwin
+            artifact: notarized-dist
+          - os: windows-2025
+            target: x86_64-pc-windows-msvc
+            artifact: signed-dist-x86_64-pc-windows-msvc
+          - os: windows-11-arm
+            target: aarch64-pc-windows-msvc
+            artifact: signed-dist-aarch64-pc-windows-msvc
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install declared Linux desktop runtimes
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-0 libayatana-appindicator3-1 libxdo3
+      - uses: jdx/mise-action@9b200bcecbfd6303e69a4a261b2e09e3757440a7 # v5.2.0
+        with:
+          install_args: rust
+          cache: false
+      - name: Compile the controller without platform credentials
+        run: cargo build --locked --package xtask
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist
+      - name: Exercise the distributed installation on a fresh native runner
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          WINDOWS_SIGNING_IDENTITY_SHA256: ${{ vars.WINDOWS_SIGNING_IDENTITY_SHA256 }}
+        run: ./target/debug/xtask release install-check "$TARGET"
+
+  assemble:
+    name: Assemble verified distributions
+    if: inputs.operation == 'sign'
+    needs: [check, build, sign, notarize, install]
     runs-on: ubuntu-26.04
     timeout-minutes: 30
-    environment: release
+    environment: release-manifest
     permissions:
-      contents: write
-      id-token: write
-      attestations: write
+      # Assembly reads source metadata without changing the repository.
+      contents: read
+      actions: read # Reuse a complete distribution without signing it again.
+      id-token: write # Attest final asset hashes.
+      attestations: write # Store provenance for the completed distribution.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -210,25 +415,59 @@ jobs:
         with:
           install_args: rust
           cache: false
+      - run: cargo build --locked --package xtask
+      - name: Reuse the original complete distribution when available
+        id: resume
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: ./target/debug/xtask release resume-distribution
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: steps.resume.outputs.reused != 'true'
         with:
-          pattern: dist-*
+          pattern: unsigned-dist-*-linux-gnu
           merge-multiple: true
           path: dist
-      - name: Write and sign the manifest
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: steps.resume.outputs.reused != 'true'
+        with:
+          pattern: signed-dist-*
+          merge-multiple: true
+          path: dist
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: steps.resume.outputs.reused != 'true'
+        with:
+          name: notarized-dist
+          path: dist
+      - name: Sign the complete final asset inventory
+        if: steps.resume.outputs.reused != 'true'
         env:
           RELEASE_MINISIGN_KEY: ${{ secrets.RELEASE_MINISIGN_KEY }}
           RELEASE_MINISIGN_PASSWORD: ${{ secrets.RELEASE_MINISIGN_PASSWORD }}
           RELEASE_ML_DSA_KEY: ${{ secrets.RELEASE_ML_DSA_KEY }}
         run: |
-          cargo xtask release manifest
-          cargo xtask release sign
-          cargo xtask release checksums
+          ./target/debug/xtask release credential-inputs manifest
+          ./target/debug/xtask release manifest
+          ./target/debug/xtask release sign
+          ./target/debug/xtask release checksums
+          ./target/debug/xtask release verify-dist
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        id: provenance
+        if: steps.resume.outputs.reused != 'true'
         with:
           subject-checksums: dist/SHA256SUMS
-      - name: Publish the verified release
+      - name: Preserve the original build provenance
+        if: steps.resume.outputs.reused != 'true'
+        env:
+          PROVENANCE: ${{ steps.provenance.outputs.bundle-path }}
+        run: ./target/debug/xtask release attach-provenance "$PROVENANCE"
+      - name: Verify every attested artifact before handoff
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASES_ENABLED: ${{ vars.RELEASES_ENABLED }}
-        run: cargo xtask release publish
+        run: ./target/debug/xtask release verify-provenance
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: steps.resume.outputs.reused != 'true'
+        with:
+          name: release-${{ github.run_id }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 90

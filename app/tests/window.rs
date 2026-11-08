@@ -45,6 +45,24 @@ fn command(program: &str) -> std::process::Command {
     std::process::Command::new(program)
 }
 
+#[test]
+fn version_needs_no_display_or_library_files() {
+    let home = tempfile::tempdir().unwrap();
+    let output = command(env!("CARGO_BIN_EXE_youarel-launcher"))
+        .arg("--version")
+        .env("YOUAREL_HOME", home.path())
+        .env("DISPLAY", "")
+        .env("WAYLAND_DISPLAY", "")
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap().trim(),
+        concat!("youarel-launcher ", env!("CARGO_PKG_VERSION"))
+    );
+    assert_eq!(home.path().read_dir().unwrap().count(), 0);
+}
+
 /// Waits a while for a real window, which answers in its own time.
 #[expect(
     clippy::disallowed_methods,

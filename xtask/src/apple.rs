@@ -13,7 +13,11 @@ use std::process::Stdio;
 /// The identifier of the installer package, which macOS records its receipt under.
 pub const PACKAGE_IDENTIFIER: &str = "io.github.p4suta.youarel";
 /// Where the package installs the program.
-pub const INSTALL_LOCATION: &str = "/usr/local/bin";
+pub const INSTALL_LOCATION: &str = "/";
+const APPLICATION_LOCATION: &str = "Applications";
+const COMMAND_LOCATION: &str = "usr/local/bin";
+const COMMANDS: [&str; 2] = ["youarel", "youarel-launcher"];
+const COMPONENT_POLICY: &str = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\"><array><dict>\n<key>RootRelativeBundlePath</key><string>Applications/youarel.app</string>\n<key>BundleIsRelocatable</key><false/>\n<key>BundleHasStrictIdentifier</key><true/>\n<key>BundleIsVersionChecked</key><true/>\n<key>BundleOverwriteAction</key><string>upgrade</string>\n</dict></array></plist>\n";
 /// The most arguments one `security` command line takes.
 const SECURITY_ARGUMENTS: usize = 31;
 /// The longest command line `security -i` reads.
@@ -22,6 +26,33 @@ const SECURITY_LINE: usize = 4094;
 const UNLOCKED_SECONDS: &str = "3600";
 /// How long notarization may take before the wait gives up.
 const NOTARY_TIMEOUT: &str = "2h";
+const CERTIFICATE_SHA1_LENGTH: usize = 40;
+
+/// The exact public certificate fingerprint and expected publisher.
+#[derive(Clone, Copy, Debug)]
+pub struct Identity<'a> {
+    pub sha1: &'a str,
+    pub authority: &'a str,
+}
+
+/// Whether a native certificate selector is a full SHA-1 fingerprint.
+#[must_use]
+pub fn valid_selector(value: &str) -> bool {
+    value.len() == CERTIFICATE_SHA1_LENGTH && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn matching_identity(listing: &str, identity: Identity<'_>) -> bool {
+    valid_selector(identity.sha1)
+        && listing.lines().any(|line| {
+            line.split_once('"').is_some_and(|(prefix, name)| {
+                prefix
+                    .split_whitespace()
+                    .last()
+                    .is_some_and(|sha1| sha1.eq_ignore_ascii_case(identity.sha1))
+                    && name.strip_suffix('"') == Some(identity.authority)
+            })
+        })
+}
 
 /// A command line for `security -i`, which holds secrets, so it is never shown.
 struct Secret(Vec<u8>);
@@ -112,6 +143,7 @@ pub struct Keychain {
     root: PathBuf,
     path: PathBuf,
     original: Vec<String>,
+    closed: bool,
     _directory: tempfile::TempDir,
 }
 
@@ -135,6 +167,7 @@ impl Keychain {
             root: root.to_path_buf(),
             path: location,
             original: search_list(&listing),
+            closed: false,
             _directory: directory,
         };
         let path = keychain.text()?;
@@ -187,12 +220,56 @@ impl Keychain {
         self.path.to_str().context("the keychain path is not UTF-8")
     }
 
+    /// Checks imported Developer ID identities without using their signing keys.
+    ///
+    /// # Errors
+    ///
+    /// Rejects missing, invalid, or unexpected distribution identities.
+    pub fn verify_identities(&self, application: &str, installer: &str) -> Result<()> {
+        ensure!(
+            application.starts_with("Developer ID Application:")
+                && installer.starts_with("Developer ID Installer:"),
+            "distribution identities must use Developer ID certificates"
+        );
+        let listing = tool::capture(
+            Tool::Security
+                .command(&self.root)
+                .args(["find-identity", "-v"])
+                .arg(&self.path),
+            "verify imported Developer ID identities",
+        )?;
+        for expected in [application, installer] {
+            ensure!(
+                listing.contains(&format!("\"{expected}\"")),
+                "a required valid Developer ID identity is missing"
+            );
+        }
+        println!("Validated public certificate selectors:\n{listing}");
+        Ok(())
+    }
+
+    fn verify_identity(&self, identity: Identity<'_>) -> Result<()> {
+        let listing = tool::capture(
+            Tool::Security
+                .command(&self.root)
+                .args(["find-identity", "-v"])
+                .arg(&self.path),
+            "verify the exact distribution certificate selector",
+        )?;
+        ensure!(
+            matching_identity(&listing, identity),
+            "the configured certificate fingerprint and publisher do not identify a valid imported identity"
+        );
+        Ok(())
+    }
+
     /// Signs a program with the Developer ID Application identity, with the hardened runtime and a trusted timestamp, and checks the signature.
     ///
     /// # Errors
     ///
     /// Returns an error when `codesign` refuses to sign or the signature does not verify.
-    pub fn sign_program(&self, identity: &str, program: &Path) -> Result<()> {
+    pub fn sign_program(&self, identity: Identity<'_>, program: &Path) -> Result<()> {
+        self.verify_identity(identity)?;
         tool::succeed(
             Tool::Codesign
                 .command(&self.root)
@@ -204,7 +281,7 @@ impl Keychain {
                     "--keychain",
                 ])
                 .arg(&self.path)
-                .args(["--sign", identity])
+                .args(["--sign", identity.sha1])
                 .arg(program),
             "codesign",
         )?;
@@ -224,8 +301,8 @@ impl Keychain {
         )?;
         let text = String::from_utf8_lossy(&details.stderr);
         ensure!(
-            signed_for_distribution(&text),
-            "{} lacks the hardened runtime or a timestamp:\n{text}",
+            signed_for_distribution(&text, identity.authority),
+            "{} lacks the intended publisher, hardened runtime, or timestamp:\n{text}",
             program.display()
         );
         Ok(())
@@ -236,29 +313,44 @@ impl Keychain {
     /// # Errors
     ///
     /// Returns an error when `productsign` refuses or `pkgutil` finds no trusted signature.
-    pub fn sign_package(&self, identity: &str, unsigned: &Path, signed: &Path) -> Result<()> {
+    pub fn sign_package(
+        &self,
+        identity: Identity<'_>,
+        unsigned: &Path,
+        signed: &Path,
+    ) -> Result<()> {
+        self.verify_identity(identity)?;
         tool::succeed(
             Tool::Productsign
                 .command(&self.root)
-                .args(["--sign", identity, "--timestamp", "--keychain"])
+                .args(["--sign", identity.sha1, "--timestamp", "--keychain"])
                 .arg(&self.path)
                 .arg(unsigned)
                 .arg(signed),
             "productsign",
         )?;
-        tool::succeed(
+        let details = tool::capture(
             Tool::Pkgutil
                 .command(&self.root)
                 .arg("--check-signature")
                 .arg(signed),
             "pkgutil --check-signature",
-        )
+        )?;
+        ensure!(
+            details.contains(identity.authority),
+            "the installer signature identifies another publisher"
+        );
+        Ok(())
     }
-}
-
-impl Drop for Keychain {
-    fn drop(&mut self) {
-        // A failure here leaves the keychain in the search list, so it is reported, though the primary error stays the caller's.
+    /// Restores the original search list and deletes the temporary signing keychain.
+    ///
+    /// # Errors
+    ///
+    /// Reports cleanup failures before the credential-bearing operation can succeed.
+    pub fn close(&mut self) -> Result<()> {
+        if self.closed {
+            return Ok(());
+        }
         let mut restore: Vec<&str> = vec!["list-keychains", "-d", "user", "-s"];
         restore.extend(self.original.iter().map(String::as_str));
         let restored = security_line(&restore).and_then(|line| security(&self.root, &[line]));
@@ -266,24 +358,39 @@ impl Drop for Keychain {
             .text()
             .and_then(|path| security_line(&["delete-keychain", path]))
             .and_then(|line| security(&self.root, &[line]));
+        let mut failures = Vec::new();
         for (what, result) in [
             ("restore the keychain search list", restored),
             ("delete the release keychain", deleted),
         ] {
             if let Err(error) = result {
-                eprintln!("release: cannot {what}: {error:#}");
+                failures.push(format!("cannot {what}: {error:#}"));
             }
+        }
+        ensure!(failures.is_empty(), "{}", failures.join("; "));
+        self.closed = true;
+        Ok(())
+    }
+}
+
+impl Drop for Keychain {
+    fn drop(&mut self) {
+        if let Err(error) = self.close() {
+            eprintln!("release: signing keychain cleanup failed: {error:#}");
         }
     }
 }
 
 /// Whether `codesign --display` reports the hardened runtime and a trusted timestamp.
-fn signed_for_distribution(details: &str) -> bool {
+fn signed_for_distribution(details: &str, authority: &str) -> bool {
     let runtime = details
         .lines()
         .any(|line| line.starts_with("CodeDirectory") && line.contains("runtime"));
     let timestamp = details.lines().any(|line| line.starts_with("Timestamp="));
-    runtime && timestamp
+    let publisher = details
+        .lines()
+        .any(|line| line.strip_prefix("Authority=") == Some(authority));
+    runtime && timestamp && publisher
 }
 
 /// Thirty-two random bytes in hexadecimal, a password nobody types.
@@ -308,18 +415,36 @@ fn decode_base64(text: &str) -> Result<Vec<u8>> {
 /// # Errors
 ///
 /// Returns an error when `pkgbuild` or `productbuild` fails.
-pub fn build_package(root: &Path, program: &Path, version: &str, output: &Path) -> Result<()> {
+pub fn build_package(
+    root: &Path,
+    application: &[crate::package::Entry],
+    version: &str,
+    output: &Path,
+) -> Result<()> {
     let stage = tempfile::tempdir().context("create the package stage")?;
     let payload = stage.path().join("payload");
     fs::create_dir_all(&payload)?;
-    fs::write_executable(&payload.join("youarel"), &fs::read(program)?)?;
+    crate::release::write_application(&payload.join(APPLICATION_LOCATION), application)?;
+    let commands = payload.join(COMMAND_LOCATION);
+    fs::create_dir_all(&commands)?;
+    for command in COMMANDS {
+        let target = Path::new(INSTALL_LOCATION)
+            .join(APPLICATION_LOCATION)
+            .join("youarel.app/Contents/MacOS")
+            .join(command);
+        fs::symlink(&target, &commands.join(command))?;
+    }
     let component = stage.path().join("youarel-component.pkg");
+    let policy = stage.path().join("components.plist");
+    fs::write(&policy, COMPONENT_POLICY.as_bytes())?;
     tool::succeed(
         Tool::Pkgbuild
             .command(root)
             .env("COPYFILE_DISABLE", "1")
             .arg("--root")
             .arg(&payload)
+            .arg("--component-plist")
+            .arg(&policy)
             .args(["--identifier", PACKAGE_IDENTIFIER, "--version", version])
             .args([
                 "--install-location",
@@ -385,6 +510,27 @@ fn notary(root: &Path, key: &NotaryKey<'_>) -> std::process::Command {
         "json",
     ]);
     command
+}
+
+/// Verifies notarization authentication with a read-only history query.
+///
+/// # Errors
+///
+/// Reports authentication or response failures without submitting an artifact.
+pub fn verify_notary(root: &Path, key: &NotaryKey<'_>) -> Result<()> {
+    let reply = tool::capture(
+        notary(root, key).arg("history"),
+        "verify notarization authentication",
+    )?;
+    let value: serde_json::Value = serde_json::from_str(&reply)?;
+    ensure!(
+        value
+            .get("history")
+            .and_then(serde_json::Value::as_array)
+            .is_some(),
+        "notarytool returned no history"
+    );
+    Ok(())
 }
 
 /// The submission identifier of a `notarytool submit` reply.
@@ -473,7 +619,8 @@ pub fn finish(root: &Path, key: &NotaryKey<'_>, id: &str, package: &Path) -> Res
 #[cfg(test)]
 mod tests {
     use super::{
-        Notarized, search_list, security_line, signed_for_distribution, state, submission,
+        CERTIFICATE_SHA1_LENGTH, Identity, Notarized, matching_identity, search_list,
+        security_line, signed_for_distribution, state, submission, valid_selector,
     };
 
     #[test]
@@ -499,14 +646,53 @@ mod tests {
 
     #[test]
     fn a_distribution_signature_needs_the_runtime_and_a_timestamp() {
-        let signed = "Identifier=youarel\nCodeDirectory v=20500 size=1 flags=0x10000(runtime) hashes=1\nTimestamp=Oct 15, 2026\n";
-        assert!(signed_for_distribution(signed));
+        let authority = "Developer ID Application: Expected Publisher (TEAM123456)";
+        let signed = format!(
+            "Identifier=youarel\nCodeDirectory v=20500 size=1 flags=0x10000(runtime) hashes=1\nTimestamp=Oct 15, 2026\nAuthority={authority}\n"
+        );
+        assert!(signed_for_distribution(&signed, authority));
+        assert!(!signed_for_distribution(&signed, "Another Publisher"));
         assert!(!signed_for_distribution(
-            "CodeDirectory v=20500 flags=0x0(none)\nTimestamp=Oct 15, 2026\n"
+            &signed.replace("runtime", "none"),
+            authority
         ));
         assert!(!signed_for_distribution(
-            "CodeDirectory v=20500 flags=0x10000(runtime)\nSigned Time=Oct 15, 2026\n"
+            &signed.replace("Timestamp=", "Signed Time="),
+            authority
         ));
+    }
+
+    #[test]
+    fn native_identity_selection_requires_both_the_public_fingerprint_and_publisher() {
+        let sha1 = "a".repeat(CERTIFICATE_SHA1_LENGTH);
+        let authority = "Developer ID Application: Expected Publisher (TEAM123456)";
+        let identity = Identity {
+            sha1: &sha1,
+            authority,
+        };
+        let listing = format!(
+            "  1) {} \"{authority}\"\n  1 valid identities found\n",
+            sha1.to_uppercase()
+        );
+        assert!(matching_identity(&listing, identity));
+        assert!(!matching_identity(
+            &listing,
+            Identity {
+                sha1: &sha1,
+                authority: "Unexpected Publisher"
+            }
+        ));
+        assert!(!matching_identity(
+            &listing,
+            Identity {
+                sha1: &"b".repeat(CERTIFICATE_SHA1_LENGTH),
+                authority
+            }
+        ));
+        assert!(!valid_selector(
+            "Developer ID Application: Expected Publisher"
+        ));
+        assert!(!valid_selector(&"z".repeat(CERTIFICATE_SHA1_LENGTH)));
     }
 
     #[test]

@@ -1,7 +1,7 @@
-//! The release tasks: candidate builds and their packages, the signed manifest, the platform signatures, and publication.
+//! Native candidates, isolated signing, and immutable desktop publication.
 //!
-//! The release workflows run these only while the repository variable `RELEASES_ENABLED` is `true`, and `publish` refuses otherwise.
-//! `release candidate` builds and checks the same artifacts on a workstation without any credential, signed with keys made for that run alone.
+//! Unsigned rehearsals use temporary manifest keys.
+//! Signing, notarization, drafts, and publication require `RELEASES_ENABLED=true`.
 
 use crate::fs;
 use crate::package::{self, EXECUTABLE, Entry, REGULAR};
@@ -15,10 +15,39 @@ use youarel_core::update_rules::Version;
 use youarel_release::manifest::{self, Asset, Digest, Manifest, Name};
 use youarel_release::trust::{self, ReleaseKey, Signatures};
 
+mod access;
+mod artifacts;
+mod candidate;
+mod credentials;
+mod delivery;
+mod desktop;
+mod install;
+mod proposal;
+
+/// Checks product version synchronization and the pinned proposal updaters.
+///
+/// # Errors
+///
+/// Reports drift, an unavailable checker, or a rejected updater result.
+pub fn check_proposal(root: &Path) -> Result<()> {
+    proposal::check(root)
+}
+
+/// Writes the application payload for the macOS installer.
+///
+/// # Errors
+///
+/// Rejects unsafe paths or a failed payload write.
+pub(crate) fn write_application(base: &Path, entries: &[Entry]) -> Result<()> {
+    desktop::write_entries(base, entries)
+}
+
 /// The directory a release assembles its artifacts in.
 pub const DIST: &str = "dist";
 /// The variable that enables releasing, which stays unset while releases are prohibited.
 pub const ENABLED: &str = "RELEASES_ENABLED";
+pub(super) const MACOS_APPLICATION_IDENTITY: &str = "MACOS_APPLICATION_IDENTITY_SHA1";
+pub(super) const MACOS_INSTALLER_IDENTITY: &str = "MACOS_INSTALLER_IDENTITY_SHA1";
 /// The package that builds the program.
 const PACKAGE: &str = "youarel-cli";
 /// The program's name.
@@ -32,13 +61,16 @@ const HOMEPAGE: &str = "https://github.com/P4suta/youarel";
 /// The machine-readable format of a Debian package's copyright file.
 const COPYRIGHT_FORMAT: &str = "https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/";
 /// What the Debian package says it is.
-const SUMMARY: &str = "Open your web shortcuts in any browser, from a terminal or the command line";
+const SUMMARY: &str = "Save, organize, find, and open web bookmarks";
 /// Where the release keeps the receipts of its notarization submissions.
 const NOTARIZATION: &str = "notarization";
 /// The trusted comment of a manifest's minisign signature.
 const TRUSTED_COMMENT: &str = "youarel release manifest";
+const SIGNATURE_PATH: &str = "YOUAREL_SIGNATURE_PROGRAM";
+const WINDOWS_PROGRAM_COUNT: usize = 2;
+const WINDOWS_SDK_QUERY: &str = r"$ErrorActionPreference = 'Stop'; $root = Get-ItemPropertyValue -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Windows Kits\Installed Roots' -Name KitsRoot10; $tool = Get-ChildItem -LiteralPath (Join-Path $root 'bin') -Directory | Where-Object Name -Match '^\d+\.\d+\.\d+\.\d+$' | Sort-Object { [version]$_.Name } -Descending | ForEach-Object { Join-Path $_.FullName 'x64\signtool.exe' } | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1; if (!$tool) { throw 'The Windows SDK SignTool verifier is missing.' }; $signature = Get-AuthenticodeSignature -LiteralPath $tool; if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notlike '*O=Microsoft Corporation*') { throw 'The Windows SDK verifier is not trusted Microsoft code.' }; $tool";
 
-const USAGE: &str = "usage: cargo xtask release version | build TARGET | bundle TARGET | manifest | sign | checksums | sign-macos program|package TARGET | notarize submit|finish | verify-windows TARGET | publish | candidate | keygen DIRECTORY";
+const USAGE: &str = "usage: cargo xtask release version | check-versions | plan candidate|sign | plan-publication draft|publish | build TARGET | seal TARGET | restore TARGET | bundle TARGET | check-bundle TARGET | manifest | sign | checksums | verify-dist | verify-provenance | attach-provenance FILE | attach-build-provenance TARGET FILE | verify-build-run | credential-inputs PURPOSE | verify-credentials PURPOSE | access inventory|sync-inventory|sync-prepare AUTH_SCOPE | sign-macos program|package TARGET | notarize submit|finish | stage-windows TARGET | accept-windows TARGET | verify-windows TARGET | install-check TARGET | resume-build TARGET | resume-windows TARGET | resume-notarization | resume-distribution | draft | publish | candidate | keygen DIRECTORY";
 
 /// Runs one release task.
 ///
@@ -48,6 +80,28 @@ const USAGE: &str = "usage: cargo xtask release version | build TARGET | bundle 
 pub fn run(root: &Path, words: &[&str]) -> Result<()> {
     match words {
         ["version"] => version(root).map(drop),
+        ["plan", operation] => candidate::plan(root, operation),
+        ["seal", target] => candidate::seal(root, target),
+        ["restore", target] => candidate::restore(root, target),
+        ["verify-build-run"] => candidate::verify_run(root),
+        ["verify-dist"] => delivery::verify(root),
+        ["credential-inputs", purpose] => credentials::inputs(purpose),
+        ["verify-credentials", purpose] => credentials::verify(root, purpose),
+        ["access", operation, scope] => access::run(root, operation, scope),
+        ["verify-provenance"] => delivery::verify_provenance(root),
+        ["plan-publication", operation] => delivery::plan(operation),
+        ["attach-provenance", path] => delivery::copy_provenance(root, Path::new(path)),
+        ["attach-build-provenance", target, path] => {
+            candidate::attach_provenance(root, target, Path::new(path))
+        }
+        ["check-bundle", target] => check_bundle(
+            root,
+            target,
+            workspace_version(root)?,
+            &fs::read(&built_program(root, target))?,
+        ),
+        ["draft"] => delivery::draft(root),
+        ["check-versions"] => check_proposal(root),
         ["build", target] => build(root, target),
         ["bundle", target] => bundle(root, target),
         ["manifest"] => write_manifest(root),
@@ -58,7 +112,14 @@ pub fn run(root: &Path, words: &[&str]) -> Result<()> {
         ["notarize", "submit"] => notarize_submit(root),
         ["notarize", "finish"] => notarize_finish(root),
         ["verify-windows", target] => verify_windows(root, target),
-        ["publish"] => publish(root),
+        ["stage-windows", target] => stage_windows(root, target),
+        ["accept-windows", target] => accept_windows(root, target),
+        ["install-check", target] => install::check(root, target),
+        ["resume-windows", target] => artifacts::windows(root, target),
+        ["resume-build", target] => artifacts::build(root, target),
+        ["resume-notarization"] => artifacts::notarization(root),
+        ["resume-distribution"] => artifacts::distribution(root),
+        ["publish"] => delivery::publish(root),
         ["candidate"] => candidate(root),
         ["keygen", directory] => keygen(Path::new(directory)),
         _ => bail!("{USAGE}"),
@@ -78,6 +139,14 @@ fn variable(name: &str) -> Result<Option<String>> {
 /// A variable the step requires.
 fn required(name: &str) -> Result<String> {
     variable(name)?.with_context(|| format!("{name} is unset; the release environment provides it"))
+}
+
+fn ensure_enabled() -> Result<()> {
+    ensure!(
+        variable(ENABLED)?.as_deref() == Some("true"),
+        "releases are disabled: {ENABLED} is not `true`"
+    );
+    Ok(())
 }
 
 /// The workspace version, which every release artifact names.
@@ -141,10 +210,7 @@ fn asset_name(target: &str) -> String {
 
 /// Builds the release program for a target from the locked dependencies.
 fn build(root: &Path, target: &str) -> Result<()> {
-    ensure!(
-        Name::parse(target).is_some(),
-        "`{target}` is not a target triple"
-    );
+    desktop::supported(target)?;
     tool::succeed(
         Tool::Cargo.command(root).args([
             "build",
@@ -156,7 +222,8 @@ fn build(root: &Path, target: &str) -> Result<()> {
             target,
         ]),
         "cargo build --release",
-    )
+    )?;
+    desktop::build(root, target)
 }
 
 /// The time every archive entry carries: `SOURCE_DATE_EPOCH` when the workflow sets it, and the epoch otherwise.
@@ -183,6 +250,9 @@ fn bundle_files(
     version: Version,
     program: &[u8],
 ) -> Result<Vec<(String, Vec<u8>)>> {
+    if target.contains("apple") {
+        return Ok(vec![(asset_name(target), program.to_vec())]);
+    }
     let time = source_date()?;
     let folder = format!("{PROGRAM}-{version}-{target}");
     let mut entries = vec![Entry {
@@ -190,6 +260,10 @@ fn bundle_files(
         mode: EXECUTABLE,
         bytes: program.to_vec(),
     }];
+    for mut entry in desktop::entries(root, target)? {
+        entry.path = format!("{folder}/{}", entry.path);
+        entries.push(entry);
+    }
     for document in DOCUMENTS {
         entries.push(Entry {
             path: format!("{folder}/{document}"),
@@ -220,8 +294,9 @@ fn bundle_files(
             maintainer: MAINTAINER,
             homepage: HOMEPAGE,
             summary: SUMMARY,
+            depends: desktop::LINUX_DEPENDS,
         };
-        let installed = [
+        let mut installed = vec![
             Entry {
                 path: format!("usr/bin/{PROGRAM}"),
                 mode: EXECUTABLE,
@@ -233,6 +308,10 @@ fn bundle_files(
                 bytes: copyright.into_bytes(),
             },
         ];
+        installed.extend(desktop::linux_entries(
+            root,
+            &fs::read(&desktop::launcher(root, target))?,
+        )?);
         files.push((
             format!("{PROGRAM}_{version}_{architecture}.deb"),
             package::deb(&control, &installed, time)?,
@@ -253,6 +332,7 @@ struct AssetRecord {
 
 /// Packages a target's built program into `dist`: the bare asset, the archive, the Debian package on Linux, the unsigned installer on macOS, and the asset record.
 fn bundle(root: &Path, target: &str) -> Result<()> {
+    desktop::supported(target)?;
     let version = workspace_version(root)?;
     let program_path = built_program(root, target);
     let program = fs::read(&program_path)?;
@@ -263,7 +343,12 @@ fn bundle(root: &Path, target: &str) -> Result<()> {
     }
     if target.contains("apple") {
         let unsigned = dist.join(format!("{PROGRAM}-{version}-{target}-unsigned.pkg"));
-        apple::build_package(root, &program_path, &version.to_string(), &unsigned)?;
+        apple::build_package(
+            root,
+            &desktop::app_entries(root, target)?,
+            &version.to_string(),
+            &unsigned,
+        )?;
     }
     let record = AssetRecord {
         target: String::from(target),
@@ -316,6 +401,29 @@ fn gathered(root: &Path) -> Result<Manifest> {
         !assets.is_empty(),
         "{DIST} records no asset; run `release bundle` first"
     );
+    for path in fs::entries(&root.join(DIST))? {
+        let name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .context("release file name is not UTF-8")?;
+        if !fs::is_file(&path)?
+            || !delivery::manifested(name)
+            || assets.values().any(|asset| asset.name.as_str() == name)
+        {
+            continue;
+        }
+        let bytes = fs::read(&path)?;
+        let name = Name::parse(name).context("unsafe release asset name")?;
+        let asset = Asset {
+            name: name.clone(),
+            size: u64::try_from(bytes.len())?,
+            sha256: Digest::of(&bytes),
+        };
+        ensure!(
+            assets.insert(name, asset).is_none(),
+            "release asset collides with a target key"
+        );
+    }
     Ok(Manifest { version, assets })
 }
 
@@ -367,6 +475,7 @@ fn write_signatures(
 
 /// Signs the manifest with the release keys the variables hold, and checks it under the keys the program trusts.
 fn sign(root: &Path) -> Result<()> {
+    ensure_enabled()?;
     let minisign_box = minisign::SecretKeyBox::from_string(&required("RELEASE_MINISIGN_KEY")?)
         .context("RELEASE_MINISIGN_KEY is not a minisign secret key")?;
     let minisign_key = minisign_box
@@ -395,6 +504,7 @@ fn checksums(root: &Path) -> Result<()> {
             .unwrap_or_default()
             .to_owned();
         if name == "SHA256SUMS"
+            || name == delivery::PROVENANCE
             || name.starts_with("asset-")
             || name.ends_with("-unsigned.pkg")
             || !fs::is_file(&path)?
@@ -429,28 +539,55 @@ fn with_keychain(root: &Path, work: impl FnOnce(&apple::Keychain) -> Result<()>)
         .iter()
         .map(|(base64, password)| apple::Import { base64, password })
         .collect();
-    let keychain = apple::Keychain::create(root, &imports)?;
-    work(&keychain)
+    let mut keychain = apple::Keychain::create(root, &imports)?;
+    let result = work(&keychain);
+    keychain.close()?;
+    result
 }
 
 /// Signs a macOS target's built program with the Developer ID Application identity, before it is bundled.
 fn sign_macos_program(root: &Path, target: &str) -> Result<()> {
+    ensure_enabled()?;
+    desktop::supported(target)?;
     ensure!(target.contains("apple"), "{target} is not a macOS target");
     let identity = required("APPLE_SIGNING_IDENTITY")?;
+    let sha1 = required(MACOS_APPLICATION_IDENTITY)?;
+    let identity = apple::Identity {
+        sha1: &sha1,
+        authority: &identity,
+    };
     with_keychain(root, |keychain| {
-        keychain.sign_program(&identity, &built_program(root, target))
+        let program = built_program(root, target);
+        let launcher = desktop::launcher(root, target);
+        keychain.sign_program(identity, &program)?;
+        keychain.sign_program(identity, &launcher)?;
+        let app = desktop::application(root, target);
+        fs::write(&app.join("Contents/MacOS/youarel"), &fs::read(&program)?)?;
+        fs::write(
+            &app.join("Contents/MacOS/youarel-launcher"),
+            &fs::read(&launcher)?,
+        )?;
+        keychain.sign_program(identity, &app)
     })
 }
 
 /// Signs a macOS target's bundled installer with the Developer ID Installer identity.
 fn sign_macos_package(root: &Path, target: &str) -> Result<()> {
+    ensure_enabled()?;
+    desktop::supported(target)?;
+    ensure!(target.contains("apple"), "{target} is not a macOS target");
     let version = workspace_version(root)?;
     let identity = required("APPLE_INSTALLER_IDENTITY")?;
+    let sha1 = required(MACOS_INSTALLER_IDENTITY)?;
+    let identity = apple::Identity {
+        sha1: &sha1,
+        authority: &identity,
+    };
     let dist = root.join(DIST);
     let unsigned = dist.join(format!("{PROGRAM}-{version}-{target}-unsigned.pkg"));
     let signed = dist.join(format!("{PROGRAM}-{version}-{target}.pkg"));
     with_keychain(root, |keychain| {
-        keychain.sign_package(&identity, &unsigned, &signed)
+        keychain.sign_package(identity, &unsigned, &signed)
     })
 }
 
@@ -458,7 +595,7 @@ fn sign_macos_package(root: &Path, target: &str) -> Result<()> {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Receipt {
-    id: String,
+    id: Option<String>,
     package: String,
     sha256: String,
 }
@@ -498,6 +635,7 @@ fn signed_packages(dist: &Path) -> Result<Vec<PathBuf>> {
 
 /// Submits every signed package and persists each submission before anything waits on it.
 fn notarize_submit(root: &Path) -> Result<()> {
+    ensure_enabled()?;
     let dist = root.join(DIST);
     let receipts = dist.join(NOTARIZATION);
     fs::create_dir_all(&receipts)?;
@@ -510,16 +648,27 @@ fn notarize_submit(root: &Path) -> Result<()> {
                 .to_owned();
             let receipt_path = receipts.join(format!("{name}.json"));
             if fs::is_file(&receipt_path)? {
+                let receipt: Receipt = serde_json::from_slice(&fs::read(&receipt_path)?)?;
+                ensure!(
+                    receipt.package == name
+                        && Digest::of(&fs::read(&package)?).hex() == receipt.sha256,
+                    "the preserved submission does not identify the current package"
+                );
+                ensure!(
+                    receipt.id.is_some(),
+                    "the previous submission outcome is unknown; reconcile Apple history before any retry"
+                );
                 println!("{name} was submitted already; the finish step resumes it");
                 continue;
             }
             let sha256 = Digest::of(&fs::read(&package)?).hex();
-            let id = apple::submit(root, key, &package)?;
-            let receipt = Receipt {
-                id,
+            let mut receipt = Receipt {
+                id: None,
                 package: name,
                 sha256,
             };
+            fs::write(&receipt_path, &serde_json::to_vec_pretty(&receipt)?)?;
+            receipt.id = Some(apple::submit(root, key, &package)?);
             fs::write(
                 &receipt_path,
                 serde_json::to_string_pretty(&receipt)?.as_bytes(),
@@ -529,20 +678,56 @@ fn notarize_submit(root: &Path) -> Result<()> {
     })
 }
 
+fn check_notary_receipts(root: &Path) -> Result<()> {
+    let dist = root.join(DIST);
+    let paths = fs::entries(&dist.join(NOTARIZATION))?;
+    ensure!(
+        !paths.is_empty(),
+        "no preserved notarization receipt exists; reconcile Apple history before submitting"
+    );
+    for path in paths {
+        let receipt: Receipt = serde_json::from_slice(&fs::read(&path)?)?;
+        ensure!(
+            Name::parse(&receipt.package).is_some(),
+            "unsafe preserved package name"
+        );
+        ensure!(
+            receipt.id.is_some(),
+            "the previous notarization outcome is unknown; reconcile Apple history before another submission"
+        );
+        ensure!(
+            Digest::of(&fs::read(&dist.join(&receipt.package))?).hex() == receipt.sha256,
+            "the preserved notarization package changed"
+        );
+    }
+    Ok(())
+}
+
 /// Waits for every persisted submission, then staples and checks its package.
 fn notarize_finish(root: &Path) -> Result<()> {
+    ensure_enabled()?;
     let dist = root.join(DIST);
     with_notary_key(|key| {
         for path in fs::entries(&dist.join(NOTARIZATION))? {
             let receipt: Receipt = serde_json::from_slice(&fs::read(&path)?)
                 .with_context(|| format!("{} is not a notarization receipt", portable(&path)))?;
+            ensure!(
+                Name::parse(&receipt.package).is_some()
+                    && Path::new(&receipt.package)
+                        .extension()
+                        .is_some_and(|extension| extension == "pkg"),
+                "unsafe notarization package name"
+            );
             let package = dist.join(&receipt.package);
             ensure!(
                 Digest::of(&fs::read(&package)?).hex() == receipt.sha256,
                 "{} changed after its submission",
                 receipt.package
             );
-            apple::finish(root, key, &receipt.id, &package)?;
+            let id = receipt.id.as_deref().context(
+                "the submission outcome is unknown; reconcile Apple history before resuming",
+            )?;
+            apple::finish(root, key, id, &package)?;
         }
         Ok(())
     })
@@ -550,14 +735,104 @@ fn notarize_finish(root: &Path) -> Result<()> {
 
 /// Checks the Authenticode signature of a Windows target's program: valid, timestamped, and from the expected publisher.
 fn verify_windows(root: &Path, target: &str) -> Result<()> {
+    desktop::supported(target)?;
+    ensure!(
+        target.contains("windows"),
+        "{target} is not a Windows target"
+    );
     let expected = required("WINDOWS_SIGNING_IDENTITY_SHA256")?.to_ascii_lowercase();
-    let program = built_program(root, target);
-    let script = "$s = Get-AuthenticodeSignature -LiteralPath $args[0]; $c = $s.SignerCertificate; [pscustomobject]@{ status = [string]$s.Status; signer = if ($c) { [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($c.RawData)) } else { '' }; timestamped = [bool]$s.TimeStamperCertificate } | ConvertTo-Json -Compress";
+    ensure!(
+        Digest::parse(&expected).is_some(),
+        "the expected Windows publisher fingerprint is malformed"
+    );
+    for program in [built_program(root, target), desktop::launcher(root, target)] {
+        verify_windows_program(root, &program, &expected)?;
+    }
+    Ok(())
+}
+
+fn stage_windows(root: &Path, target: &str) -> Result<()> {
+    desktop::supported(target)?;
+    if !target.contains("windows") {
+        return Ok(());
+    }
+    let expected = required("WINDOWS_SIGNING_IDENTITY_SHA256")?.to_ascii_lowercase();
+    ensure!(
+        Digest::parse(&expected).is_some(),
+        "configure the Windows publisher fingerprint before requesting signatures"
+    );
+    windows_sdk(root)?;
+    let input = root.join("signing-input");
+    ensure!(
+        !fs::is_directory(&input)?,
+        "the Windows signing input already exists"
+    );
+    fs::create_dir_all(&input)?;
+    for path in [built_program(root, target), desktop::launcher(root, target)] {
+        let name = path.file_name().context("program file has no name")?;
+        fs::write(&input.join(name), &fs::read(&path)?)?;
+    }
+    Ok(())
+}
+
+fn accept_windows(root: &Path, target: &str) -> Result<()> {
+    ensure_enabled()?;
+    desktop::supported(target)?;
+    ensure!(
+        target.contains("windows"),
+        "{target} is not a Windows target"
+    );
+    let expected = required("WINDOWS_SIGNING_IDENTITY_SHA256")?.to_ascii_lowercase();
+    ensure!(
+        Digest::parse(&expected).is_some(),
+        "the expected Windows publisher fingerprint is malformed"
+    );
+    let input = root.join("signing-input");
+    ensure!(
+        fs::entries(&input)?.len() == WINDOWS_PROGRAM_COUNT,
+        "the Windows signing input has unexpected files"
+    );
+    for path in [built_program(root, target), desktop::launcher(root, target)] {
+        let name = path.file_name().context("program file has no name")?;
+        let signed = input.join(name);
+        verify_windows_program(root, &signed, &expected)?;
+        fs::write(&path, &fs::read(&signed)?)?;
+    }
+    verify_windows(root, target)
+}
+
+fn windows_sdk(root: &Path) -> Result<PathBuf> {
+    let path = tool::capture(
+        Tool::Pwsh.command(root).args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            WINDOWS_SDK_QUERY,
+        ]),
+        "locate the trusted Windows SDK verifier",
+    )?;
+    let path = PathBuf::from(path.trim());
+    ensure!(
+        path.is_absolute()
+            && path.file_name().is_some_and(|name| name == "signtool.exe")
+            && fs::is_file(&path)?,
+        "the Windows SDK verifier path is invalid"
+    );
+    Ok(path)
+}
+
+fn windows_signature(root: &Path, program: &Path) -> std::process::Command {
+    let script = "$ErrorActionPreference = 'Stop'; $s = Get-AuthenticodeSignature -LiteralPath $env:YOUAREL_SIGNATURE_PROGRAM; $c = $s.SignerCertificate; [pscustomobject]@{ status = [string]$s.Status; signer = if ($c) { [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($c.RawData)) } else { '' } } | ConvertTo-Json -Compress";
+    let mut command = Tool::Pwsh.command(root);
+    command
+        .args(["-NoProfile", "-NonInteractive", "-Command", script])
+        .env(SIGNATURE_PATH, program);
+    command
+}
+
+fn verify_windows_program(root: &Path, program: &Path, expected: &str) -> Result<()> {
     let reply = tool::capture(
-        Tool::Pwsh
-            .command(root)
-            .args(["-NoProfile", "-NonInteractive", "-Command", script])
-            .arg(&program),
+        &mut windows_signature(root, program),
         "Get-AuthenticodeSignature",
     )?;
     let value: serde_json::Value =
@@ -569,96 +844,20 @@ fn verify_windows(root: &Path, target: &str) -> Result<()> {
         program.display()
     );
     ensure!(
-        field("timestamped") == true,
-        "{} carries no timestamp",
-        program.display()
-    );
-    ensure!(
         field("signer")
             .as_str()
             .map(str::to_ascii_lowercase)
             .as_deref()
-            == Some(expected.as_str()),
+            == Some(expected),
         "{} is signed by another certificate",
         program.display()
     );
-    Ok(())
-}
-
-/// Publishes the verified `dist` as an immutable GitHub release, after a draft holds every asset with its digest.
-fn publish(root: &Path) -> Result<()> {
-    ensure!(
-        variable(ENABLED)?.as_deref() == Some("true"),
-        "releases are disabled: {ENABLED} is not `true`"
-    );
-    let version = version(root)?;
-    let tag = format!("v{version}");
-    let dist = root.join(DIST);
-    let mut files = Vec::new();
-    for path in fs::entries(&dist)? {
-        let name = path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or_default();
-        if fs::is_file(&path)? && !name.starts_with("asset-") && !name.ends_with("-unsigned.pkg") {
-            files.push(path);
-        }
-    }
-    let notes = format!(
-        "youarel {version}\n\nVerify downloads with SHA256SUMS, or with the signed manifest that `youarel self-update` checks.\n"
-    );
+    let sdk = windows_sdk(root)?;
     tool::succeed(
-        Tool::Gh
-            .command(root)
-            .args([
-                "release",
-                "create",
-                &tag,
-                "--draft",
-                "--verify-tag",
-                "--title",
-                &tag,
-                "--notes",
-                &notes,
-            ])
-            .args(&files),
-        "gh release create --draft",
-    )?;
-    let listing = tool::capture(
-        Tool::Gh
-            .command(root)
-            .args(["release", "view", &tag, "--json", "assets"]),
-        "gh release view",
-    )?;
-    let value: serde_json::Value = serde_json::from_str(&listing).context("gh printed no JSON")?;
-    let uploaded: BTreeMap<String, String> = value
-        .get("assets")
-        .and_then(serde_json::Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(|asset| {
-            Some((
-                asset.get("name")?.as_str()?.to_owned(),
-                asset.get("digest")?.as_str()?.to_owned(),
-            ))
-        })
-        .collect();
-    for path in &files {
-        let name = path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or_default();
-        let digest = format!("sha256:{}", Digest::of(&fs::read(path)?).hex());
-        ensure!(
-            uploaded.get(name) == Some(&digest),
-            "the draft's {name} does not match the verified file"
-        );
-    }
-    tool::succeed(
-        Tool::Gh
-            .command(root)
-            .args(["release", "edit", &tag, "--draft=false"]),
-        "gh release edit --draft=false",
+        tool::built(root, &sdk)
+            .args(["verify", "/all", "/pa", "/tw", "/v"])
+            .arg(program),
+        "verify every Authenticode signature and timestamp with the Windows SDK",
     )
 }
 
@@ -767,19 +966,32 @@ fn candidate(root: &Path) -> Result<()> {
 fn check_bundle(root: &Path, target: &str, version: Version, program: &[u8]) -> Result<()> {
     let dist = root.join(DIST);
     let folder = format!("{PROGRAM}-{version}-{target}");
-    let entries = if target.contains("windows") {
+    let entries = if target.contains("apple") {
+        Vec::new()
+    } else if target.contains("windows") {
         package::read_zip(&fs::read(&dist.join(format!("{folder}.zip")))?)?
     } else {
         package::read_tar_gz(&fs::read(&dist.join(format!("{folder}.tar.gz")))?)?
     };
     let program_entry = format!("{folder}/{}", program_name(target));
     ensure!(
-        entries.iter().any(|entry| entry.path == program_entry
-            && entry.bytes == program
-            && entry.mode == EXECUTABLE),
+        target.contains("apple")
+            || entries.iter().any(|entry| entry.path == program_entry
+                && entry.bytes == program
+                && entry.mode == EXECUTABLE),
         "the archive lacks the executable program"
     );
-    for document in DOCUMENTS {
+    if !target.contains("apple") {
+        let launcher = fs::read(&desktop::launcher(root, target))?;
+        ensure!(
+            entries.iter().any(|entry| entry.path
+                == format!("{folder}/{}", desktop::launcher_name(target))
+                && entry.bytes == launcher
+                && entry.mode == EXECUTABLE),
+            "the archive lacks the executable launcher"
+        );
+    }
+    for document in DOCUMENTS.into_iter().filter(|_| !target.contains("apple")) {
         ensure!(
             entries
                 .iter()
@@ -802,6 +1014,13 @@ fn check_bundle(root: &Path, target: &str, version: Version, program: &[u8]) -> 
                 .any(|entry| entry.path == format!("usr/bin/{PROGRAM}") && entry.bytes == program),
             "the Debian package does not install the program"
         );
+        let launcher = fs::read(&desktop::launcher(root, target))?;
+        ensure!(
+            installed
+                .iter()
+                .any(|entry| entry.path == "usr/bin/youarel-launcher" && entry.bytes == launcher),
+            "the Debian package lacks the launcher"
+        );
     }
     if target.contains("apple") {
         // A `._` entry holds the extended attributes of its file, which the installer applies to the file instead of installing it.
@@ -812,16 +1031,24 @@ fn check_bundle(root: &Path, target: &str, version: Version, program: &[u8]) -> 
             .map(String::as_str)
             .filter(|file| !file.starts_with("./._"))
             .collect();
-        ensure!(
-            installed == [".", "./youarel"],
-            "the installer installs more or less than the program: {files:?}"
-        );
+        for required in [
+            "./Applications/youarel.app/Contents/MacOS/youarel",
+            "./Applications/youarel.app/Contents/MacOS/youarel-launcher",
+            "./usr/local/bin/youarel",
+            "./usr/local/bin/youarel-launcher",
+        ] {
+            ensure!(
+                installed.contains(&required),
+                "the installer lacks {required}: {files:?}"
+            );
+        }
     }
     Ok(())
 }
 
 /// Runs the candidate program: it names its version, and refuses the rehearsal release because a build trusts only the compiled keys.
 fn check_program(root: &Path, target: &str, dist: &Path) -> Result<()> {
+    desktop::check_programs(root, target, &workspace_version(root)?.to_string())?;
     let program = built_program(root, target);
     let home = tempfile::tempdir().context("create a rehearsal home")?;
     let printed = tool::capture(
@@ -840,9 +1067,86 @@ fn check_program(root: &Path, target: &str, dist: &Path) -> Result<()> {
         "youarel self-update",
     )?;
     let message = String::from_utf8_lossy(&refused.stderr);
+    let rejection = if trust::RELEASE_KEYS.is_empty() {
+        trust::TrustError::NoKey
+    } else {
+        trust::TrustError::Unsigned
+    };
     ensure!(
-        !refused.status.success() && message.contains("trusts no release key"),
+        !refused.status.success() && message.contains(&rejection.to_string()),
         "a candidate program accepted a release signed by rehearsal keys: {message}"
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{DOCUMENTS, SIGNATURE_PATH, bundle_files, fs, package, windows_signature};
+    use youarel_core::update_rules::Version;
+
+    #[test]
+    fn windows_signature_paths_remain_literal_data_outside_the_powershell_program() {
+        let root = tempfile::tempdir().unwrap();
+        let path = std::path::Path::new("C:\\folder with spaces\\'$();[name].exe");
+        let command = windows_signature(root.path(), path);
+        assert!(
+            command
+                .get_envs()
+                .any(|(name, value)| name == SIGNATURE_PATH && value == Some(path.as_os_str()))
+        );
+        assert!(
+            !command
+                .get_args()
+                .any(|argument| argument == path.as_os_str())
+        );
+    }
+
+    #[test]
+    fn desktop_archives_ship_the_launcher_beside_the_cli() {
+        for target in ["x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"] {
+            let directory = tempfile::tempdir().unwrap();
+            let root = directory.path();
+            for document in DOCUMENTS {
+                fs::write(&root.join(document), b"license").unwrap();
+            }
+            fs::create_dir_all(&root.join("app/icons")).unwrap();
+            fs::write(&root.join("app/icons/128x128.png"), b"png").unwrap();
+            let extension = if target.contains("windows") {
+                ".exe"
+            } else {
+                ""
+            };
+            let built = root.join("app/target").join(target).join("release");
+            fs::create_dir_all(&built).unwrap();
+            fs::write(&built.join(format!("youarel-launcher{extension}")), b"gui").unwrap();
+            let version = Version::parse("0.4.2").unwrap();
+            let files = bundle_files(root, target, version, b"cli").unwrap();
+            let (_, archive) = files
+                .iter()
+                .find(|(name, _)| {
+                    name.ends_with(if extension.is_empty() {
+                        ".tar.gz"
+                    } else {
+                        ".zip"
+                    })
+                })
+                .unwrap();
+            let entries = if extension.is_empty() {
+                package::read_tar_gz(archive)
+            } else {
+                package::read_zip(archive)
+            }
+            .unwrap();
+            assert!(entries.iter().any(|entry| {
+                entry
+                    .path
+                    .ends_with(&format!("/youarel-launcher{extension}"))
+                    && entry.bytes == b"gui"
+            }));
+            assert!(entries.iter().any(
+                |entry| entry.path.ends_with(&format!("/youarel{extension}"))
+                    && entry.bytes == b"cli"
+            ));
+        }
+    }
 }

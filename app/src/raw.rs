@@ -20,6 +20,7 @@ const WINDOW: &str = "library";
 const SHORTCUT: &str = "Alt+Space";
 /// The argument that toggles the window of the running library, for a desktop whose shortcuts it cannot hold.
 const TOGGLE: &str = "--toggle";
+const VERSION: &str = "--version";
 /// The tray menu's items.
 const SHOW: &str = "show";
 const QUIT: &str = "quit";
@@ -663,6 +664,13 @@ fn shortcuts() -> tauri::plugin::TauriPlugin<tauri::Wry> {
 /// Runs the library until the person quits it from the tray or the menu.
 #[must_use]
 pub fn run() -> ExitCode {
+    if std::env::args_os()
+        .nth(1)
+        .is_some_and(|argument| argument == VERSION)
+    {
+        println!("youarel-launcher {}", env!("CARGO_PKG_VERSION"));
+        return ExitCode::SUCCESS;
+    }
     let store = match youarel_cli::home::data_directory() {
         Ok(directory) => Store::new(directory),
         Err(error) => {

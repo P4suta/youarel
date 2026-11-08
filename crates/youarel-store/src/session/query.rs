@@ -16,56 +16,12 @@ use youarel_core::state::{Entry, Folder, ItemId, Presence, Shortcut};
 /// Shortcuts that show, each with its record, in the order of their identifiers.
 pub type Named = Vec<(ItemId, Shortcut)>;
 
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct IconBatch {
-    pub after: Option<ItemId>,
-    pub links: Vec<youarel_link::Link>,
-    pub more: bool,
-}
-
 /// The identifier at the end of a key.
 fn id(key: &[u8]) -> Result<ItemId, StoreError> {
     index_rules::identified(key).ok_or(StoreError::Missing("an identifier"))
 }
 
 impl Session {
-    /// Reads a bounded identifier range and returns one link per missing live host.
-    ///
-    /// # Errors
-    ///
-    /// Refuses unreadable records or an invalid stored link.
-    pub fn icon_batch(&self, after: Option<ItemId>) -> Result<IconBatch, StoreError> {
-        use youarel_core::icon_rules::{HOSTS_PER_TICK, RECORDS_PER_TICK};
-        use youarel_link::Link;
-        let shortcuts = open(&self.transaction, SHORTCUTS)?;
-        let start = after
-            .as_ref()
-            .map_or(Bound::Unbounded, |id| Bound::Excluded(id.0.as_slice()));
-        let mut rows = shortcuts
-            .range::<&[u8]>((start, Bound::Unbounded))
-            .map_err(failed)?;
-        let mut batch = IconBatch::default();
-        let mut hosts = BTreeSet::new();
-        for row in rows.by_ref().take(RECORDS_PER_TICK) {
-            let (key, value) = row.map_err(failed)?;
-            batch.after = Some(ItemId(super::key_id(key.value())?));
-            let shortcut = decode_shortcut(value.value(), &self.table)?;
-            if self.folders.standing(&shortcut) != Standing::Shown {
-                continue;
-            }
-            let link = Link::parse(&shortcut.link.value)
-                .map_err(|_invalid| StoreError::Missing("an admitted link"))?;
-            if hosts.insert(link.host().to_owned()) && self.icon(link.host())?.is_none() {
-                batch.links.push(link);
-                if batch.links.len() >= HOSTS_PER_TICK {
-                    break;
-                }
-            }
-        }
-        batch.more = rows.next().transpose().map_err(failed)?.is_some();
-        Ok(batch)
-    }
-
     /// The keys of an index table from `start` on, before `end` when there is one.
     fn keys(
         &self,

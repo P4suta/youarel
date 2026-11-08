@@ -5,7 +5,6 @@
 mod edit;
 mod listing;
 mod names;
-mod publication;
 mod query;
 
 use crate::StoreError;
@@ -32,11 +31,7 @@ use youarel_link::Link;
 pub use listing::{
     Group, Grouped, Listing, ON_DEMAND_LIMIT, PATH_SEPARATOR, Part, Parts, Span, Within,
 };
-pub use publication::{
-    PendingPublish, PublicationError, PublicationState, PublishRequest, ReceivedSegment, RecordSet,
-    StagedPart,
-};
-pub use query::{IconBatch, Named};
+pub use query::Named;
 pub use youarel_core::record_rules::Record;
 
 /// How many rows of one folder a session reads at a time while it moves or removes what the folder holds, which bounds what it keeps in memory.
@@ -267,7 +262,6 @@ impl Session {
             .insert(id.0.as_slice(), writer.finish().as_slice())
             .map_err(failed)?;
         self.observe(shortcut.stamps());
-        self.record_dirty(youarel_core::state::Entry::Shortcut(id), shortcut.stamps())?;
         self.changed = true;
         Ok(())
     }
@@ -282,7 +276,6 @@ impl Session {
             .insert(id.0.as_slice(), writer.finish().as_slice())
             .map_err(failed)?;
         self.observe(folder.stamps());
-        self.record_dirty(youarel_core::state::Entry::Folder(id), folder.stamps())?;
         self.changed = true;
         let before = self.folders.standings();
         self.folders.set(id, folder);

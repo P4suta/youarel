@@ -1,6 +1,6 @@
 # Youarel
 
-A launcher that opens your web shortcuts in any browser, from a terminal or the command line.
+A local bookmark library for saving, organizing, finding, and opening web links.
 
 ## Installation
 
@@ -13,7 +13,6 @@ cargo install --locked --path crates/youarel-cli
 ## Usage
 
 ```sh
-youarel import bookmarks.html
 youarel add https://github.com/ --alias gh --folder Work
 youarel open gh
 youarel
@@ -21,5 +20,6 @@ youarel
 
 ## License
 
-Licensed under either of the [Apache License, Version 2.0](LICENSE-APACHE) or the [Massachusetts Institute of Technology (MIT) license](LICENSE-MIT), at your option.
-You license each contribution you submit under the same two licenses, without other terms, unless you state otherwise.
+Licensed under the [Apache License, Version 2.0](LICENSE-APACHE) or the [Massachusetts Institute of Technology (MIT) license](LICENSE-MIT), at your option.
+
+Contributions use both licenses unless you state other terms.

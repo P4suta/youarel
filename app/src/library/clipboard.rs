@@ -92,7 +92,7 @@ impl Library {
         let words: Vec<Link> = text
             .split_whitespace()
             .filter_map(|word| {
-                Link::parse(word).map_or_else(
+                Link::from_input(word).map_or_else(
                     |_not_a_link| {
                         pasted.ignored = pasted.ignored.saturating_add(1);
                         None
@@ -105,13 +105,9 @@ impl Library {
             bail!("the clipboard holds no http or https links");
         }
         let home = self.here();
-        let now = self.session(|session| {
-            pasted.add(session, &words, home)?;
-            Ok(session.now())
-        })?;
+        self.session(|session| pasted.add(session, &words, home))?;
         let notice = pasted.notice();
         if !pasted.changes.is_empty() {
-            self.syncing.edited(now);
             self.remember("Paste", pasted.changes);
         }
         if let Some(id) = pasted.last {

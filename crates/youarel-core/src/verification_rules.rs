@@ -6,7 +6,6 @@ pub enum Job {
     Check,
     Kani,
     Quint,
-    Proverif,
     Miri,
     Fuzz,
     Mutants,
@@ -18,13 +17,12 @@ pub enum Job {
 const CHECK_BIT: u16 = 1 << 0;
 const KANI_BIT: u16 = 1 << 1;
 const QUINT_BIT: u16 = 1 << 2;
-const PROVERIF_BIT: u16 = 1 << 3;
-const MIRI_BIT: u16 = 1 << 4;
-const FUZZ_BIT: u16 = 1 << 5;
-const MUTANTS_BIT: u16 = 1 << 6;
-const APP_BIT: u16 = 1 << 7;
-const MACOS_BIT: u16 = 1 << 8;
-const WINDOWS_BIT: u16 = 1 << 9;
+const MIRI_BIT: u16 = 1 << 3;
+const FUZZ_BIT: u16 = 1 << 4;
+const MUTANTS_BIT: u16 = 1 << 5;
+const APP_BIT: u16 = 1 << 6;
+const MACOS_BIT: u16 = 1 << 7;
+const WINDOWS_BIT: u16 = 1 << 8;
 
 impl Job {
     const fn bit(self) -> u16 {
@@ -32,7 +30,6 @@ impl Job {
             Self::Check => CHECK_BIT,
             Self::Kani => KANI_BIT,
             Self::Quint => QUINT_BIT,
-            Self::Proverif => PROVERIF_BIT,
             Self::Miri => MIRI_BIT,
             Self::Fuzz => FUZZ_BIT,
             Self::Mutants => MUTANTS_BIT,
@@ -41,11 +38,10 @@ impl Job {
             Self::Windows => WINDOWS_BIT,
         }
     }
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 9] = [
         Self::Check,
         Self::Kani,
         Self::Quint,
-        Self::Proverif,
         Self::Miri,
         Self::Fuzz,
         Self::Mutants,
@@ -219,7 +215,6 @@ mod tests {
         );
         assert!(selected.includes(Job::Check));
         assert!(selected.includes(Job::App));
-        assert!(!selected.includes(Job::Proverif));
         assert!(!selected.includes(Job::Mutants));
     }
 
@@ -244,7 +239,6 @@ mod tests {
             for job in [
                 Job::Kani,
                 Job::Quint,
-                Job::Proverif,
                 Job::Miri,
                 Job::Fuzz,
                 Job::Mutants,

@@ -428,7 +428,7 @@ impl Library {
     }
 
     /// Carries out the next batch of a job in one session, and answers how far the job came, or none once it ended or a batch failed.
-    pub fn advance(&mut self, job: &mut Job) -> Option<Progress> {
+    pub fn advance(&self, job: &mut Job) -> Option<Progress> {
         if job.failed.is_some() {
             return None;
         }
@@ -454,16 +454,13 @@ impl Library {
                     done.count(*entry);
                 }
             }
-            Ok((done, session.now(), changes))
+            Ok((done, changes))
         });
         match outcome {
-            Ok((done, now, changes)) => {
+            Ok((done, changes)) => {
                 job.history.append(changes);
                 job.done = job.done.and(done);
                 job.passed = end;
-                if done.any() {
-                    self.syncing.edited(now);
-                }
                 Some(Progress {
                     done: end,
                     total,

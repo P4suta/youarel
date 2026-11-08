@@ -2,10 +2,7 @@
 
 mod differential;
 
-use super::{
-    DATABASE_FILE, FORMAT, LOCK_FILE, PUBLISH_LOCK_FILE, PUBLISHED_FILE, Record, Store, StoreError,
-    icons,
-};
+use super::{DATABASE_FILE, FORMAT, LOCK_FILE, Record, Store, StoreError, icons};
 use youarel_core::clock_rules::{DeviceId, Stamp};
 use youarel_core::rank_rules::Visits;
 use youarel_core::state::{Edit, Entry, ItemId, Slot, State};
@@ -185,26 +182,6 @@ fn later_edits_order_after_earlier_ones_even_when_the_clock_moves_back() {
     );
 }
 
-#[test]
-fn the_window_s_settings_default_save_read_back_and_name_a_damaged_file() {
-    use super::settings::{SETTINGS_FILE, Settings};
-    use youarel_core::library_rules::{Layout, Sort};
-    let directory = tempfile::tempdir().unwrap();
-    let store = Store::new(directory.path().join("youarel"));
-    assert_eq!(store.settings().unwrap(), Settings::default());
-    let chosen = Settings {
-        layout: Layout::List,
-        sort: Sort::Title,
-        ..Settings::default()
-    };
-    store.save_settings(&chosen).unwrap();
-    assert_eq!(store.settings().unwrap(), chosen);
-    super::fs::replace(&store.directory().join(SETTINGS_FILE), b"{}").unwrap();
-    let error = store.settings().unwrap_err();
-    assert!(error.to_string().contains(SETTINGS_FILE), "{error}");
-    assert!(std::error::Error::source(&error).is_some());
-}
-
 /// Keeps an icon for a host in one session at `now`, its image and its identifier spelled by one byte.
 fn keep(store: &Store, now: u64, host: &str, image: u8) {
     store
@@ -344,74 +321,6 @@ fn an_image_beyond_the_limit_is_refused_and_a_failed_session_keeps_no_icon() {
             .unwrap()
             .map(|image| image.len()),
         Some(longest)
-    );
-}
-
-#[test]
-fn the_record_of_a_publish_reads_back_for_its_target_alone() {
-    use youarel_core::sync_rules::Carried;
-    let directory = tempfile::tempdir().unwrap();
-    let store = Store::new(directory.path().join("youarel"));
-    assert_eq!(store.published("/shared").unwrap(), None, "no publish yet");
-    let carried = Carried {
-        latest: Some(Stamp {
-            wall: NOW,
-            counter: 2,
-            device: DeviceId([7; 16]),
-        }),
-        operations: 4,
-    };
-    store.record_published("/shared", carried).unwrap();
-    assert_eq!(store.published("/shared").unwrap(), Some(carried));
-    assert_eq!(
-        store.published("/shared/").unwrap(),
-        None,
-        "a record names its target exactly"
-    );
-    let empty = Carried {
-        latest: None,
-        operations: 0,
-    };
-    store
-        .record_published("https://relay.example", empty)
-        .unwrap();
-    assert_eq!(
-        store.published("https://relay.example").unwrap(),
-        Some(empty)
-    );
-    assert_eq!(
-        store.published("/shared").unwrap(),
-        None,
-        "the record of the publish before is gone"
-    );
-    // Windows refuses to read a file another handle holds locked, so the test looks for the lock's name alone.
-    let held = store.publishing().unwrap();
-    let names = super::fs::list(store.directory()).unwrap();
-    assert!(
-        names.iter().any(|name| name == PUBLISH_LOCK_FILE),
-        "the hold names its file: {names:?}"
-    );
-    drop(held);
-    drop(store.publishing().unwrap());
-}
-
-#[test]
-fn a_damaged_record_of_a_publish_names_its_file() {
-    let directory = tempfile::tempdir().unwrap();
-    let store = Store::new(directory.path().to_path_buf());
-    let path = store.directory().join(PUBLISHED_FILE);
-    super::fs::replace(&path, b"{}").unwrap();
-    let unshaped = store.published("/shared").unwrap_err();
-    assert!(matches!(unshaped, StoreError::Local { .. }));
-    assert!(unshaped.to_string().contains(PUBLISHED_FILE), "{unshaped}");
-    let misnamed =
-        br#"{"target":"/shared","latest":{"wall":1,"counter":0,"device":"zz"},"operations":1}"#;
-    super::fs::replace(&path, misnamed).unwrap();
-    let undecoded = store.published("/shared").unwrap_err();
-    assert!(matches!(undecoded, StoreError::Decode { .. }));
-    assert!(
-        undecoded.to_string().contains(PUBLISHED_FILE),
-        "{undecoded}"
     );
 }
 

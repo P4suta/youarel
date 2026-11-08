@@ -1,4 +1,4 @@
-use super::{Laid, Library, Place, checked_place, entry_of, set};
+use super::{Laid, Library, Place, checked_place, entry_of};
 use anyhow::{Context as _, Result};
 use youarel_core::library_rules::Scope;
 use youarel_core::state::{Entry, ItemId};
@@ -8,18 +8,6 @@ use youarel_store::{Session, StoreError};
 pub(super) struct Visit {
     pub(super) before: Place,
     pub(super) after: Place,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum Disclosure {
-    Row,
-    Subtree,
-}
-
-impl From<bool> for Disclosure {
-    fn from(deep: bool) -> Self {
-        if deep { Self::Subtree } else { Self::Row }
-    }
 }
 
 impl Library {
@@ -65,31 +53,9 @@ impl Library {
                 }
             };
             library.choose_place(Place::Scope(home.map_or(Scope::All, Scope::Collection)));
-            library.search.clear();
             library.focus_on(id);
             library.anchor = Some(id);
             library.open_to(session, id)?;
-            Ok(None)
-        })
-    }
-
-    pub(super) fn disclose(
-        &mut self,
-        id: ItemId,
-        open: bool,
-        depth: Disclosure,
-    ) -> Result<Option<String>> {
-        if depth == Disclosure::Row {
-            set(&mut self.outlined, id, open);
-            return Ok(None);
-        }
-        self.reading(|library, session| {
-            let tree = session.folders().tree();
-            for (folder, _) in tree.folders() {
-                if tree.within(folder, id) {
-                    set(&mut library.outlined, folder, open);
-                }
-            }
             Ok(None)
         })
     }

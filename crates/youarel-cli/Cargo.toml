@@ -23,24 +23,19 @@ ctrlc.workspace = true
 ratatui.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 rustls.workspace = true
 ureq.workspace = true
 webbrowser.workspace = true
 youarel-core.workspace = true
 youarel-html.workspace = true
-youarel-import.workspace = true
 youarel-icon.workspace = true
 youarel-link.workspace = true
 youarel-release.workspace = true
 youarel-store.workspace = true
-youarel-crypto.workspace = true
-youarel-sync.workspace = true
-youarel-protocol.workspace = true
-youarel-relay.workspace = true
 url.workspace = true
 
 [dev-dependencies]
-youarel-relay = { workspace = true, features = ["local"] }
 minisign.workspace = true
 tempfile.workspace = true
 tiny_http.workspace = true

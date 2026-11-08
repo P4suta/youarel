@@ -26,12 +26,8 @@ const PROOF_FIXTURES: &str = "xtask/proofs";
 const CORE_PACKAGE: &str = "youarel-core";
 /// A bare-metal target with no operating system, where only a crate without `std` and I/O builds.
 pub const BARE_TARGET: &str = "thumbv7em-none-eabi";
-/// The relay's Worker, its own workspace, and the WebAssembly target it builds for.
-const WORKER: &str = "server";
-const WORKER_TARGET: &str = "wasm32-unknown-unknown";
 /// The window launcher's workspace, and its script's TypeScript configuration.
 pub const APP: &str = "app";
-const APP_SCRIPT: &str = "app/tsconfig.json";
 /// The window launcher's manifest and its build's directory, relative to the checkout.
 const APP_MANIFEST: &str = "app/Cargo.toml";
 const APP_TARGET: &str = "target";
@@ -160,26 +156,6 @@ fn clippy(root: &Path) -> Result<()> {
     )
 }
 
-/// The relay's Worker, which builds only for WebAssembly: its formatting and its lints.
-fn worker(root: &Path) -> Result<()> {
-    let manifest = root.join(WORKER).join("Cargo.toml");
-    succeed(
-        Tool::Cargo
-            .command(root)
-            .args(["fmt", "--check", "--manifest-path"])
-            .arg(&manifest),
-        "cargo fmt --check of the Worker",
-    )?;
-    succeed(
-        Tool::Cargo
-            .command(root)
-            .args(["clippy", "--locked", "--manifest-path"])
-            .arg(&manifest)
-            .args(["--target", WORKER_TARGET, "--", "-D", "warnings"]),
-        "cargo clippy of the Worker",
-    )
-}
-
 /// The window launcher, in its own workspace: its script under strict TypeScript, then its formatting, its lints, and its tests.
 ///
 /// The compiled script lands beside its source, where the launcher's build embeds it.
@@ -191,10 +167,7 @@ fn app(root: &Path) -> Result<()> {
 }
 
 fn app_script(root: &Path) -> Result<()> {
-    succeed(
-        Tool::Tsc.command(root).args(["--project", APP_SCRIPT]),
-        "tsc of the window launcher's script",
-    )?;
+    crate::app::interface(root)?;
     succeed(
         Tool::Cargo
             .command(root)
@@ -264,10 +237,10 @@ fn tests(root: &Path) -> Result<()> {
     )
 }
 
-/// Every manifest with its own lockfile: the workspace, the fuzz workspace, the Worker, the window launcher, and each proof fixture.
+/// Every manifest with its own lockfile: the workspace, the fuzz workspace, the window launcher, and each proof fixture.
 fn manifests(root: &Path) -> Result<Vec<std::path::PathBuf>> {
     let mut found = vec![root.join("Cargo.toml")];
-    for workspace in [proofs::FUZZ, WORKER, APP] {
+    for workspace in [proofs::FUZZ, APP] {
         let manifest = root.join(workspace).join("Cargo.toml");
         if fs::is_file(&manifest)? {
             found.push(manifest);
@@ -360,7 +333,6 @@ fn everything(root: &Path, native_app: bool) -> Result<()> {
     report.stage("taplo", || taplo(root, None));
     report.stage("typos", || typos(root, None));
     report.stage("clippy", || clippy(root));
-    report.stage("worker", || worker(root));
     report.stage("app", || {
         if native_app {
             app(root)
@@ -392,6 +364,9 @@ fn staged(root: &Path) -> Result<()> {
         typos(root, Some(&all))
     });
     report.stage("structure", || structure::check(root));
+    if paths.iter().any(|path| path.starts_with("app/")) {
+        report.stage("interface", || crate::app::interface(root));
+    }
     if paths.iter().any(|path| path.starts_with(adr::DIRECTORY)) {
         report.stage("adr", || adr::check(root));
     }

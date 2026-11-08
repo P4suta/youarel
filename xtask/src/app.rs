@@ -24,6 +24,50 @@ const PROCESSORS: &str = "4";
 /// The volumes that keep the build and the crates between runs.
 const TARGET_VOLUME: &str = "youarel-app-linux-target";
 const REGISTRY_VOLUME: &str = "youarel-app-linux-registry";
+const PLAYWRIGHT: &str = "app/node_modules/playwright/cli.js";
+
+/// Checks the production renderer's types, accessibility, layout, and keyboard workflows.
+///
+/// # Errors
+///
+/// Returns an error when a locked dependency, compiler, browser, or interface assertion fails.
+pub fn interface(root: &Path) -> Result<()> {
+    tool::succeed(
+        Tool::Npm.command(root).args([
+            "ci",
+            "--prefix",
+            "app",
+            "--ignore-scripts",
+            "--no-audit",
+            "--no-fund",
+        ]),
+        "install the locked interface checks",
+    )?;
+    for project in ["app/tsconfig.json", "app/tsconfig.test.json"] {
+        tool::succeed(
+            Tool::Tsc.command(root).args(["--project", project]),
+            "check the renderer and interface test types",
+        )?;
+    }
+    tool::succeed(
+        Tool::Npm
+            .command(root)
+            .args(["audit", "--prefix", "app", "--audit-level=low"]),
+        "audit the interface check dependencies",
+    )?;
+    tool::succeed(
+        Tool::Node
+            .command(root)
+            .args([PLAYWRIGHT, "install", "chromium", "--only-shell"]),
+        "install the pinned interface browser",
+    )?;
+    tool::succeed(
+        Tool::Node
+            .command(root)
+            .args([PLAYWRIGHT, "test", "--config", "app/playwright.config.ts"]),
+        "check the rendered interface",
+    )
+}
 
 /// Compile the script, lint and test the launcher, then type into its window on a virtual display.
 const TASK: &str = r"cd /work

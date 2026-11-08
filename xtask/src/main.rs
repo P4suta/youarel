@@ -5,7 +5,7 @@ use std::process::ExitCode;
 
 const USAGE_EXIT_CODE: u8 = 2;
 
-const USAGE: &str = "usage: cargo xtask check [--staged | --platform] | push-check | structure | bench [--shortcuts N] [--folders F] [--seed S] [--dry-run] | commit-msg FILE | proofs [--ci] [--only STEP] [--without STEP] [--inside], where STEP is kani|quint|proverif|miri|fuzz|mutants | proof-source SOURCE | fuzz TARGET RUNS | worker | app-linux | contain TASK... | gen [--check | --model NAME --native-quint PATH] | ci plan [BASE]|cache app|run JOB|check|test|proofs|assurance|gate NAME | release STEP...";
+const USAGE: &str = "usage: cargo xtask check [--staged | --platform] | push-check | structure | bench [--shortcuts N] [--folders F] [--seed S] [--dry-run] | commit-msg FILE | proofs [--ci] [--only STEP] [--without STEP] [--inside], where STEP is kani|quint|miri|fuzz|mutants | proof-source SOURCE | fuzz TARGET RUNS | interface | app-linux | contain TASK... | gen [--check | --model NAME --native-quint PATH] | ci plan [BASE]|cache app|run JOB|check|test|proofs|assurance|gate NAME | release STEP...";
 
 fn report(task: &str, result: anyhow::Result<()>) -> ExitCode {
     match result {
@@ -38,8 +38,8 @@ fn dispatch(root: &Path, words: &[&str]) -> ExitCode {
         ),
         ["push-check"] => report("push-check", xtask::check::push_check(root)),
         ["structure"] => report("structure", xtask::structure::check(root)),
-        ["worker"] => report("worker", xtask::worker::run(root)),
         ["app-linux"] => report("app-linux", xtask::app::linux(root)),
+        ["interface"] => report("interface", xtask::app::interface(root)),
         ["commit-msg", message] => report(
             "commit-msg",
             xtask::commit_msg::check(root, Path::new(message)),

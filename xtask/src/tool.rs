@@ -25,6 +25,7 @@ pub const SPCTL: &str = "/usr/sbin/spctl";
 
 /// The TypeScript compiler as npm installs it: a script that Windows runs only by its `.cmd` name.
 const TSC: &str = if cfg!(windows) { "tsc.cmd" } else { "tsc" };
+const NPM: &str = if cfg!(windows) { "npm.cmd" } else { "npm" };
 
 mod raw {
     #![expect(
@@ -67,6 +68,8 @@ pub enum Tool {
     Pwsh,
     /// The TypeScript compiler, which checks the window launcher's script under strict rules.
     Tsc,
+    Npm,
+    Node,
     /// The macOS tools of a release, by their fixed system paths.
     Security,
     Codesign,
@@ -95,6 +98,8 @@ impl Tool {
             Self::Gh => "gh",
             Self::Pwsh => "pwsh",
             Self::Tsc => TSC,
+            Self::Npm => NPM,
+            Self::Node => "node",
             Self::Security => SECURITY,
             Self::Codesign => CODESIGN,
             Self::Productsign => PRODUCTSIGN,

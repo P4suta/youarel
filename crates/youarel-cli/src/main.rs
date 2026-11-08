@@ -1,12 +1,10 @@
 //! `youarel`: open web shortcuts from any browser, from a terminal launcher or from the command line.
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use clap::{Parser, Subcommand};
-use std::path::PathBuf;
 use std::process::ExitCode;
-use youarel_cli::browsers::BrowserName;
-use youarel_cli::commands::{self, Addition, Format};
-use youarel_cli::{clock, home, sync, tui, update};
+use youarel_cli::commands::{self, Addition};
+use youarel_cli::{clock, home, tui, update};
 use youarel_core::update_rules::Consent;
 use youarel_store::Store;
 
@@ -68,46 +66,8 @@ enum Command {
     Mark { folder: String, mark: String },
     /// Remove a shortcut, or a folder with everything in it.
     Rm { entry: String },
-    /// Import a bookmark file a browser exported or keeps, such as Chrome's, Edge's, or Brave's `Bookmarks` copied from another device, or the bookmarks a browser keeps on this device.
-    Import(Import),
-    /// Fill missing icons from local browser caches without contacting any site.
-    Icons,
-    /// Export every folder and shortcut.
-    Export {
-        #[arg(long, value_enum, default_value = "html")]
-        format: Format,
-    },
     /// Print the directory that holds youarel's files.
     Where,
-    /// The account this device syncs with.
-    Account {
-        #[command(subcommand)]
-        command: AccountCommand,
-    },
-    /// Pair a new device through four files, which any channel carries.
-    Pair {
-        #[command(subcommand)]
-        command: PairCommand,
-    },
-    /// Export or import a sealed snapshot directory.
-    Bundle {
-        #[command(subcommand)]
-        command: BundleCommand,
-    },
-    /// Sync through a shared folder or a relay at an `https://` address.
-    Sync { target: String },
-    /// Remove a device from the account, by the start of its identifier.
-    Remove { device: String },
-    /// Create a recovery key, which brings a new device into the account once every device is gone.
-    Recovery {
-        #[command(subcommand)]
-        command: RecoveryCommand,
-    },
-    /// On a new device: recover with the key on standard input, from a snapshot directory, a shared folder, or a relay.
-    Recover {
-        #[command(flatten)]
-        source: RecoverySource,
-    },
     /// Show the window launcher's window, or hide it, for a desktop shortcut where the launcher cannot hold its own.
     Toggle,
     /// Replace this program with the latest release, when its signed manifest offers a newer one.
@@ -118,126 +78,8 @@ enum Command {
     },
 }
 
-#[derive(Debug, Subcommand)]
-enum AccountCommand {
-    /// Found an account with this device as its only member.
-    Create,
-    /// Show the account, its members, and its epoch.
-    Show,
-}
-
-#[derive(Debug, Subcommand)]
-enum RecoveryCommand {
-    /// Create a recovery key and show it once.
-    Create,
-}
-
-/// One source of retained sealed segment chains.
-#[derive(Debug, clap::Args)]
-#[group(required = true, multiple = false)]
-struct RecoverySource {
-    /// A snapshot directory a member exported.
-    #[arg(long, value_name = "DIR")]
-    bundle: Option<PathBuf>,
-    /// A shared folder where the members append their chains.
-    #[arg(long)]
-    folder: Option<PathBuf>,
-    /// A relay at an `https://` address.
-    #[arg(long)]
-    relay: Option<String>,
-}
-
-impl RecoverySource {
-    fn source(&self) -> Result<sync::Source<'_>> {
-        match (&self.bundle, &self.folder, &self.relay) {
-            (Some(bundle), None, None) => Ok(sync::Source::Bundle(bundle)),
-            (None, Some(folder), None) => Ok(sync::Source::Folder(folder)),
-            (None, None, Some(relay)) => Ok(sync::Source::Relay(relay)),
-            _ => anyhow::bail!("give one of `--bundle DIR`, `--folder DIR`, or `--relay URL`"),
-        }
-    }
-}
-
-#[derive(Debug, Subcommand)]
-enum PairCommand {
-    /// Show a code that a new device types to join; through a relay, wait there for it and admit it.
-    Invite {
-        #[arg(long)]
-        relay: Option<String>,
-    },
-    /// On the new device: answer a code with a join file, or through a relay, join the inviting device there.
-    Join {
-        code: String,
-        #[arg(long, required_unless_present = "relay", conflicts_with = "relay")]
-        out: Option<PathBuf>,
-        #[arg(long)]
-        relay: Option<String>,
-    },
-    /// On the inviting device: answer a join file with a welcome file.
-    Accept {
-        join: PathBuf,
-        #[arg(long)]
-        out: PathBuf,
-    },
-    /// On the new device: answer a welcome file with a confirmation file.
-    Confirm {
-        welcome: PathBuf,
-        #[arg(long)]
-        out: PathBuf,
-    },
-    /// On the inviting device: add the confirmed device and write its entry file.
-    Admit {
-        confirmation: PathBuf,
-        #[arg(long)]
-        out: PathBuf,
-    },
-    /// On the new device: install an entry file.
-    Finish { entry: PathBuf },
-}
-
-#[derive(Debug, Subcommand)]
-enum BundleCommand {
-    /// Write a snapshot directory sealed for the other devices.
-    Export {
-        #[arg(value_name = "DIR")]
-        directory: PathBuf,
-    },
-    /// Read a snapshot directory without writing to it.
-    Import {
-        #[arg(value_name = "DIR")]
-        directory: PathBuf,
-    },
-}
-
 fn joined(words: &[String]) -> String {
     words.join(" ")
-}
-
-/// Runs one step of a pairing, through files or a relay.
-fn pair(store: &Store, now: u64, command: PairCommand) -> Result<Vec<String>> {
-    match command {
-        PairCommand::Invite { relay: None } => sync::invite(store),
-        PairCommand::Invite { relay: Some(relay) } => sync::invite_through(store, &relay),
-        PairCommand::Join {
-            code,
-            out: Some(out),
-            relay: None,
-        } => sync::join(store, &code, &out),
-        PairCommand::Join {
-            code,
-            relay: Some(relay),
-            ..
-        } => sync::join_through(store, &code, &relay),
-        PairCommand::Join {
-            out: None,
-            relay: None,
-            ..
-        } => anyhow::bail!("give `--out FILE` or `--relay URL`"),
-        PairCommand::Accept { join, out } => sync::accept(store, &join, &out),
-        PairCommand::Confirm { welcome, out } => sync::confirm(store, &welcome, &out),
-        PairCommand::Admit { confirmation, out } => sync::admit(store, now, &confirmation, &out),
-        PairCommand::Finish { entry } => sync::finish(store, now, &entry),
-    }
 }
 
 fn run(cli: Cli) -> Result<()> {
@@ -280,87 +122,13 @@ fn run(cli: Cli) -> Result<()> {
         Some(Command::Note { entry, note }) => vec![commands::note(&store, now, &entry, &note)?],
         Some(Command::Mark { folder, mark }) => vec![commands::mark(&store, now, &folder, &mark)?],
         Some(Command::Rm { entry }) => vec![commands::remove(&store, now, &entry)?],
-        Some(Command::Import(what)) => {
-            let browser = what.from.map(Into::into);
-            let imported = import(&store, now, what)?;
-            let mut lines = vec![imported.to_string()];
-            match local_icons(&store, now, browser) {
-                Ok(icons) => lines.extend(icons),
-                Err(error) => lines.push(format!(
-                    "Shortcuts imported; local icons could not finish: {error:#}"
-                )),
-            }
-            lines
-        }
-        Some(Command::Icons) => local_icons(&store, now, None)?,
-        Some(Command::Export { format }) => {
-            let text = commands::export(&store, now, format)?;
-            vec![text.trim_end().to_owned()]
-        }
         Some(Command::Where) => vec![store.directory().display().to_string()],
-        Some(Command::Account { command }) => match command {
-            AccountCommand::Create => sync::create(&store, now)?,
-            AccountCommand::Show => sync::show(&store)?,
-        },
-        Some(Command::Pair { command }) => pair(&store, now, command)?,
-        Some(Command::Bundle { command }) => match command {
-            BundleCommand::Export { directory } => sync::export(&store, now, &directory)?,
-            BundleCommand::Import { directory } => sync::import(&store, now, &directory)?,
-        },
-        Some(Command::Sync { target }) => sync::sync(&store, now, &target)?,
-        Some(Command::Remove { device }) => sync::remove(&store, now, &device)?,
-        Some(Command::Recovery {
-            command: RecoveryCommand::Create,
-        }) => sync::recovery_create(&store, now)?,
-        Some(Command::Recover { source }) => {
-            sync::recover(&store, now, &read_key()?, source.source()?)?
-        }
         Some(Command::Toggle) => vec![youarel_cli::window::toggle()?],
         Some(Command::SelfUpdate { allow_downgrade }) => {
             vec![update::run(store.directory(), consent(allow_downgrade))?]
         }
     };
     commands::print(&lines)
-}
-
-/// What to import, and where it lands.
-#[derive(Debug, clap::Args)]
-struct Import {
-    #[arg(required_unless_present = "from", conflicts_with = "from")]
-    file: Option<PathBuf>,
-    /// The browser whose bookmarks to read where it keeps them.
-    #[arg(long, value_enum)]
-    from: Option<BrowserName>,
-    /// The folder path to import into, such as `Edge/University`, made when it does not exist.
-    #[arg(long)]
-    folder: Option<String>,
-}
-
-/// Imports a bookmark file, or the bookmarks a browser keeps on this device.
-fn import(store: &Store, now: u64, what: Import) -> Result<commands::Imported> {
-    let folder = what.folder.as_deref();
-    match (what.file, what.from) {
-        (_, Some(browser)) => commands::import_browser(store, now, browser.into(), folder),
-        (Some(file), None) => commands::import(store, now, &read_file(&file)?, folder),
-        (None, None) => anyhow::bail!("give a bookmark file or `--from` a browser"),
-    }
-}
-
-fn local_icons(
-    store: &Store,
-    now: u64,
-    browser: Option<youarel_core::browser_rules::Browser>,
-) -> Result<Vec<String>> {
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicBool, Ordering};
-    let cancelled = Arc::new(AtomicBool::new(false));
-    let interrupt = Arc::clone(&cancelled);
-    ctrlc::set_handler(move || interrupt.store(true, Ordering::Relaxed))?;
-    let discovery = match browser {
-        Some(browser) => youarel_cli::browsers::cache::discover_browser(browser)?,
-        None => youarel_cli::browsers::cache::discover()?,
-    };
-    Ok(youarel_cli::icons::local::fill_all(store, now, discovery, cancelled)?.lines())
 }
 
 /// What a person allows an update to do.
@@ -372,31 +140,66 @@ const fn consent(allow_downgrade: bool) -> Consent {
     }
 }
 
-/// The recovery key on standard input, which keeps it out of the shell's history, asked for when a person types it.
-fn read_key() -> Result<String> {
-    let input = std::io::stdin();
-    if std::io::IsTerminal::is_terminal(&input) {
-        eprint!("recovery key: ");
-    }
-    let mut line = String::new();
-    input
-        .read_line(&mut line)
-        .context("cannot read the recovery key")?;
-    Ok(line)
-}
-
-/// The bytes of a file the person named, up to the longest file an import reads.
-fn read_file(path: &std::path::Path) -> Result<Vec<u8>> {
-    youarel_store::fs::read_bounded(path, youarel_import::LONGEST_FILE)
-        .with_context(|| format!("cannot read {}", path.display()))
-}
-
 fn main() -> ExitCode {
     match run(Cli::parse()) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("youarel: {error:#}");
             ExitCode::FAILURE
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Cli;
+    use clap::{CommandFactory as _, Parser as _};
+
+    #[test]
+    fn the_command_surface_contains_only_bookmark_window_and_update_operations() {
+        let command = Cli::command();
+        let names: Vec<&str> = command
+            .get_subcommands()
+            .map(clap::Command::get_name)
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "add",
+                "ls",
+                "find",
+                "open",
+                "mkdir",
+                "mv",
+                "rename",
+                "alias",
+                "note",
+                "mark",
+                "rm",
+                "where",
+                "toggle",
+                "self-update",
+            ]
+        );
+    }
+
+    #[test]
+    fn retired_account_and_transport_commands_are_rejected() {
+        for arguments in [
+            vec!["account", "show"],
+            vec!["pair", "invite"],
+            vec!["bundle", "export", "unused"],
+            vec!["sync", "unused"],
+            vec!["remove", "abc"],
+            vec!["recovery", "create"],
+            vec!["recover", "--bundle", "unused"],
+            vec!["import", "unused.html"],
+            vec!["export"],
+            vec!["icons"],
+        ] {
+            let error =
+                Cli::try_parse_from(core::iter::once("youarel").chain(arguments)).unwrap_err();
+            assert_eq!(error.kind(), clap::error::ErrorKind::InvalidSubcommand);
         }
     }
 }

@@ -13,7 +13,7 @@ use youarel_core::wire_rules::{Reader, Writer};
 
 /// The file of the store's database, beside the device's other files.
 pub const DATABASE_FILE: &str = "library.redb";
-/// The store format that tracks dirty records and pending segments, which earlier writers cannot maintain.
+/// The persisted store format, retained so existing bookmark libraries remain readable.
 pub const FORMAT: u16 = 4;
 /// The most bytes of the database's pages that a session keeps in memory.
 pub const CACHE_BYTES: usize = 256 * 1024 * 1024;
@@ -32,14 +32,6 @@ pub(crate) const SHORTCUTS: Bytes = TableDefinition::new("shortcuts");
 /// Every folder's record, those in the trash and those gone for good included, by its identifier.
 pub(crate) const FOLDERS: Bytes = TableDefinition::new("folders");
 pub(crate) const DEVICE_NAMES: Bytes = TableDefinition::new("device_names");
-pub(crate) const DIRTY: Bytes = TableDefinition::new("dirty");
-pub(crate) const PENDING_BODIES: TableDefinition<'static, u64, &'static [u8]> =
-    TableDefinition::new("pending_bodies");
-pub(crate) const PENDING_DIGESTS: TableDefinition<'static, u64, &'static [u8]> =
-    TableDefinition::new("pending_digests");
-pub(crate) const PENDING_SEALED: TableDefinition<'static, u64, &'static [u8]> =
-    TableDefinition::new("pending_sealed");
-pub(crate) const PEER_CURSORS: Bytes = TableDefinition::new("peer_cursors");
 /// How often and how lately this device opened each shortcut, by its identifier.
 pub(crate) const VISITS: Bytes = TableDefinition::new("visits");
 /// Each visited shortcut by the time this device opened it last, the latest first.
@@ -59,7 +51,6 @@ pub(crate) const DEVICE_KEY: &str = "device";
 pub(crate) const LATEST_KEY: &str = "latest";
 /// The key of how many sessions changed the store, which a reader that keeps what it read compares to know whether it still holds.
 pub(crate) const GENERATION_KEY: &str = "generation";
-pub(crate) const PUBLISH_WATERMARK_KEY: &str = "publish_watermark";
 
 /// The bytes of an identifier of a device or an item.
 const ID: usize = 16;

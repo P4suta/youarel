@@ -4,27 +4,12 @@
 
 [[obligation]]
 verifier = "kani"
-source = "crates/youarel-core/src/icon_rules.rs"
-harnesses = [
-  { name = "proofs::cache_roots_preserve_the_hosts_environment_conventions", covers = 3, contract = "cache discovery preserves the platform's explicit environment root and refuses empty or unavailable roots", input_domain = "all six cache browsers, all three host kinds, and unset, empty, and one-byte nonempty classes for each environment value", bound = "complete over the presence classes; native tests cover actual Windows and Unix path values and profile discovery" },
-  { name = "proofs::bitmap_preference_keeps_the_largest_small_image_or_the_smallest_large_one", covers = 4, contract = "bitmap dimensions are admitted exactly within bounds and preference chooses the largest size at or below 64 pixels before any larger size, then the smallest larger size", input_domain = "every u32 width and height and every pair of positive square sides up to 4096", bound = "complete; the adapter validates image bytes through the production normalizer" },
-  { name = "proofs::admitted_database_sizes_never_overflow_or_pass_the_snapshot_limit", covers = 2, contract = "admitted SQLite page counts and sizes multiply without overflow and fit the snapshot byte limit", input_domain = "every u64 page count and page size", bound = "complete; the SQLite adapter supplies the database facts" },
-]
-probes = [
-  { harness = "proofs::rejects_preferring_a_larger_than_needed_bitmap", assertion = "NEGATIVE_ICON_CONTROL" },
-]
-
-[[obligation]]
-verifier = "kani"
 source = "crates/youarel-core/src/device_rules.rs"
 harnesses = [
-  { name = "checks::qr_bounds_admit_only_nonempty_bounded_text_and_standard_squares", covers = 4, contract = "QR text contains one through 512 UTF-8 bytes and QR squares have exactly a standard side between 21 and 177 without arithmetic overflow", input_domain = "every usize byte length and every u32 side", bound = "complete for admission; the pinned encoder is trusted for QR encoding and native independent decoding checks emitted matrices" },
-  { name = "checks::display_integers_never_round_or_overflow", covers = 4, contract = "device work identifiers strictly increase within JavaScript's exact integer range and displayed admission times fit the Date range", input_domain = "every u64 counter and timestamp", bound = "complete" },
-  { name = "checks::screen_steps_only_advance_and_terminal_runs_never_restart", covers = 4, contract = "device-screen progress only advances, terminal runs stay final, and an expired unfinished run never completes", input_domain = "every screen stage and event and every u64 start and current time", bound = "complete; the adapter supplies the authenticated pairing outcomes and serializes each run" },
   { name = "checks::admitted_short_names_round_trip_through_the_production_codec", covers = 2, contract = "the production codec admits exactly valid short device names and preserves their full membership identity and stamp without trailing bytes", input_domain = "every valid UTF-8 prefix of up to four arbitrary bytes, every 32-byte membership identity, and every u64 wall and u32 counter", bound = "four UTF-8 bytes and one fixed writer; native tests cover the 128-byte boundary, multiple writers, Unicode, whole bodies, and segment partitions" },
 ]
 probes = [
-  { harness = "checks::rejects_an_expired_invitation_completing", assertion = "NEGATIVE_DEVICE_CONTROL" },
+  { harness = "checks::rejects_a_name_with_a_control_character", assertion = "NEGATIVE_DEVICE_CONTROL" },
 ]
 
 [[obligation]]
@@ -37,25 +22,6 @@ harnesses = [
 ]
 probes = [
   { harness = "proofs::rejects_a_campaign_after_its_deadline", assertion = "NEGATIVE_BENCH_CONTROL" },
-]
-
-[[obligation]]
-verifier = "kani"
-source = "crates/youarel-core/src/segment_rules.rs"
-harnesses = [
-  { name = "proofs::a_snapshot_header_has_positive_parts_and_fits_the_chain", covers = 5, contract = "Header::new admits every delta and exactly snapshots whose part is within a nonempty count, whose first part has a positive sequence, and whose last part does not overflow", input_domain = "every positive u64 sequence, every u32 part and part count, and either segment kind", bound = "complete; the predecessor digest is stored without being read" },
-  { name = "proofs::fetching_chooses_the_next_segment_or_a_retained_snapshot_without_overflow", covers = 4, contract = "a reader fetches the next retained sequence or a snapshot beyond a missing prefix, reports complete only after catching up, and reports Lost only for a missing prefix without a snapshot", input_domain = "all optional cursor sequences and positive first/latest sequences with first no later than latest, and every absent or retained snapshot start", bound = "all u64 positions; digests are not read" },
-  { name = "proofs::a_publish_plan_preserves_quiet_and_repairs_missing_or_compacted_chains", covers = 3, contract = "publication preserves quiet, snapshots ordinary repairs and compaction, and uses deltas for explicit bounded relay bridges or changed delta-only chains; first and forced publications always snapshot", input_domain = "every cursor presence, all five destinations including delta-only and bridge, change and force flag, byte count, and delta count", bound = "complete; publication reads the cursor only for its presence" },
-  { name = "proofs::a_target_past_every_owned_sequence_is_never_overwritten", covers = 3, contract = "remote_ahead blocks exactly a remote head beyond this device's highest owned sequence or any remote head before it owns one", input_domain = "every optional positive remote and owned sequence", bound = "complete" },
-  { name = "proofs::canonical_parts_preserve_two_whole_records_as_the_dictionary_changes", covers = 2, contract = "Parts emits only canonical bodies within the actual byte limit and preserves both individually fitting records with every field unchanged as its device dictionary grows", input_domain = "two ascending folder, shortcut, or device-name records with fixed valid texts and positions, base stamps from three writer classes, and limits ten through five hundred twelve bytes", bound = "two records with fixed payloads and base stamps; native tests cover UTF-8 text, larger fields, refusal without loss, and dictionary and record counts past the varint boundary" },
-  { name = "proofs::a_cursor_advances_only_to_the_next_segment_or_a_snapshot_restart", covers = 8, contract = "step advances exactly for the next segment with the matching predecessor, or a first snapshot part at the advertised complete snapshot after a gap; every other verdict keeps the cursor", input_domain = "optional cursors and headers through sequence four, snapshot parts through two, retained bounds through four, and digest equality classes zero through three", bound = "four sequences, two snapshot parts, and four digest equality classes; the adapter authenticates headers and plaintext before admission" },
-  { name = "proofs::the_same_plaintext_replays_without_advancing", covers = 1, contract = "the same plaintext digest at the cursor's sequence returns Reapply without changing the cursor", input_domain = "every nonzero sequence, digest, and predecessor", bound = "complete; digest comparisons unwind at thirty-three" },
-  { name = "proofs::a_delta_admits_exactly_own_writes_after_its_watermark", covers = 2, contract = "publishes admits exactly written stamps of this device that follow the watermark, or any of its written stamps when none was published, and excludes the stamp no device wrote", input_domain = "every stamp, device, and optional watermark", bound = "complete; device comparisons unwind at seventeen" },
-  { name = "proofs::compaction_follows_the_ratio_or_the_delta_count_without_overflow", covers = 2, contract = "compaction is due at the delta count bound or once nonempty deltas reach the configured multiple of snapshot bytes, without overflowing", input_domain = "every byte count and delta count", bound = "complete on targets whose usize is at most sixty-four bits" },
-  { name = "proofs::a_split_never_cuts_a_record_or_passes_its_limit", covers = 2, contract = "split returns contiguous record ranges covering the input with every part within its limit, and refuses exactly a zero limit or a record too large to fit alone", input_domain = "up to three records of zero through four bytes and a limit of zero through four bytes", bound = "three records and four-byte limits; native tests cover usize overflow and production-sized limits" },
-]
-probes = [
-  { harness = "proofs::rejects_a_segment_from_the_past", assertion = "NEGATIVE_SEGMENT_CONTROL" },
 ]
 
 [[obligation]]
@@ -159,33 +125,6 @@ probes = [
 
 [[obligation]]
 verifier = "quint"
-spec = "specs/devices.qnt"
-main = "devices"
-probe = "devices_probe"
-invariant = "safe"
-witnesses = ["completed", "expired", "refused", "cancelled", "granted"]
-seed = "0x2a"
-samples = 1000
-steps = 12
-traces = 100
-# The complete state count is pending the owner's verification window.
-
-[[obligation]]
-verifier = "quint"
-spec = "specs/segments.qnt"
-main = "segments"
-probe = "segments_probe"
-invariant = "safe"
-witnesses = ["applied", "reapplied", "jumped", "lost", "compacted"]
-seed = "0x2a"
-samples = 1000
-steps = 80
-traces = 100
-# The complete state count remains unmeasured while the owner defers long verification.
-# The Quint gate refuses an absent count even when its full exploration succeeds.
-
-[[obligation]]
-verifier = "quint"
 spec = "specs/ui.qnt"
 main = "ui"
 probe = "ui_probe"
@@ -221,17 +160,6 @@ probes = [
 
 [[obligation]]
 verifier = "kani"
-source = "crates/youarel-core/src/membership_rules.rs"
-harnesses = [
-  { name = "proofs::historical_key_grants_preserve_the_epoch_and_require_a_current_author", covers = 4, contract = "historical rotation operations retain accessible key grants only from a current member and never replace or advance the canonical epoch", input_domain = "every positive u32 canonical and historical epoch with historical no greater than canonical, and either an active or a removed author", bound = "five causally ordered operations and two members; the adapter authenticates operations and seals slots to the recovery identity" },
-  { name = "proofs::every_decision_keeps_a_member_and_counts_only_members", covers = 2, contract = "decide founds only an empty account from its genesis, skips every other action whose author is no member, adds only a stranger, never removes the last member, and rotates only to a greater epoch, naming the device or epoch of the action", input_domain = "every action with every device and epoch, every member count and epoch, and every value of the genesis, author, and target facts", bound = "complete for decide; Members::apply, which carries out a decision on its vector, is covered by the exhaustive test over every account of up to three members, and resolve's order by the exhaustive test over every log of three operations and by the replay of the Quint model's traces" },
-]
-probes = [
-  { harness = "proofs::rejects_a_removal_of_the_last_member", assertion = "NEGATIVE_MEMBERSHIP_CONTROL" },
-]
-
-[[obligation]]
-verifier = "kani"
 source = "crates/youarel-core/src/wire_rules.rs"
 harnesses = [
   { name = "proofs::a_field_never_passes_its_limit_or_the_message", covers = 2, contract = "a length-prefixed field reads exactly the bytes its prefix declares, never more than its limit or the message holds, and moves the reader past it; it fails only as too long, when the declaration exceeds the limit, or as truncated, when the field passes the end", input_domain = "every message of eight bytes and every limit up to eight", bound = "messages of eight bytes; the fuzz target wire_decode reads every message kind at any length" },
@@ -256,25 +184,6 @@ harnesses = [
 ]
 probes = [
   { harness = "proofs::rejects_a_record_with_reserved_flag_bits", assertion = "NEGATIVE_RECORD_CONTROL" },
-]
-
-[[obligation]]
-verifier = "kani"
-source = "crates/youarel-core/src/relay_rules.rs"
-harnesses = [
-  { name = "proofs::only_an_unfinished_snapshot_reports_more_parts", covers = 2, contract = "a retained latest header reports an unfinished snapshot exactly when a later part remains, and deltas and final parts never do", input_domain = "every valid header with every positive u64 sequence and every valid u32 snapshot part count", bound = "complete scalar domains" },
-  { name = "proofs::delivery_pages_bound_their_metadata_segments_and_framing_without_overflow", covers = 2, contract = "delivery pages account for metadata, segment framing, and every accepted byte exactly, admitting only pages within both the byte and segment limits without overflow", input_domain = "every machine-word metadata and segment size, and every page within its established count and byte bounds", bound = "complete scalar domains; induction covers any number of pushes" },
-  { name = "proofs::appends_require_a_successor_or_an_explicit_restart", covers = 4, contract = "a chain accepts only a positive newer sequence that continues compatible snapshot parts or complete data, starts a snapshot, or explicitly bridges delta-only transport; old and incomplete continuations refuse", input_domain = "every two valid headers, all positive u64 sequences and valid snapshot part counts, optional previous header, and bridge flag", bound = "complete scalar domain; no ciphertext is trusted by this decision" },
-  { name = "proofs::retention_matches_the_newest_complete_snapshot_or_the_largest_bounded_suffix", covers = 5, contract = "retain keeps the newest complete snapshot and its following segments when they fit, otherwise the largest fitting suffix with no incomplete snapshot hint, and refuses empty or oversized input without overflow", input_domain = "up to three ascending valid headers at sequences one through three, every snapshot part count, every positive machine-word segment size, and every byte budget", bound = "three segments; snapshot completion and suffix sums are checked by an independent bounded specification using wide arithmetic" },
-  { name = "proofs::retention_refuses_duplicate_or_reversed_sequences", covers = 2, contract = "duplicate and reversed sequences refuse before retention and ordered metadata is admitted when it fits", input_domain = "two delta headers with every positive u64 sequence and one byte each", bound = "two segments" },
-  { name = "proofs::a_forgotten_nonce_belongs_to_a_stale_request", covers = 1, contract = "a request is fresh exactly when its stamp lies within the window of the relay's clock, and the relay forgets a nonce only once its request is stale, so a forgotten nonce never returns as fresh", input_domain = "every clock reading and every stamp", bound = "complete" },
-  { name = "proofs::a_request_passes_only_fresh_and_new", covers = 1, contract = "admit lets a request pass exactly when it is fresh and its nonce is none the relay retains, and calls it a replay only for a retained nonce", input_domain = "every clock reading, stamp, and nonce, and every list of up to three retained nonces with their stamps", bound = "three retained nonces" },
-  { name = "proofs::the_quota_and_the_clocks_never_overflow", covers = 1, contract = "an account expires its retention after its last request, a device is gone only after its inactivity, and a mailbox stays open for its lifetime and takes a message exactly when it stays within its limit, with no overflow", input_domain = "every total and incoming mail size, clock reading, and timestamp", bound = "complete; account segment retention has its own obligation" },
-  { name = "proofs::the_nameplate_is_the_smallest_free_one", covers = 1, contract = "nameplate hands out a positive number that no open mailbox holds, and every smaller positive number is taken", input_domain = "every list of up to three open nameplates", bound = "three open mailboxes; the tests cover a full table" },
-]
-probes = [
-  { harness = "proofs::rejects_a_request_from_beyond_the_window", assertion = "NEGATIVE_RELAY_CONTROL" },
-  { harness = "proofs::rejects_a_partial_snapshot_as_a_bootstrap", assertion = "NEGATIVE_RELAY_RETENTION_CONTROL" },
 ]
 
 [[obligation]]
@@ -308,62 +217,12 @@ probes = [
 
 [[obligation]]
 verifier = "kani"
-source = "crates/youarel-core/src/theme_rules.rs"
-harnesses = [
-  { name = "proofs::every_color_reads_back_from_its_hexadecimal", covers = 1, contract = "a color written as #rrggbbaa reads back as itself", input_domain = "every color of four eight-bit channels", bound = "complete" },
-  { name = "proofs::only_hexadecimal_colors_of_four_lengths_are_read", covers = 3, contract = "from_hex reads a color exactly from the mark followed by three, four, six, or eight hexadecimal digits of either case, and a long color writes back as it was read up to case", input_domain = "every text of up to nine bytes, each any byte", bound = "nine bytes; a longer text is no color by its length alone" },
-  { name = "proofs::every_slot_resolves_to_its_declared_color_or_its_fallback", covers = 1, contract = "the fallbacks of the slots reach a slot without one within the slots' count, and resolve gives each slot its declared color, else the color its fallbacks lead to, else the default of the kind", input_domain = "both kinds and every set of declared colors drawn from none and two colors", bound = "two colors; the resolution compares colors only for presence" },
-]
-probes = [
-  { harness = "proofs::rejects_a_color_of_two_digits", assertion = "NEGATIVE_THEME_CONTROL" },
-]
-
-[[obligation]]
-verifier = "kani"
-source = "crates/youarel-core/src/browser_rules.rs"
-harnesses = [
-  { name = "proofs::each_browser_stands_on_the_first_usable_variable_its_host_names", covers = 3, contract = "place puts Safari's file under HOME on macOS and nowhere else, Chrome's file under HOME on macOS, LOCALAPPDATA on Windows, and XDG_CONFIG_HOME else HOME on Unix, and Firefox's profiles under HOME on macOS and Unix and APPDATA on Windows; an empty variable names nothing, and a place's root is its base's own value with a tail beneath it", input_domain = "every browser on every kind of host, with each of the four variables unset, empty, or set", bound = "the three browsers, the three hosts, and the three states of each variable, with drawn names of two bytes" },
-  { name = "proofs::a_file_s_first_bytes_name_its_reader", covers = 4, contract = "kind names a Firefox backup by its magic number, Safari's property list by the binary magic number or an opening plist element in text that opens no JSON object, Chromium's file by a JSON object after an optional byte order mark and blanks, and HTML otherwise", input_domain = "every file of up to eight arbitrary bytes, which holds each magic number and the opening of a property list; tests draw longer files from those pieces and show that only the first 512 bytes count", bound = "eight bytes" },
-]
-probes = [
-  { harness = "proofs::rejects_a_place_under_an_empty_home", assertion = "NEGATIVE_BROWSER_CONTROL" },
-]
-
-[[obligation]]
-verifier = "kani"
 source = "crates/youarel-core/src/mark_rules.rs"
 harnesses = [
   { name = "proofs::a_mark_is_the_trimmed_text_without_space_inside", covers = 3, contract = "admit answers the text trimmed of the whitespace around it when it holds no whitespace or control character inside and fits in eight characters and thirty-two bytes, refuses a longer one as long and a fitting one with whitespace or a control character inside as spaced, and clears the mark for text of whitespace alone", input_domain = "every text joined of three pieces, each nothing, an ASCII space, a tab, a letter, a letter beyond ASCII, an emoji, a joiner, or a wide space; tests draw the same pieces and show a joined emoji fits and longer texts are refused", bound = "three pieces of eight" },
 ]
 probes = [
   { harness = "proofs::rejects_a_mark_with_a_tab_inside", assertion = "NEGATIVE_MARK_CONTROL" },
-]
-
-[[obligation]]
-verifier = "kani"
-source = "crates/youarel-core/src/sync_rules.rs"
-harnesses = [
-  { name = "proofs::a_sync_waits_its_turn_and_stays_due_once_due", covers = 6, contract = "the backoff lies between its first wait and the longest and never shrinks with another failure, a publish waits between the settling and the longest backoff, the first sync after a start begins at once, a due sync stays due and a due publish stays a publish as the clock moves on, no publish is due while nothing is pending, a pending device publishes once the settling has passed since its last edit, or after failures the backoff since the last attempt, and never sooner, a notice brings no publish forward, after failures no sync is due before the backoff has passed since the last attempt and one is due once it has, with no failure a merge is due at the latest once the interval has passed since the last attempt, a merge is due only once the interval has passed or the folder rested from a notice for the quiet span with no publish due, and such a notice is always answered", input_domain = "every schedule of any last attempt, any count of failures, either pending state, any last edit or none, and any notice or none, and every pair of clock readings", bound = "complete" },
-  { name = "proofs::a_begun_sync_is_due_no_more", covers = 2, contract = "for every sync due at a clock reading, the schedule once it begins then has nothing due, records the attempt, answers the notices, and keeps the failures, a publish also carries what was pending and its edit, and a merge keeps both", input_domain = "every schedule of any last attempt, any count of failures, either pending state, any last edit or none, and any notice or none, and every clock reading at which a sync is due", bound = "complete" },
-  { name = "proofs::an_ended_sync_keeps_what_waits_for_a_publish", covers = 3, contract = "a sync that succeeds clears the failures and leaves pending what was pending or what it found, a sync that fails counts one more failure and leaves a failed publish's writes pending, neither touches the clocks, and a due sync that begins and then fails leaves the device as pending as it found it", input_domain = "every schedule of any last attempt, any count of failures, either pending state, any last edit or none, and any notice or none, either sync, a success that found something new or nothing, or a failure, and every clock reading", bound = "complete" },
-  { name = "proofs::only_something_new_makes_a_device_pending", covers = 5, contract = "a device that holds what its last publish to a target carried, while the target holds its bundle, has nothing new to say there, and a target without the bundle, a target no publish reached, a later write of the device's own, and a longer log each make it pending, and nothing else does", input_domain = "every latest stamp of the device's own or none with every count of operations, every such pair that the last publish carried or no publish at all, and either answer about the bundle at the target", bound = "complete" },
-  { name = "proofs::a_renewed_bundle_never_counts_as_gone", covers = 2, contract = "a bundle at a relay needs renewal exactly once thirty days have passed since the relay stamped it, a clock behind the relay's waits the whole span again, and a bundle renewed within the span never counts as gone at the relay", input_domain = "every stamp a relay gave a bundle and every clock reading", bound = "complete" },
-]
-probes = [
-  { harness = "proofs::rejects_a_retry_without_a_backoff", assertion = "NEGATIVE_SYNC_CONTROL" },
-  { harness = "proofs::rejects_a_merge_during_a_backoff", assertion = "NEGATIVE_SYNC_CONTROL" },
-  { harness = "proofs::rejects_a_publish_with_nothing_pending", assertion = "NEGATIVE_SYNC_CONTROL" },
-]
-
-[[obligation]]
-verifier = "kani"
-source = "crates/youarel-core/src/folder_rules.rs"
-harnesses = [
-  { name = "proofs::only_another_device_s_chain_counts", covers = 3, contract = "reads never count, rescans always count, and only another device's directory, head, or canonical segment file counts", input_domain = "the ten committed filename classes, including sidecars, incomplete writes, a zero or overflowing sequence, an old flat bundle, and unrelated names, with an absent, matching, or different own device", bound = "ten filename classes and three own-device classes; the filename parser also has a fuzz target and native Unicode cases" },
-  { name = "proofs::every_sequence_file_reads_back_canonically", covers = 2, contract = "every positive u64 sequence writes one canonical twenty-digit filename that reads back to that sequence", input_domain = "every positive u64 sequence", bound = "twenty decimal digits" },
-]
-probes = [
-  { harness = "proofs::rejects_the_device_s_own_chain", assertion = "NEGATIVE_FOLDER_CONTROL" },
 ]
 
 [[obligation]]
@@ -470,47 +329,6 @@ harnesses = [
 probes = [
   { harness = "proofs::rejects_an_undo_that_keeps_the_new_title", assertion = "NEGATIVE_UNDO_CONTROL" },
 ]
-
-[[obligation]]
-verifier = "quint"
-spec = "specs/membership.qnt"
-main = "membership"
-probe = "membership_probe"
-invariant = "safe"
-witnesses = ["joined", "left", "rotated", "contested"]
-seed = "0x2a"
-samples = 1000
-steps = 12
-distinct_states = 838100
-traces = 100
-
-[[obligation]]
-verifier = "proverif"
-model = "specs/proverif/pairing.pv"
-library = "specs/proverif/primitives.pvl"
-queries = 6
-probe = "specs/proverif/probes/pairing.pv"
-
-[[obligation]]
-verifier = "proverif"
-model = "specs/proverif/recorded.pv"
-library = "specs/proverif/primitives.pvl"
-queries = 2
-probe = "specs/proverif/probes/recorded.pv"
-
-[[obligation]]
-verifier = "proverif"
-model = "specs/proverif/rotation.pv"
-library = "specs/proverif/primitives.pvl"
-queries = 4
-probe = "specs/proverif/probes/rotation.pv"
-
-[[obligation]]
-verifier = "proverif"
-model = "specs/proverif/recovery.pv"
-library = "specs/proverif/primitives.pvl"
-queries = 6
-probe = "specs/proverif/probes/recovery.pv"
 
 [[obligation]]
 verifier = "kani"

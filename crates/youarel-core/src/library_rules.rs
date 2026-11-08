@@ -59,8 +59,10 @@ pub enum Sort {
     /// By title, ignoring case, as an explorer sorts by name.
     #[default]
     Title,
+    TitleDescending,
     /// By link without its scheme, so the pages of one host sit together, each host's in the order of their paths.
     Link,
+    LinkDescending,
     /// The one this device opened last first, and the ones it never opened after them, newest first.
     Opened,
 }
@@ -242,7 +244,9 @@ pub enum Order {
     Oldest(u64, ItemId),
     /// The title without its case, the title itself, and the identifier.
     Title(String, String, ItemId),
+    TitleDescending(Reverse<(String, String, ItemId)>),
     Link(String, ItemId),
+    LinkDescending(Reverse<(String, ItemId)>),
     /// When this device opened it last, or zero for never, the latest first, then the latest added first.
     Opened(Reverse<u64>, Reverse<u64>, ItemId),
 }
@@ -258,7 +262,14 @@ pub fn order(sort: Sort, id: ItemId, shortcut: &Shortcut, opened: u64) -> Order 
             let title = &shortcut.title.value;
             Order::Title(title.to_lowercase(), String::clone(title), id)
         }
+        Sort::TitleDescending => {
+            let title = &shortcut.title.value;
+            Order::TitleDescending(Reverse((title.to_lowercase(), String::clone(title), id)))
+        }
         Sort::Link => Order::Link(String::from(address(&shortcut.link.value)), id),
+        Sort::LinkDescending => {
+            Order::LinkDescending(Reverse((String::from(address(&shortcut.link.value)), id)))
+        }
         Sort::Opened => Order::Opened(Reverse(opened), Reverse(time), id),
     }
 }
@@ -1281,12 +1292,14 @@ mod tests {
         let all = |sort| list(&library, &Scope::All, "", sort);
         assert_eq!(all(Sort::Oldest), [news, whatwg, w3c, weather]);
         assert_eq!(all(Sort::Title), [news, w3c, whatwg, weather]);
+        assert_eq!(all(Sort::TitleDescending), [weather, whatwg, w3c, news]);
         assert_eq!(
             all(Sort::Link),
             [news, weather, whatwg, w3c],
             "the links by host, the scheme passed over"
         );
         assert_eq!(all(Sort::Opened), [news, w3c, weather, whatwg]);
+        assert_eq!(all(Sort::LinkDescending), [w3c, whatwg, weather, news]);
         assert_eq!(Sort::default(), Sort::Title, "a listing sorts by name");
     }
 

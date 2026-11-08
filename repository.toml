@@ -1,13 +1,12 @@
 # `dotfiles repository generate` writes `README.md`, `LICENSE-MIT`, and `LICENSE-APACHE` from this file, and `just check` refuses any drift from them.
 
 name = "youarel"
-summary = "A launcher that opens your web shortcuts in any browser, from a terminal or the command line"
+summary = "A local bookmark library for saving, organizing, finding, and opening web links"
 install = """
 git clone https://github.com/P4suta/youarel.git
 cd youarel
 cargo install --locked --path crates/youarel-cli"""
 usage = """
-youarel import bookmarks.html
 youarel add https://github.com/ --alias gh --folder Work
 youarel open gh
 youarel"""

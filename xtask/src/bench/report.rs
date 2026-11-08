@@ -1,6 +1,8 @@
 use super::{Options, raw::Timer};
 use serde::{Deserialize, Serialize};
 
+const FORMAT: u16 = 2;
+
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Status {
@@ -34,7 +36,6 @@ pub struct Parameters {
     pub sort_prefix: usize,
     pub token_prefix: usize,
     pub candidate_limit: usize,
-    pub compaction_ratio: usize,
     pub cache_bytes: usize,
 }
 
@@ -47,7 +48,6 @@ pub struct Measurement {
     pub rows: usize,
     pub operations: u64,
     pub elapsed_ns: u128,
-    pub segments: usize,
     pub bytes: u64,
     pub completed: bool,
 }
@@ -62,7 +62,6 @@ impl Measurement {
             rows: 0,
             operations,
             elapsed_ns: 0,
-            segments: 0,
             bytes: 0,
             completed: false,
         }
@@ -94,7 +93,7 @@ impl Report {
     pub(super) fn new(options: Options) -> Self {
         let workload = options.workload;
         Self {
-            format: 1,
+            format: FORMAT,
             status: Status::Running,
             os: std::env::consts::OS.to_owned(),
             arch: std::env::consts::ARCH.to_owned(),
@@ -117,7 +116,6 @@ impl Report {
                 sort_prefix: youarel_core::index_rules::SORT_PREFIX,
                 token_prefix: youarel_core::index_rules::TOKEN_PREFIX,
                 candidate_limit: youarel_core::search_rules::CANDIDATE_LIMIT,
-                compaction_ratio: youarel_core::segment_rules::COMPACTION_RATIO,
                 cache_bytes: youarel_store::CACHE_BYTES,
             },
             fixture_digest: String::new(),

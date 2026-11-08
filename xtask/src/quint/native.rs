@@ -80,7 +80,7 @@ pub fn generate(root: &Path, name: &str, executable: &Path) -> Result<()> {
         .iter()
         .find_map(|obligation| match obligation {
             Obligation::Quint(model) if model.main == name => Some(model),
-            Obligation::Quint(_) | Obligation::Kani { .. } | Obligation::Proverif(_) => None,
+            Obligation::Quint(_) | Obligation::Kani { .. } => None,
         })
         .with_context(|| format!("no Quint obligation names model {name}"))?;
     let version = run(root, executable, &[String::from("--version")])?;

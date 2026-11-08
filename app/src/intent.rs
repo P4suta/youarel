@@ -3,11 +3,9 @@
 use crate::library::Place;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use youarel_core::browser_rules::Browser;
-use youarel_core::library_rules::{Grouping, Layout, Move, Scope, Sort};
+use youarel_core::library_rules::{Grouping, Layout, Move, Scope};
 use youarel_core::state::{Entry, ItemId};
 use youarel_store::codec;
-use youarel_store::settings::Column;
 
 /// A layout as the window names it.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -34,41 +32,6 @@ impl From<Layout> for LayoutName {
             Layout::Cards => Self::Cards,
             Layout::List => Self::List,
             Layout::Columns => Self::Columns,
-        }
-    }
-}
-
-/// An order as the window names it.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub enum SortName {
-    Newest,
-    Oldest,
-    Title,
-    Link,
-    Opened,
-}
-
-impl From<SortName> for Sort {
-    fn from(name: SortName) -> Self {
-        match name {
-            SortName::Newest => Self::Newest,
-            SortName::Oldest => Self::Oldest,
-            SortName::Title => Self::Title,
-            SortName::Link => Self::Link,
-            SortName::Opened => Self::Opened,
-        }
-    }
-}
-
-impl From<Sort> for SortName {
-    fn from(sort: Sort) -> Self {
-        match sort {
-            Sort::Newest => Self::Newest,
-            Sort::Oldest => Self::Oldest,
-            Sort::Title => Self::Title,
-            Sort::Link => Self::Link,
-            Sort::Opened => Self::Opened,
         }
     }
 }
@@ -112,26 +75,6 @@ pub enum ColumnName {
     Link,
     Collection,
     Added,
-}
-
-impl From<ColumnName> for Column {
-    fn from(name: ColumnName) -> Self {
-        match name {
-            ColumnName::Link => Self::Link,
-            ColumnName::Collection => Self::Collection,
-            ColumnName::Added => Self::Added,
-        }
-    }
-}
-
-impl From<Column> for ColumnName {
-    fn from(column: Column) -> Self {
-        match column {
-            Column::Link => Self::Link,
-            Column::Collection => Self::Collection,
-            Column::Added => Self::Added,
-        }
-    }
 }
 
 /// A key that moves the selection, as the window names it.
@@ -284,30 +227,6 @@ pub enum Intent {
     ShowInFolder {
         id: Option<String>,
     },
-    /// Shows the shortcuts in another layout until the window opens again.
-    Layout {
-        layout: LayoutName,
-    },
-    /// Chooses the layout and the collection the window opens with, or every shortcut for none, which the settings keep.
-    Opening {
-        layout: LayoutName,
-        start: Option<String>,
-    },
-    Sort {
-        sort: SortName,
-    },
-    /// Gathers the cards and the list under headings, or under none.
-    Group {
-        grouping: GroupName,
-    },
-    /// Shows or hides a column of the list.
-    ShowColumn {
-        column: ColumnName,
-        shown: bool,
-    },
-    Search {
-        text: String,
-    },
     Type {
         key: char,
     },
@@ -321,18 +240,6 @@ pub enum Intent {
     },
     /// Selects every folder and shortcut the cards or the list show.
     SelectAll,
-    /// Opens or closes a folder of the list's outline in place.
-    Disclose {
-        id: String,
-        open: bool,
-        #[serde(default)]
-        deep: bool,
-    },
-    /// Opens or closes a collection of the sidebar's tree.
-    DiscloseSidebar {
-        id: String,
-        open: bool,
-    },
     /// Gives a collection a mark to show in place of its glyph, or clears it with an empty one.
     MarkCollection {
         id: String,
@@ -344,15 +251,6 @@ pub enum Intent {
         across: usize,
         #[serde(default)]
         extend: bool,
-    },
-    /// A click on an entry of the column at `depth`, with the place the page shows it at.
-    Column {
-        depth: usize,
-        entry: EntryName,
-        #[serde(default)]
-        place: Option<usize>,
-        #[serde(default)]
-        extend: Extend,
     },
     /// Opens the shortcut, or the focused one.
     Open {
@@ -393,144 +291,33 @@ pub enum Intent {
         id: String,
         name: String,
     },
-    /// Imports a bookmark file of any kind a browser exports or keeps, as its bytes.
-    Import {
-        bytes: Vec<u8>,
-    },
-    /// Chooses the themes the window wears, and whether it follows the system's appearance.
-    Theme {
-        follow: bool,
-        light: String,
-        dark: String,
-    },
-    /// Imports a VS Code color theme file's text.
-    ImportTheme {
-        text: String,
-    },
-    /// Removes an imported theme.
-    RemoveTheme {
-        id: String,
-    },
-    /// Imports the bookmarks a browser keeps on this device.
-    ImportBrowser {
-        browser: BrowserChoice,
-    },
-    /// Chooses whether the window syncs on its own, and through which folder or relay.
-    SyncSettings {
-        enabled: bool,
-        target: String,
-    },
-    /// Syncs at the next tick, whatever the schedule says.
-    SyncNow,
 }
 
-impl Intent {
-    /// Whether the intent changes the state, which the other devices then need.
-    #[must_use]
-    pub const fn edits(&self) -> bool {
-        match self {
-            Self::Edit { .. }
-            | Self::Retitle { .. }
-            | Self::File { .. }
-            | Self::Trash { .. }
-            | Self::PutBack { .. }
-            | Self::Remove { .. }
-            | Self::EmptyTrash
-            | Self::NewCollection { .. }
-            | Self::RenameCollection { .. }
-            | Self::MarkCollection { .. }
-            | Self::Import { .. }
-            | Self::ImportBrowser { .. } => true,
-            Self::Show
-            | Self::Undo
-            | Self::Redo
-            | Self::Cut
-            | Self::CancelCut
-            | Self::Cancel
-            | Self::Paste { .. }
-            | Self::EndDrag { .. }
-            | Self::Spring { .. }
-            | Self::Back
-            | Self::Forward
-            | Self::ShowInFolder { .. }
-            | Self::Scope { .. }
-            | Self::Layout { .. }
-            | Self::Opening { .. }
-            | Self::Sort { .. }
-            | Self::Group { .. }
-            | Self::ShowColumn { .. }
-            | Self::Search { .. }
-            | Self::Type { .. }
-            | Self::Select { .. }
-            | Self::SelectAll
-            | Self::Disclose { .. }
-            | Self::DiscloseSidebar { .. }
-            | Self::Step { .. }
-            | Self::Column { .. }
-            | Self::Open { .. }
-            | Self::Theme { .. }
-            | Self::ImportTheme { .. }
-            | Self::RemoveTheme { .. }
-            | Self::SyncSettings { .. }
-            | Self::SyncNow => false,
-        }
-    }
-}
-
-/// A browser as the window names it.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub enum BrowserChoice {
-    Safari,
-    Chrome,
-    Firefox,
-}
-
-impl From<BrowserChoice> for Browser {
-    fn from(choice: BrowserChoice) -> Self {
-        match choice {
-            BrowserChoice::Safari => Self::Safari,
-            BrowserChoice::Chrome => Self::Chrome,
-            BrowserChoice::Firefox => Self::Firefox,
-        }
-    }
-}
-
-impl From<Browser> for BrowserChoice {
-    fn from(browser: Browser) -> Self {
-        match browser {
-            Browser::Safari => Self::Safari,
-            Browser::Chrome => Self::Chrome,
-            Browser::Firefox => Self::Firefox,
-        }
-    }
-}
-
-/// The identifier `text` spells in hexadecimal.
+/// The item identifier spelled by hexadecimal text.
 ///
 /// # Errors
 ///
-/// Returns an error for any other text.
+/// Returns an error when the text spells no identifier.
 pub fn item(text: &str) -> Result<ItemId> {
     codec::unhex(text)
         .map(ItemId)
         .with_context(|| format!("`{text}` is no identifier"))
 }
 
-/// The identifiers `texts` spell.
+/// The identifiers spelled by hexadecimal texts.
 ///
 /// # Errors
 ///
-/// Returns an error for the first text that spells none.
+/// Returns an error for the first text that spells no identifier.
 pub fn items(texts: &[String]) -> Result<Vec<ItemId>> {
     texts.iter().map(|text| item(text)).collect()
 }
 
-/// The identifier, if any, `text` spells.
+/// The identifier spelled by optional hexadecimal text.
 ///
 /// # Errors
 ///
-/// Returns an error for a text that spells none.
+/// Returns an error when the text spells no identifier.
 pub fn optional(text: Option<&str>) -> Result<Option<ItemId>> {
     text.map(item).transpose()
 }
@@ -543,13 +330,38 @@ pub fn text(id: ItemId) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn retired_product_intents_are_rejected() {
+        for text in [
+            r#"{"kind":"syncNow"}"#,
+            r#"{"kind":"syncSettings","enabled":true,"target":"/shared"}"#,
+            r#"{"kind":"import","bytes":[]}"#,
+            r#"{"kind":"disclose","id":"ab","open":true}"#,
+            r#"{"kind":"discloseSidebar","id":"ab","open":true}"#,
+            r#"{"kind":"importBrowser","browser":"chrome"}"#,
+            r#"{"kind":"layout","layout":"cards"}"#,
+            r#"{"kind":"theme","follow":true,"light":"github-light","dark":"github-dark"}"#,
+        ] {
+            assert!(serde_json::from_str::<Intent>(text).is_err(), "{text}");
+        }
+    }
     use super::{
-        EntryName, Extend, GroupName, Intent, KeyName, LayoutName, ScopeName, SortName, TargetName,
-        item,
+        EntryName, Extend, GroupName, Intent, KeyName, LayoutName, ScopeName, TargetName, item,
     };
     use crate::library::Place;
-    use youarel_core::library_rules::{Grouping, Layout, Move, Scope, Sort};
+    use youarel_core::library_rules::{Grouping, Layout, Move, Scope};
     use youarel_core::state::{Entry, ItemId};
+
+    #[test]
+    fn retired_header_intents_are_rejected() {
+        for request in [
+            r#"{"kind":"sort","sort":"title"}"#,
+            r#"{"kind":"search","text":"bookmark"}"#,
+        ] {
+            assert!(serde_json::from_str::<Intent>(request).is_err());
+        }
+    }
 
     #[test]
     fn the_window_s_words_read_as_intents() {
@@ -604,15 +416,6 @@ mod tests {
         assert!(
             serde_json::from_str::<Intent>(r#"{"kind":"removeCollection","id":"ab"}"#).is_err()
         );
-        for edit in [
-            r#"{"kind":"remove","target":{"kind":"ids","ids":[]}}"#,
-            r#"{"kind":"trash","target":{"kind":"selection"}}"#,
-            r#"{"kind":"putBack","target":{"kind":"selection"}}"#,
-            r#"{"kind":"emptyTrash"}"#,
-        ] {
-            assert!(read(edit).edits(), "{edit}");
-        }
-        assert!(!read(r#"{"kind":"syncNow"}"#).edits());
     }
 
     #[test]
@@ -620,19 +423,6 @@ mod tests {
         for layout in [Layout::Cards, Layout::List, Layout::Columns] {
             assert_eq!(Layout::from(LayoutName::from(layout)), layout);
         }
-        for sort in [
-            Sort::Newest,
-            Sort::Oldest,
-            Sort::Title,
-            Sort::Link,
-            Sort::Opened,
-        ] {
-            assert_eq!(Sort::from(SortName::from(sort)), sort);
-        }
-        assert!(
-            serde_json::from_str::<Intent>(r#"{"kind":"sort","sort":"manual"}"#).is_err(),
-            "the window sorts only automatically"
-        );
         for grouping in [
             Grouping::None,
             Grouping::Site,
@@ -674,9 +464,5 @@ mod tests {
         assert_eq!(shortcut.entry().unwrap(), Entry::Shortcut(id));
         assert_eq!(super::items(&[super::text(id)]).unwrap(), [id]);
         assert_eq!(super::optional(None).unwrap(), None);
-        for browser in youarel_core::browser_rules::BROWSERS {
-            let choice = super::BrowserChoice::from(browser);
-            assert_eq!(youarel_core::browser_rules::Browser::from(choice), browser);
-        }
     }
 }

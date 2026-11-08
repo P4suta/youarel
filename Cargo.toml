@@ -94,17 +94,11 @@ multiple_crate_versions = "allow"
 
 [workspace.dependencies]
 youarel-core = { path = "crates/youarel-core" }
-youarel-crypto = { path = "crates/youarel-crypto" }
 youarel-html = { path = "crates/youarel-html" }
 youarel-icon = { path = "crates/youarel-icon" }
 youarel-link = { path = "crates/youarel-link" }
-youarel-protocol = { path = "crates/youarel-protocol" }
 youarel-release = { path = "crates/youarel-release" }
 youarel-store = { path = "crates/youarel-store" }
-youarel-sync = { path = "crates/youarel-sync" }
-youarel-relay = { path = "crates/youarel-relay" }
-youarel-theme = { path = "crates/youarel-theme" }
-youarel-import = { path = "crates/youarel-import" }
 
 anyhow = "1.0"
 base64 = "0.22"
@@ -121,29 +115,14 @@ image = { version = "0.25.10", default-features = false, features = [
   "png",
   "webp",
 ] }
-libcrux-chacha20poly1305 = "0.0.10"
-libcrux-ed25519 = "0.0.10"
-libcrux-hkdf = "0.0.9"
-libcrux-hmac = "0.0.9"
-libcrux-kem = "0.0.10"
-# Firefox compresses its backups of bookmarks as LZ4 blocks, which the safe decoder reads without unsafe code.
-lz4_flex = { version = "0.14", default-features = false, features = [
-  "safe-decode",
-  "safe-encode",
-  "std",
-] }
-# Safari keeps its bookmarks as a property list, binary or XML, which this pure Rust reader reads.
-plist = { version = "1.10", default-features = false }
 libcrux-ml-dsa = { version = "0.0.11", default-features = false, features = ["mldsa65", "std"] }
 minisign = "0.7"
 minisign-verify = "0.2"
-md-5 = "0.11"
 rand_chacha = "0.3"
 rand_core = "0.6"
 ratatui = "0.30"
 # The store keeps the state with its indexes, the visits, and the icons in one embedded database in pure Rust, whose transactions a crash never leaves half done.
 redb = "4.4"
-rusqlite = { version = "=0.40.2", features = ["backup", "bundled", "hooks", "limits"] }
 # The operating system verifies certificates, so its trust store and its updates apply and no root bundle ships with the binary.
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 ureq = { version = "3", default-features = false, features = [
@@ -156,7 +135,6 @@ proc-macro2 = { version = "1.0", default-features = false, features = ["span-loc
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sha2 = "0.11"
-spake2 = { version = "0.4", default-features = false }
 syn = { version = "2.0", default-features = false, features = [
   "full",
   "parsing",
@@ -170,7 +148,6 @@ tiny_http = { version = "0.12", default-features = false }
 toml = { version = "1.0", features = ["preserve_order"] }
 url = "2.5"
 zip = { version = "9", default-features = false, features = ["deflate"] }
-zeroize = "1.8"
 
 # The dependencies build optimized, so the tests sign and verify with ML-DSA at its real speed, while the workspace's own crates keep their checks.
 [profile.dev.package."*"]

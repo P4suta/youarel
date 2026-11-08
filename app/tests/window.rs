@@ -8,7 +8,7 @@
 use std::path::Path;
 use std::process::{Child, Output};
 use std::time::Duration;
-use youarel_core::state::Edit;
+use youarel_core::state::{Edit, ItemId};
 use youarel_store::Store;
 
 /// How long the test waits for the window or for an effect, and how often it looks.
@@ -20,10 +20,21 @@ const SETTLE: Duration = Duration::from_secs(3);
 const TITLE: &str = "^youarel$";
 /// The link the test adds through the window, on a port where nothing answers, so reading its page fails at once.
 const LINK: &str = "http://127.0.0.1:9/";
+const TYPED_ADDRESS: &str = "127.0.0.1:9";
+const COMPLETED_ADDRESS: &str = "https://127.0.0.1:9/";
 /// How long the add sheet takes to open and read the clipboard before keys reach its field.
 const SHEET: Duration = Duration::from_secs(1);
 /// A time for the store's session that the test reads under.
 const NOW: u64 = 1_700_000_000_000;
+const NAME_HEADING_HEIGHT: usize = 33;
+const ROW_HEIGHT: usize = 48;
+const ROW_NAME_X: &str = "100";
+const FIRST_SAVED_ROW: usize = 1;
+const PRIMARY_BUTTON: &str = "1";
+const SINGLE_CLICK: &str = "1";
+const DOUBLE_CLICK: &str = "2";
+const DOUBLE_CLICK_DELAY: &str = "100";
+const NESTED_LINK: &str = "http://127.0.0.1:9/?inside-folder";
 
 /// A command for a program the test runs on the display.
 #[expect(
@@ -100,10 +111,10 @@ fn add_a_link_and_toggle() {
     pause(SETTLE);
     xdotool(&["key", "--clearmodifiers", "ctrl+n"]);
     pause(SHEET);
-    xdotool(&["type", "--delay", "50", LINK]);
+    xdotool(&["type", "--delay", "50", TYPED_ADDRESS]);
     xdotool(&["key", "Return"]);
     assert!(
-        eventually(|| holds_shortcut(home.path(), LINK)),
+        eventually(|| holds_shortcut(home.path(), COMPLETED_ADDRESS)),
         "the add sheet never added the link"
     );
     let mut toggle = launch(home.path());
@@ -111,6 +122,21 @@ fn add_a_link_and_toggle() {
     assert!(
         eventually(|| !visible()),
         "the second toggle left the window showing"
+    );
+}
+
+fn add_through_the_context_menu() {
+    let home = tempfile::tempdir().unwrap();
+    let _library = Running(launch(home.path()));
+    assert!(eventually(visible), "the window never showed");
+    pause(SETTLE);
+    press("shift+F10");
+    press("Return");
+    xdotool(&["type", "--delay", "50", LINK]);
+    press("Return");
+    assert!(
+        eventually(|| holds_shortcut(home.path(), LINK)),
+        "the keyboard context menu never opened a working add sheet"
     );
 }
 
@@ -157,6 +183,97 @@ fn press(keys: &str) {
     pause(SHEET);
 }
 
+fn click_row(place: usize, count: &str) {
+    let found = xdotool(&["search", "--onlyvisible", "--name", TITLE]);
+    assert!(found.status.success(), "the listing needs a visible window");
+    let windows = String::from_utf8(found.stdout).unwrap();
+    let window = windows.lines().next().unwrap();
+    let center = place
+        .checked_mul(ROW_HEIGHT)
+        .and_then(|top| top.checked_add(NAME_HEADING_HEIGHT))
+        .and_then(|top| top.checked_add(ROW_HEIGHT / 2))
+        .unwrap();
+    assert!(
+        xdotool(&[
+            "mousemove",
+            "--window",
+            window,
+            ROW_NAME_X,
+            &center.to_string()
+        ])
+        .status
+        .success()
+    );
+    assert!(
+        xdotool(&[
+            "click",
+            "--repeat",
+            count,
+            "--delay",
+            DOUBLE_CLICK_DELAY,
+            PRIMARY_BUTTON
+        ])
+        .status
+        .success()
+    );
+    pause(SHEET);
+}
+
+fn pointer_selection_can_move_a_bookmark_to_trash() {
+    let home = tempfile::tempdir().unwrap();
+    seed(home.path());
+    let _library = Running(launch(home.path()));
+    assert!(eventually(visible), "the window never showed");
+    pause(SETTLE);
+    click_row(FIRST_SAVED_ROW, SINGLE_CLICK);
+    press("Delete");
+    assert!(
+        eventually(|| !holds_shortcut(home.path(), &format!("{SEEDED_LINK}0"))
+            && held(home.path()) == SEEDED - 1),
+        "a pointer click must select the bookmark for deletion without opening it"
+    );
+}
+
+fn home_count(home: &Path, folder: Option<ItemId>) -> usize {
+    Store::new(home.to_path_buf())
+        .session(NOW, |session| session.home_count(folder))
+        .unwrap()
+}
+
+fn a_folder_selects_before_double_click_navigation() {
+    let home = tempfile::tempdir().unwrap();
+    let folder = Store::new(home.path().to_path_buf())
+        .session(NOW, |session| {
+            let id = session.fresh_id()?;
+            session.edit(Edit::AddFolder {
+                id,
+                name: "Reading".to_owned(),
+                parent: None,
+            })?;
+            Ok(id)
+        })
+        .unwrap();
+    let _library = Running(launch(home.path()));
+    assert!(eventually(visible), "the window never showed");
+    pause(SETTLE);
+    click_row(FIRST_SAVED_ROW, SINGLE_CLICK);
+    press("ctrl+n");
+    xdotool(&["type", LINK]);
+    press("Return");
+    assert!(
+        eventually(|| home_count(home.path(), None) == 1),
+        "selecting the folder must keep new bookmarks in the current root"
+    );
+    click_row(FIRST_SAVED_ROW, DOUBLE_CLICK);
+    press("ctrl+n");
+    xdotool(&["type", NESTED_LINK]);
+    press("Return");
+    assert!(
+        eventually(|| home_count(home.path(), Some(folder)) == 1),
+        "double-clicking the folder must make it the destination of a new bookmark"
+    );
+}
+
 /// The list of a long library reaches its last row, the delete key moves that row to the trash and selects the row that took its place, and select all takes every other row there.
 fn trash_through_the_keys() {
     let home = tempfile::tempdir().unwrap();
@@ -164,9 +281,6 @@ fn trash_through_the_keys() {
     let _library = Running(launch(home.path()));
     assert!(eventually(visible), "the window never showed");
     pause(SETTLE);
-    // The list takes the keys once the search, which a summons focuses, gives the focus to the next control.
-    press("ctrl+2");
-    press("Tab");
     press("End");
     press("Delete");
     assert!(
@@ -191,5 +305,8 @@ fn trash_through_the_keys() {
 #[ignore = "drives a real window; `just app-linux` runs it under a virtual display"]
 fn the_window_adds_toggles_and_trashes_what_the_keys_select() {
     add_a_link_and_toggle();
+    add_through_the_context_menu();
+    pointer_selection_can_move_a_bookmark_to_trash();
+    a_folder_selects_before_double_click_navigation();
     trash_through_the_keys();
 }

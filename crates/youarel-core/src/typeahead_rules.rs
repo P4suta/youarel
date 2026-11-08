@@ -5,12 +5,11 @@
 //! A seek in that index then finds the first title that starts with them, since a title starts with them exactly when the start its key keeps does.
 
 use crate::index_rules::{self, SORT_PREFIX};
-use crate::sync_rules::SECOND;
 use alloc::string::String;
 use alloc::vec::Vec;
 
 /// How long after a key the next one still joins it, in milliseconds.
-pub const TYPE_AHEAD_WINDOW: u64 = SECOND;
+pub const TYPE_AHEAD_WINDOW: u64 = 1000;
 /// The most bytes the folded letters hold, as many as a key of the index of titles keeps of a title.
 pub const LONGEST_TYPED: usize = SORT_PREFIX;
 

@@ -2,7 +2,8 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <title>youarel</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Bookmarks</title>
     <link rel="stylesheet" href="style.css" />
     <script type="module" src="main.js"></script>
   </head>
@@ -14,93 +15,61 @@
       <symbol id="icon-folder" viewBox="0 0 16 16"><path d="M2 4.5h4l1.5 1.5H14v6.5H2z" /></symbol>
       <symbol id="icon-folder-plus" viewBox="0 0 16 16"><path d="M2 4.5h4l1.5 1.5H14v6.5H2z M8 7.5v3.5 M6.25 9.25h3.5" /></symbol>
       <symbol id="icon-plus" viewBox="0 0 16 16"><path d="M8 3v10 M3 8h10" /></symbol>
-      <symbol id="icon-gear" viewBox="0 0 16 16"><path d="M6.71 3.17L6.85 1.5L9.15 1.5L9.29 3.17A5 5 0 0 1 10.5 3.67L11.79 2.59L13.41 4.21L12.33 5.5A5 5 0 0 1 12.83 6.71L14.5 6.85L14.5 9.15L12.83 9.29A5 5 0 0 1 12.33 10.5L13.41 11.79L11.79 13.41L10.5 12.33A5 5 0 0 1 9.29 12.83L9.15 14.5L6.85 14.5L6.71 12.83A5 5 0 0 1 5.5 12.33L4.21 13.41L2.59 11.79L3.67 10.5A5 5 0 0 1 3.17 9.29L1.5 9.15L1.5 6.85L3.17 6.71A5 5 0 0 1 3.67 5.5L2.59 4.21L4.21 2.59L5.5 3.67A5 5 0 0 1 6.71 3.17z" /><circle cx="8" cy="8" r="2.2" /></symbol>
-      <symbol id="icon-cards" viewBox="0 0 16 16"><path d="M2.5 2.5h4.5v4.5h-4.5z M9 2.5h4.5v4.5H9z M2.5 9h4.5v4.5h-4.5z M9 9h4.5v4.5H9z" /></symbol>
-      <symbol id="icon-list" viewBox="0 0 16 16"><path d="M2.5 4h11 M2.5 8h11 M2.5 12h11" /></symbol>
-      <symbol id="icon-columns" viewBox="0 0 16 16"><path d="M2.5 2.5h11v11h-11z M6.2 2.5v11 M9.8 2.5v11" /></symbol>
       <symbol id="icon-search" viewBox="0 0 16 16"><circle cx="7" cy="7" r="4.5" /><path d="M10.4 10.4 14 14" /></symbol>
       <symbol id="icon-link" viewBox="0 0 16 16"><path d="M6.8 9.2 9.2 6.8 M7.5 4.5l1.2-1.2a2.5 2.5 0 0 1 3.5 3.5L11 8 M8.5 11.5l-1.2 1.2a2.5 2.5 0 0 1-3.5-3.5L5 8" /></symbol>
       <symbol id="icon-chevron" viewBox="0 0 16 16"><path d="M6 3.5 10.5 8 6 12.5" /></symbol>
+      <symbol id="icon-sidebar" viewBox="0 0 16 16"><rect x="2" y="3" width="12" height="10" rx="1" /><path d="M6 3v10" /></symbol>
       <symbol id="icon-open" viewBox="0 0 16 16"><path d="M9 2.5h4.5V7 M13.5 2.5 7.5 8.5 M11.5 9.5v4h-9v-9h4" /></symbol>
       <symbol id="icon-copy" viewBox="0 0 16 16"><path d="M5.5 5.5h8v8h-8z M10.5 5.5v-3h-8v8h3" /></symbol>
-      <symbol id="icon-sort" viewBox="0 0 16 16"><path d="M5 3v10 M2.5 10.5 5 13l2.5-2.5 M11 13V3 M8.5 5.5 11 3l2.5 2.5" /></symbol>
-      <symbol id="icon-sync" viewBox="0 0 16 16"><path d="M13 8a5 5 0 0 1-8.6 3.5 M3 8a5 5 0 0 1 8.6-3.5 M11.5 2v2.6H8.9 M4.5 14v-2.6h2.6" /></symbol>
-      <symbol id="icon-sliders" viewBox="0 0 16 16"><path d="M3 4h10 M3 8h10 M3 12h10" /><circle cx="6" cy="4" r="1.4" /><circle cx="10.5" cy="8" r="1.4" /><circle cx="5" cy="12" r="1.4" /></symbol>
-      <symbol id="icon-contrast" viewBox="0 0 16 16"><circle cx="8" cy="8" r="5.5" /><path d="M8 2.5v11a5.5 5.5 0 0 0 0-11z" class="filled" /></symbol>
+      <symbol id="icon-edit" viewBox="0 0 16 16"><path d="m10 2 4 4-7.5 7.5H2.5v-4z M8.5 3.5l4 4" /></symbol>
+      <symbol id="icon-rename" viewBox="0 0 16 16"><path d="M6 2.5h4 M8 2.5v11 M6 13.5h4 M4 5H2.5v6H4 M12 5h1.5v6H12" /></symbol>
+      <symbol id="icon-move" viewBox="0 0 16 16"><path d="M2 4.5h4l1.5 1.5H14v6.5H2z M5 9.5h6 M9 7.5l2 2-2 2" /></symbol>
+      <symbol id="icon-emoji" viewBox="0 0 16 16"><circle cx="8" cy="8" r="5.5" /><path d="M5.5 9.5a3 3 0 0 0 5 0 M6 5.5v1 M10 5.5v1" /></symbol>
+      <symbol id="icon-restore" viewBox="0 0 16 16"><path d="M2.5 2.5v4h4 M2.5 6.5A5.5 5.5 0 1 1 4 12" /></symbol>
+      <symbol id="icon-sort-up" viewBox="0 0 16 16"><path d="M8 13V3 M4 7l4-4 4 4" /></symbol>
+      <symbol id="icon-sort-down" viewBox="0 0 16 16"><path d="M8 3v10 M4 9l4 4 4-4" /></symbol>
       <symbol id="icon-check" viewBox="0 0 16 16"><path d="M3.5 8.5 6.5 11.5 12.5 4.5" /></symbol>
       <symbol id="icon-trash" viewBox="0 0 16 16"><path d="M2.5 4.5h11 M6.5 4.5V2.75h3V4.5 M4 4.5l.75 9h6.5l.75-9 M6.75 7v4 M9.25 7v4" /></symbol>
+      <symbol id="icon-more" viewBox="0 0 16 16"><circle cx="3" cy="8" r=".75" /><circle cx="8" cy="8" r=".75" /><circle cx="13" cy="8" r=".75" /></symbol>
+      <symbol id="icon-close" viewBox="0 0 16 16"><path d="m4 4 8 8 M12 4l-8 8" /></symbol>
     </svg>
 
-    <aside id="sidebar">
-      <div class="titlebar" data-tauri-drag-region></div>
-      <nav id="scopes" aria-label="Library"></nav>
-      <footer class="sidebar-footer">
-        <span id="sync-state" class="sync-state"></span>
-        <button id="settings-button" class="icon-button" type="button" title="Settings (⌘,)" aria-label="Settings"></button>
-      </footer>
-    </aside>
-
-    <main id="main">
-      <header id="toolbar" data-tauri-drag-region>
-        <div class="heading" data-tauri-drag-region>
-          <h1 id="title"></h1>
-          <span id="count" class="count"></span>
-        </div>
-        <div id="layouts" class="segmented" role="radiogroup" aria-label="Layout"></div>
-        <label class="search">
-          <span id="search-glyph"></span>
-          <input id="search" type="search" placeholder="Search links" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="Search links" />
-          <kbd>⌘K</kbd>
-        </label>
-        <button id="add-button" class="primary" type="button" title="Add a link (⌘N)"></button>
+    <a class="skip-link" href="#content">Skip to bookmarks</a>
+    <main id="main" aria-label="Bookmarks">
+      <h1 class="sr-only">Bookmarks</h1>
+      <header id="location" data-tauri-drag-region>
+        <nav id="trail" class="trail" aria-label="Path" hidden></nav>
       </header>
-      <div id="subbar" class="subbar">
-        <nav id="trail" class="trail" aria-label="Path"></nav>
-        <button id="new-folder" class="icon-button" type="button" title="New collection here (⇧⌘N)" aria-label="New collection here"></button>
-        <label class="sort">
-          <span class="sort-label">Group</span>
-          <select id="group" aria-label="Group by">
-            <option value="none">None</option>
-            <option value="site">Site</option>
-            <option value="collection">Collection</option>
-            <option value="added">Date added</option>
-          </select>
-        </label>
-        <label class="sort">
-          <span id="sort-glyph"></span>
-          <select id="sort" aria-label="Order">
-            <option value="newest">Newest first</option>
-            <option value="oldest">Oldest first</option>
-            <option value="title">By name</option>
-            <option value="link">By address</option>
-            <option value="opened">Last opened</option>
-          </select>
-        </label>
-      </div>
-      <section id="content" tabindex="-1" aria-live="polite"></section>
+      <h2 id="name-heading" class="column-heading" data-tauri-drag-region>Name</h2>
+      <p id="results-status" class="sr-only" role="status" aria-atomic="true"></p>
+      <section id="content" tabindex="0" aria-label="Folder contents"></section>
       <div id="drop-hint" class="drop-hint" hidden>Drop to add the link</div>
-      <div id="notice" class="notice" role="status" hidden></div>
+      <div id="notice" class="notice" hidden>
+        <p id="notice-text" role="status" aria-atomic="true"></p>
+        <button id="notice-dismiss" class="icon-button" type="button" aria-label="Dismiss notification"></button>
+      </div>
     </main>
 
-    <dialog id="add-sheet" class="sheet">
-      <form method="dialog" id="add-form">
-        <h2>Add a link</h2>
-        <label class="field">
-          <span class="field-label">URL <em id="add-from-clipboard" class="hint" hidden>Filled from the clipboard</em></span>
-          <input id="add-link" type="url" required autocomplete="off" spellcheck="false" placeholder="https://" />
-        </label>
-        <label class="field">
-          <span class="field-label">Title</span>
-          <input id="add-title" type="text" autocomplete="off" placeholder="Read from the page" />
-        </label>
+    <dialog id="add-sheet" class="sheet" aria-labelledby="add-heading">
+      <form method="dialog" id="add-form" novalidate>
+        <h2 id="add-heading">Add a link</h2>
+        <p id="add-error" class="form-error" tabindex="-1" hidden></p>
         <div class="field">
-          <label class="field-label" for="add-collection">Collection</label>
-          <div class="picker">
-            <input id="add-collection-search" type="search" autocomplete="off" spellcheck="false" placeholder="Find a collection" aria-label="Find a collection" />
-            <select id="add-collection"></select>
-          </div>
+          <label class="field-label" for="add-link">URL</label>
+          <input id="add-link" type="text" inputmode="url" autocapitalize="none" required autofocus autocomplete="off" spellcheck="false" aria-describedby="add-link-help add-link-error" />
+          <p id="add-link-help" class="hint">
+            Required.
+            Enter an address such as google.com.
+            HTTPS is added when omitted.
+          </p>
+          <p id="add-from-clipboard" class="hint" hidden>Filled from the clipboard.</p>
+          <p id="add-link-error" class="field-error" hidden></p>
         </div>
-        <p class="hint">You can also drop a URL or a browser tab onto the window. A collection keeps each link once.</p>
+        <div class="field">
+          <label class="field-label" for="add-title">Title</label>
+          <input id="add-title" type="text" autocomplete="off" aria-describedby="add-title-help" />
+          <p id="add-title-help" class="hint" role="status">Optional. The page title is filled in when available.</p>
+        </div>
         <div class="actions">
           <button type="button" class="secondary" data-close>Cancel</button>
           <button type="submit" class="go" id="add-submit">Add</button>
@@ -108,45 +77,74 @@
       </form>
     </dialog>
 
-    <dialog id="edit-sheet" class="sheet">
-      <form method="dialog" id="edit-form">
-        <h2>Edit shortcut</h2>
-        <label class="field">
-          <span class="field-label">Title</span>
-          <input id="edit-title" type="text" required autocomplete="off" />
-        </label>
-        <p id="edit-link" class="mono hint"></p>
-        <div class="field-row">
-          <label class="field">
-            <span class="field-label">Alias</span>
-            <input id="edit-alias" type="text" autocomplete="off" spellcheck="false" placeholder="A few letters that find it first" />
-          </label>
-          <div class="field">
-            <label class="field-label" for="edit-collection">Collection</label>
-            <div class="picker">
-              <input id="edit-collection-search" type="search" autocomplete="off" spellcheck="false" placeholder="Find a collection" aria-label="Find a collection" />
-              <select id="edit-collection"></select>
-            </div>
+    <dialog id="edit-sheet" class="sheet" aria-labelledby="edit-heading">
+      <form method="dialog" id="edit-form" novalidate>
+        <h2 id="edit-heading">Edit bookmark</h2>
+        <p id="edit-error" class="form-error" tabindex="-1" hidden></p>
+        <div class="field">
+          <label class="field-label" for="edit-title">Title</label>
+          <input id="edit-title" type="text" required autofocus autocomplete="off" aria-describedby="edit-title-error" />
+          <p id="edit-title-error" class="field-error" hidden></p>
+        </div>
+        <div class="bookmark-details">
+          <p id="edit-link" class="mono hint"></p>
+          <p id="edit-added" class="hint"></p>
+        </div>
+        <div class="field">
+          <label class="field-label" for="edit-collection">Folder</label>
+          <div class="picker">
+            <input id="edit-collection-search" type="text" autocomplete="off" spellcheck="false" hidden />
+            <select id="edit-collection"></select>
           </div>
         </div>
-        <label class="field">
-          <span class="field-label">Note</span>
+        <div class="field">
+          <label class="field-label" for="edit-alias">Alias</label>
+          <input id="edit-alias" type="text" autocomplete="off" spellcheck="false" aria-describedby="edit-alias-help" />
+          <p id="edit-alias-help" class="hint">Optional. A short name to find the bookmark quickly.</p>
+        </div>
+        <div class="field">
+          <label class="field-label" for="edit-note">Note</label>
           <textarea id="edit-note" rows="3"></textarea>
-        </label>
+        </div>
         <div class="actions">
           <button type="button" class="secondary" id="edit-remove">Move to Trash</button>
           <span class="spacer"></span>
           <button type="button" class="secondary" data-close>Cancel</button>
-          <button type="submit" class="primary">Save</button>
+          <button type="submit" class="primary" id="edit-submit">Save</button>
         </div>
       </form>
     </dialog>
 
-    <dialog id="ask-sheet" class="sheet small">
-      <form method="dialog" id="ask-form">
+    <dialog id="move-sheet" class="sheet small" aria-labelledby="move-heading">
+      <form id="move-form" method="dialog">
+        <h2 id="move-heading">Move folder</h2>
+        <p id="move-error" class="form-error" tabindex="-1" hidden></p>
+        <p id="move-name" class="collection-name"></p>
+        <div class="field">
+          <label class="field-label" for="move-collection">Destination</label>
+          <p id="move-help" class="hint">Choose a parent folder, or Bookmarks for the root.</p>
+          <div class="picker">
+            <input id="move-collection-search" type="text" autocomplete="off" spellcheck="false" hidden />
+            <select id="move-collection" autofocus aria-describedby="move-help"></select>
+          </div>
+        </div>
+        <div class="actions">
+          <button type="button" class="secondary" data-close>Cancel</button>
+          <button type="submit" class="primary" id="move-submit">Move</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="ask-sheet" class="sheet small" aria-labelledby="ask-title" aria-describedby="ask-text">
+      <form method="dialog" id="ask-form" novalidate>
         <h2 id="ask-title"></h2>
         <p id="ask-text" class="hint"></p>
-        <input id="ask-input" type="text" autocomplete="off" />
+        <div id="ask-field" class="field">
+          <label id="ask-label" class="field-label" for="ask-input">Name</label>
+          <input id="ask-input" type="text" autofocus autocomplete="off" required aria-describedby="ask-name-error" />
+          <p id="ask-name-error" class="field-error" hidden></p>
+        </div>
+        <p id="ask-error" class="form-error" tabindex="-1" hidden></p>
         <div class="actions">
           <button type="button" class="secondary" data-close>Cancel</button>
           <button type="submit" class="primary" id="ask-submit"></button>
@@ -154,128 +152,30 @@
       </form>
     </dialog>
 
-    <dialog id="mark-sheet" class="sheet">
+    <dialog id="mark-sheet" class="sheet" aria-labelledby="mark-title">
       <form method="dialog" id="mark-form">
         <h2 id="mark-title"></h2>
-        <div class="mark-head">
-          <span id="mark-preview" class="mark-preview" aria-live="polite"></span>
-          <input id="mark-input" type="text" autocomplete="off" spellcheck="false" placeholder="Search, or type :name:" aria-label="Search the emoji" />
+        <div class="field">
+          <label for="mark-input" class="field-label">Find an emoji</label>
+          <input id="mark-input" type="text" autofocus autocomplete="off" spellcheck="false" aria-describedby="mark-help" />
+          <p id="mark-help" class="hint">Search by name, or enter an emoji.</p>
         </div>
-        <div id="mark-grid" class="mark-grid" role="listbox" aria-label="Emoji"></div>
+        <div class="mark-head">
+          <span class="hint">Selected emoji</span>
+          <span id="mark-preview" class="mark-preview" aria-live="polite"></span>
+        </div>
+        <div id="mark-grid" class="mark-grid" role="group" aria-label="Emoji"></div>
         <div class="actions">
-          <button type="button" class="secondary" id="mark-clear">Remove Mark</button>
+          <button type="button" class="secondary" id="mark-clear">Remove emoji</button>
           <span class="spacer"></span>
           <button type="button" class="secondary" data-close>Cancel</button>
-          <button type="submit" class="primary">Set</button>
+          <button type="submit" class="primary">Use emoji</button>
         </div>
       </form>
     </dialog>
 
-    <dialog id="settings" class="sheet wide">
-      <div class="tabs" role="tablist">
-        <button type="button" role="tab" class="tab" data-tab="general" aria-selected="true"></button>
-        <button type="button" role="tab" class="tab" data-tab="theme" aria-selected="false"></button>
-        <button type="button" role="tab" class="tab" data-tab="devices" aria-selected="false"></button>
-      </div>
-      <section class="pane" data-pane="general">
-        <h3>Window</h3>
-        <div class="group">
-          <div class="setting">
-            <label for="open-at">Open at</label>
-            <div class="picker">
-              <input id="open-at-search" type="search" autocomplete="off" spellcheck="false" placeholder="Find a collection" aria-label="Find a collection to open at" />
-              <select id="open-at"></select>
-            </div>
-          </div>
-          <label class="setting">
-            <span>Open as</span>
-            <select id="open-as" aria-label="Open as">
-              <option value="cards">Cards</option>
-              <option value="list">List</option>
-              <option value="columns">Columns</option>
-            </select>
-          </label>
-          <p class="hint">The window opens here each time it starts, wherever it stood and however it showed before.</p>
-        </div>
-        <h3>Sync</h3>
-        <div class="group">
-          <label class="setting toggle">
-            <span>Sync with your other devices</span>
-            <input id="sync-enabled" type="checkbox" />
-          </label>
-          <form id="sync-form" class="setting">
-            <input id="sync-target" class="wide-input" type="text" autocomplete="off" spellcheck="false" placeholder="A shared folder, or a relay's https:// address" aria-label="Sync through" />
-            <button type="submit" class="secondary">Save</button>
-          </form>
-          <p id="sync-line" class="hint"></p>
-          <p id="sync-pace" class="hint"></p>
-        </div>
-        <h3>Import and Export</h3>
-        <div class="group">
-          <div class="setting">
-            <span>Import bookmarks</span>
-            <div class="buttons">
-              <span id="browser-buttons" class="buttons"></span>
-              <button type="button" class="secondary" id="import-html">Bookmark file…</button>
-              <input id="import-file" type="file" hidden />
-            </div>
-          </div>
-          <p class="hint">A bookmark file may be an HTML export or the file a browser keeps, such as the <code>Bookmarks</code> file Chrome, Edge, and Brave keep in their profiles. The same URL is kept once. Your browser's bookmarks stay as they are.</p>
-          <div class="setting">
-            <span>Export bookmarks</span>
-            <button type="button" class="secondary" id="export-html">Export Bookmark File…</button>
-          </div>
-          <p class="hint">Saves a bookmark file in Downloads that any browser can import.</p>
-        </div>
-      </section>
-      <section class="pane" data-pane="theme" hidden></section>
-      <section class="pane" data-pane="devices" hidden>
-        <h3>Devices</h3>
-        <div class="group">
-          <label for="device-target">Shared folder or relay</label>
-          <input id="device-target" type="text" autocomplete="off" spellcheck="false" placeholder="A shared folder or relay address" />
-          <div class="buttons">
-            <button id="device-invite" type="button" class="primary">Add a device…</button>
-            <button id="device-join" type="button" class="secondary">Join from another device…</button>
-          </div>
-          <p id="device-line" class="hint" role="status" aria-live="polite"></p>
-          <button id="device-retry" type="button" class="secondary">Refresh devices</button>
-        </div>
-        <div id="device-list" class="group"></div>
-        <h3>Recovery</h3>
-        <div class="group buttons">
-          <button id="device-new-recovery" type="button" class="secondary">Create recovery key…</button>
-          <button id="device-recover" type="button" class="secondary">Recover with a key…</button>
-        </div>
-      </section>
-      <div class="actions">
-        <button type="button" class="primary" data-close>Done</button>
-      </div>
-    </dialog>
-
-    <div id="menu" class="menu" role="menu" hidden></div>
-    <dialog id="device-invitation" class="sheet">
-      <h2>Add a device</h2>
-      <p>Use the same shared folder or relay on both devices.</p>
-      <pre id="device-code" class="device-code" hidden></pre>
-      <div id="device-qr" class="device-qr" hidden></div>
-      <button id="device-copy-code" type="button" class="secondary" hidden>Copy code</button>
-      <p id="device-pairing-line" role="status" aria-live="polite"></p>
-      <div class="actions">
-        <button id="device-cancel" type="button" class="secondary">Cancel invitation</button>
-        <button id="device-pairing-close" type="button" class="primary" hidden>Done</button>
-      </div>
-    </dialog>
-    <dialog id="device-recovery" class="sheet">
-      <h2>Recovery key</h2>
-      <p>Keep this key somewhere safe. It is shown once.</p>
-      <pre id="device-recovery-key" class="device-code"></pre>
-      <p id="device-recovery-status" role="status" aria-live="polite"></p>
-      <div class="actions">
-        <button id="device-copy-recovery" type="button" class="secondary">Copy</button>
-        <button id="device-print-recovery" type="button" class="secondary">Print…</button>
-        <button id="device-saved-recovery" type="button" class="primary">I saved it</button>
-      </div>
-    </dialog>
+    <div id="menu" class="menu" role="menu" aria-label="Actions" hidden></div>
+    <div id="row-metrics" class="row-metrics" aria-hidden="true"><button class="row-open" type="button" tabindex="-1"><svg class="glyph" aria-hidden="true"><use href="#icon-link" /></svg><span class="item-name">Name</span></button></div>
+    <div id="heading-metrics" class="heading-metrics" aria-hidden="true">Bookmarks</div>
   </body>
 </html>

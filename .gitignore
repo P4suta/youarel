@@ -8,6 +8,7 @@
 /dist/
 /release-candidate/
 /signing-input/
+/release-tools/
 *.cdx.json
 /server/target/
 /server/build/

@@ -100,7 +100,7 @@ pub(super) fn verify(root: &Path, purpose: &str) -> Result<()> {
                 "the proposal App reached another repository"
             );
         }
-        "windows" => {}
+        "windows" => super::esigner::verify_credentials(root)?,
         _ => bail!("unknown credential purpose"),
     }
     println!(

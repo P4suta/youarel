@@ -195,6 +195,10 @@ jobs:
           cache: false
       - name: Compile the trusted controller before fetching credentials
         run: cargo build --locked --package xtask
+      - name: Prepare the pinned Windows signing tool without credentials
+        if: runner.os == 'Windows'
+        shell: bash
+        run: ./target/debug/xtask release prepare-windows
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: candidate-${{ matrix.target }}
@@ -234,17 +238,14 @@ jobs:
       - name: Sign and timestamp the Windows programs together
         id: esigner
         if: runner.os == 'Windows' && steps.resume.outputs.reused != 'true'
-        uses: SSLcom/esigner-codesign@cf5f6c1d38ad10f47e3ed9aca873f429b1a8d85b # v1.3.2
-        with:
-          command: batch_sign
-          signing_method: v2
-          username: ${{ secrets.SSLDOTCOM_USERNAME }}
-          password: ${{ secrets.SSLDOTCOM_PASSWORD }}
-          credential_id: ${{ secrets.SSLDOTCOM_CREDENTIAL_ID }}
-          totp_secret: ${{ secrets.SSLDOTCOM_TOTP_SECRET }}
-          dir_path: ${{ github.workspace }}/signing-input
-          override: true
-          environment_name: PROD
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          SSLDOTCOM_USERNAME: ${{ secrets.SSLDOTCOM_USERNAME }}
+          SSLDOTCOM_PASSWORD: ${{ secrets.SSLDOTCOM_PASSWORD }}
+          SSLDOTCOM_CREDENTIAL_ID: ${{ secrets.SSLDOTCOM_CREDENTIAL_ID }}
+          SSLDOTCOM_TOTP_SECRET: ${{ secrets.SSLDOTCOM_TOTP_SECRET }}
+        run: ./target/debug/xtask release sign-windows "$TARGET"
       - name: Preserve Windows provider outputs before packaging
         if: always() && runner.os == 'Windows' && ((steps.esigner.outcome != '' && steps.esigner.outcome != 'skipped') || steps.resume.outputs.reused == 'true')
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

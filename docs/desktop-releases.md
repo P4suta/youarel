@@ -73,6 +73,10 @@ Protected jobs compile the reviewed controller before restoring verified candida
 Candidate executables and build hooks never run in credential-bearing jobs.
 Apple signing seals the nested CLI and launcher before the app and installer.
 Windows batch signing covers both executables, and native verification requires the expected publisher and a timestamp.
+The controller verifies the CodeSignTool archive hash and Java 17 or later before loading credentials.
+The pinned 1.3.2 archive reports `v1.3.0` from its version command, so the archive hash identifies the SDK release.
+The [Java argument file](https://docs.oracle.com/en/java/javase/25/docs/specs/man/java.html#java-command-line-argument-files) carries private options without exposing them in process arguments.
+The controller removes temporary arguments and provider logs after each operation.
 The controller resolves a trusted Microsoft SDK SignTool before requesting signatures, then requires `verify /all /pa /tw /v` to exit successfully for each executable.
 Notarization persists package hashes and submission identifiers before waiting.
 Unknown submission outcomes stop before another submission.

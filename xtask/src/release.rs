@@ -21,6 +21,7 @@ mod candidate;
 mod credentials;
 mod delivery;
 mod desktop;
+mod esigner;
 mod install;
 mod proposal;
 
@@ -70,7 +71,7 @@ const SIGNATURE_PATH: &str = "YOUAREL_SIGNATURE_PROGRAM";
 const WINDOWS_PROGRAM_COUNT: usize = 2;
 const WINDOWS_SDK_QUERY: &str = r"$ErrorActionPreference = 'Stop'; $root = Get-ItemPropertyValue -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Windows Kits\Installed Roots' -Name KitsRoot10; $tool = Get-ChildItem -LiteralPath (Join-Path $root 'bin') -Directory | Where-Object Name -Match '^\d+\.\d+\.\d+\.\d+$' | Sort-Object { [version]$_.Name } -Descending | ForEach-Object { Join-Path $_.FullName 'x64\signtool.exe' } | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1; if (!$tool) { throw 'The Windows SDK SignTool verifier is missing.' }; $signature = Get-AuthenticodeSignature -LiteralPath $tool; if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notlike '*O=Microsoft Corporation*') { throw 'The Windows SDK verifier is not trusted Microsoft code.' }; $tool";
 
-const USAGE: &str = "usage: cargo xtask release version | check-versions | propose | plan candidate|sign | plan-publication draft|publish | build TARGET | seal TARGET | restore TARGET | bundle TARGET | check-bundle TARGET | manifest | sign | checksums | verify-dist | verify-provenance | attach-provenance FILE | attach-build-provenance TARGET FILE | verify-build-run | credential-inputs PURPOSE | verify-credentials PURPOSE | access inventory|sync-inventory|sync-prepare AUTH_SCOPE | sign-macos program|package TARGET | notarize submit|finish | stage-windows TARGET | accept-windows TARGET | verify-windows TARGET | install-check TARGET | resume-build TARGET | resume-windows TARGET | resume-notarization | resume-distribution | draft | publish | candidate | keygen DIRECTORY";
+const USAGE: &str = "usage: cargo xtask release version | check-versions | propose | plan candidate|sign | plan-publication draft|publish | build TARGET | seal TARGET | restore TARGET | bundle TARGET | check-bundle TARGET | manifest | sign | checksums | verify-dist | verify-provenance | attach-provenance FILE | attach-build-provenance TARGET FILE | verify-build-run | credential-inputs PURPOSE | verify-credentials PURPOSE | access inventory|sync-inventory|sync-prepare AUTH_SCOPE | sign-macos program|package TARGET | notarize submit|finish | stage-windows TARGET | accept-windows TARGET | prepare-windows | sign-windows TARGET | verify-windows TARGET | install-check TARGET | resume-build TARGET | resume-windows TARGET | resume-notarization | resume-distribution | draft | publish | candidate | keygen DIRECTORY";
 
 /// Runs one release task.
 ///
@@ -113,6 +114,8 @@ pub fn run(root: &Path, words: &[&str]) -> Result<()> {
         ["notarize", "submit"] => notarize_submit(root),
         ["notarize", "finish"] => notarize_finish(root),
         ["verify-windows", target] => verify_windows(root, target),
+        ["prepare-windows"] => esigner::prepare(root),
+        ["sign-windows", target] => esigner::sign(root, target),
         ["stage-windows", target] => stage_windows(root, target),
         ["accept-windows", target] => accept_windows(root, target),
         ["install-check", target] => install::check(root, target),

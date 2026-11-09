@@ -20,6 +20,8 @@ pub(super) const LINUX_DEPENDS: &str =
     "libc6 (>= 2.39), libwebkit2gtk-4.1-0, libayatana-appindicator3-1, libxdo3";
 const DESKTOP_ENTRY: &str = "[Desktop Entry]\nType=Application\nName=youarel\nComment=Open saved bookmarks\nExec=youarel-launcher\nIcon=io.github.p4suta.youarel\nTerminal=false\nCategories=Network;\n";
 const ICON: &str = "app/icons/128x128.png";
+const NATIVE_MAC_ICON: &str = "Contents/Resources/Assets.car";
+const FALLBACK_MAC_ICON: &str = "Contents/Resources/icon.icns";
 
 pub(super) fn supported(target: &str) -> Result<()> {
     ensure!(
@@ -148,6 +150,8 @@ pub(super) fn app_entries(root: &Path, target: &str) -> Result<Vec<Entry>> {
         format!("{APP}/Contents/Info.plist"),
         format!("{APP}/Contents/MacOS/{LAUNCHER}"),
         format!("{APP}/Contents/MacOS/youarel"),
+        format!("{APP}/{NATIVE_MAC_ICON}"),
+        format!("{APP}/{FALLBACK_MAC_ICON}"),
     ] {
         ensure!(
             entries.iter().any(|entry| entry.path == required),
@@ -250,6 +254,37 @@ pub(super) fn check_version(root: &Path, path: &Path, version: &str, home: &Path
 #[cfg(test)]
 mod tests {
     use super::{safe_path, supported};
+
+    #[test]
+    fn macos_payload_requires_native_and_fallback_icons() {
+        const TARGET: &str = "aarch64-apple-darwin";
+        const FILES: [&str; 5] = [
+            "Contents/Info.plist",
+            "Contents/MacOS/youarel-launcher",
+            "Contents/MacOS/youarel",
+            "Contents/Resources/Assets.car",
+            "Contents/Resources/icon.icns",
+        ];
+        for missing in [
+            "Contents/Resources/Assets.car",
+            "Contents/Resources/icon.icns",
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            let app = super::application(root.path(), TARGET);
+            for file in FILES.into_iter().filter(|file| *file != missing) {
+                crate::fs::write(&app.join(file), b"fixture").unwrap();
+            }
+            assert!(
+                super::app_entries(root.path(), TARGET).is_err(),
+                "{missing}"
+            );
+            crate::fs::write(&app.join(missing), b"fixture").unwrap();
+            assert_eq!(
+                super::app_entries(root.path(), TARGET).unwrap().len(),
+                FILES.len()
+            );
+        }
+    }
 
     #[test]
     fn release_paths_and_targets_reject_uncontrolled_inputs() {

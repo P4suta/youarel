@@ -1,0 +1,49 @@
+{
+  "fill": {
+    "solid": "extended-srgb:1,1,1,1"
+  },
+  "groups": [
+    {
+      "layers": [
+        {
+          "fill-specializations": [
+            {
+              "value": "automatic"
+            },
+            {
+              "appearance": "dark",
+              "value": "system-light"
+            },
+            {
+              "appearance": "tinted",
+              "value": "system-light"
+            }
+          ],
+          "glass": false,
+          "image-name": "L.svg",
+          "name": "L",
+          "position": {
+            "scale": 1,
+            "translation-in-points": [
+              0,
+              0
+            ]
+          }
+        }
+      ],
+      "shadow": {
+        "kind": "neutral",
+        "opacity": 0
+      },
+      "translucency": {
+        "enabled": false,
+        "value": 0
+      }
+    }
+  ],
+  "supported-platforms": {
+    "squares": [
+      "macOS"
+    ]
+  }
+}

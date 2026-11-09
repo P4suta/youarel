@@ -101,7 +101,7 @@ youarel-release = { path = "crates/youarel-release" }
 youarel-store = { path = "crates/youarel-store" }
 
 anyhow = "1.0"
-base64 = "0.22"
+base64 = "0.23"
 clap = { version = "4.6", features = ["derive", "wrap_help"] }
 ctrlc = { version = "3.5.2", features = ["termination"] }
 flate2 = "1.1"
@@ -116,10 +116,10 @@ image = { version = "0.25.10", default-features = false, features = [
   "webp",
 ] }
 libcrux-ml-dsa = { version = "0.0.11", default-features = false, features = ["mldsa65", "std"] }
-minisign = "0.7"
-minisign-verify = "0.2"
-rand_chacha = "0.3"
-rand_core = "0.6"
+minisign = "0.10"
+minisign-verify = "0.3"
+rand_chacha = "0.10"
+rand_core = "0.10"
 ratatui = "0.30"
 # The store keeps the state with its indexes, the visits, and the icons in one embedded database in pure Rust, whose transactions a crash never leaves half done.
 redb = "4.4"

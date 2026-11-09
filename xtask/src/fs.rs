@@ -58,6 +58,14 @@ mod raw {
             .open(path)
     }
 
+    pub(super) fn open_lock(path: &Path) -> std::io::Result<std::fs::File> {
+        std::fs::OpenOptions::new()
+            .create(true)
+            .read(true)
+            .append(true)
+            .open(path)
+    }
+
     /// A new file that only its owner may read or write.
     #[cfg(unix)]
     pub(super) fn create_private(path: &Path) -> std::io::Result<std::fs::File> {
@@ -140,7 +148,7 @@ pub struct RunLock {
 ///
 /// Refuses another active run or an unreadable lock file.
 pub fn lock_run(path: &Path) -> Result<RunLock> {
-    let file = raw::append(path).with_context(|| format!("open {}", path.display()))?;
+    let file = raw::open_lock(path).with_context(|| format!("open {}", path.display()))?;
     file.try_lock()
         .with_context(|| format!("another run holds {}", path.display()))?;
     Ok(RunLock { _file: file })
@@ -369,6 +377,16 @@ mod tests {
         super::lock_run(&path).unwrap_err();
         drop(first);
         let _second = super::lock_run(&path).unwrap();
+    }
+
+    #[test]
+    fn a_campaign_lock_preserves_existing_contents() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("run.lock");
+        write(&path, b"state").unwrap();
+        let guard = super::lock_run(&path).unwrap();
+        drop(guard);
+        assert_eq!(read_to_string(&path).unwrap(), "state");
     }
 
     #[test]

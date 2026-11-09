@@ -1,6 +1,6 @@
 use anyhow::{Context as _, Result};
 use rand_chacha::ChaCha20Rng;
-use rand_core::{RngCore as _, SeedableRng as _};
+use rand_core::{Rng as _, SeedableRng as _};
 use youarel_core::bench_rules::{Namespace, PURGED_PERIOD};
 use youarel_core::clock_rules::{DeviceId, Stamp};
 use youarel_core::merge_rules::Register;

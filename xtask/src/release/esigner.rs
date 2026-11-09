@@ -13,6 +13,7 @@ const URL: &str =
     "https://github.com/SSLcom/CodeSignTool/releases/download/v1.3.2/CodeSignTool-v1.3.2.zip";
 const ARCHIVE_SHA256: &str = "f14b1e1ef14bfa1fd00279c363aab0debbf5dcfba0e4bcdce5d22bb771de0e3a";
 const JAR: &str = "jar/code_sign_tool-1.3.2.jar";
+const RUNTIME_JAR: &str = "codesign.jar";
 const CONFIG: &str = "conf/code_sign_tool.properties";
 const VERSION: &str = "1.3.2";
 const REPORTED_VERSION: &str = "v1.3.0";
@@ -83,7 +84,7 @@ fn bundle(root: &Path) -> Result<(Vec<u8>, Vec<u8>)> {
     Ok((jar.bytes.clone(), config.bytes.clone()))
 }
 
-fn execute(root: &Path, words: &[String]) -> Result<Output> {
+fn run(root: &Path, words: &[String]) -> Result<Output> {
     let (expected, config) = bundle(root)?;
     ensure!(
         Digest::of(&fs::read(&root.join(DIRECTORY).join(JAR))?) == Digest::of(&expected),
@@ -94,6 +95,7 @@ fn execute(root: &Path, words: &[String]) -> Result<Output> {
         .tempdir()?;
     let input = directory.path().join("arguments");
     fs::write_private(&input, &arguments(words)?)?;
+    fs::write(&directory.path().join(RUNTIME_JAR), &expected)?;
     fs::create_dir_all(&directory.path().join("conf"))?;
     fs::write(&directory.path().join(CONFIG), &config)?;
     let output = tool::output(
@@ -103,6 +105,10 @@ fn execute(root: &Path, words: &[String]) -> Result<Output> {
     let cleanup = directory.close();
     let output = output?;
     cleanup.context("remove private signing arguments and provider logs")?;
+    Ok(output)
+}
+
+fn private_result(output: Output) -> Result<Output> {
     ensure!(
         output.status.success(),
         "the signing tool exited with {}; provider output remains private",
@@ -111,14 +117,27 @@ fn execute(root: &Path, words: &[String]) -> Result<Output> {
     Ok(output)
 }
 
-fn jar_arguments(root: &Path, operation: &str) -> Vec<String> {
+fn execute(root: &Path, words: &[String]) -> Result<Output> {
+    private_result(run(root, words)?)
+}
+
+fn public_probe(root: &Path, words: &[String], name: &str) -> Result<Output> {
+    let output = run(root, words)?;
+    ensure!(
+        output.status.success(),
+        "the public {name} probe exited with {}:\n{}\n{}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    Ok(output)
+}
+
+fn jar_arguments(operation: &str) -> Vec<String> {
     vec![
         HEAP.to_owned(),
         "-jar".to_owned(),
-        root.join(DIRECTORY)
-            .join(JAR)
-            .to_string_lossy()
-            .into_owned(),
+        RUNTIME_JAR.to_owned(),
         operation.to_owned(),
     ]
 }
@@ -177,20 +196,21 @@ pub(super) fn prepare(root: &Path) -> Result<()> {
         "CodeSignTool requires the runner's maintained Java 17 or later"
     );
     let probe = "space \"quotes\" \\slash #";
-    let transport_probe = execute(
+    let transport_probe = public_probe(
         root,
         &[
             format!("-Dyouarel.argumentProbe={probe}"),
             "-XshowSettings:properties".to_owned(),
             "-version".to_owned(),
         ],
+        "Java argument transport",
     )?;
     ensure!(
         String::from_utf8_lossy(&transport_probe.stderr)
             .contains(&format!("youarel.argumentProbe = {probe}")),
         "Java did not preserve private argument-file values"
     );
-    let sdk_version = execute(root, &jar_arguments(root, "--version"))?;
+    let sdk_version = public_probe(root, &jar_arguments("--version"), "SDK startup")?;
     ensure!(
         String::from_utf8_lossy(&sdk_version.stdout).trim() == REPORTED_VERSION,
         "the signing SDK reports another version"
@@ -201,9 +221,9 @@ pub(super) fn prepare(root: &Path) -> Result<()> {
     Ok(())
 }
 
-fn authenticated(root: &Path, operation: &str) -> Result<Vec<String>> {
+fn authenticated(operation: &str) -> Result<Vec<String>> {
     super::credentials::inputs("windows")?;
-    let mut words = jar_arguments(root, operation);
+    let mut words = jar_arguments(operation);
     for (option, input) in [
         ("username", USERNAME),
         ("password", PASSWORD),
@@ -215,7 +235,7 @@ fn authenticated(root: &Path, operation: &str) -> Result<Vec<String>> {
 }
 
 pub(super) fn verify_credentials(root: &Path) -> Result<()> {
-    let result = execute(root, &authenticated(root, "credential_info")?)?;
+    let result = execute(root, &authenticated("credential_info")?)?;
     let text = String::from_utf8(result.stdout)?;
     let labels = ["- Subject DN:", "- Certificate Expiry:", "- Issuer DN:"];
     ensure!(
@@ -240,7 +260,7 @@ pub(super) fn sign(root: &Path, target: &str) -> Result<()> {
         target.contains("windows"),
         "Windows signing requires a Windows target"
     );
-    let mut words = authenticated(root, "batch_sign")?;
+    let mut words = authenticated("batch_sign")?;
     words.push(format!("-totp_secret={}", required(TOTP)?));
     words.push(format!(
         "-input_dir_path={}",
@@ -275,5 +295,37 @@ mod tests {
         let encoded = arguments(&["space \"quote\" \\ #\n\r\t\u{c}".to_owned()]).unwrap();
         assert_eq!(encoded, b"\"space \\\"quote\\\" \\\\ #\\n\\r\\t\\f\"\n");
         arguments(&["bad\0argument".to_owned()]).unwrap_err();
+    }
+
+    #[test]
+    fn the_sdk_jar_uses_its_private_working_directory() {
+        let words = jar_arguments("--version");
+        let [_, _, jar, _] = words.as_slice() else {
+            panic!("the SDK invocation must name its JAR");
+        };
+        assert!(
+            Path::new(jar).is_relative(),
+            "Java must not receive a host's canonical JAR path"
+        );
+    }
+
+    #[test]
+    fn credential_failures_keep_captured_provider_output_private() {
+        #[cfg(unix)]
+        use std::os::unix::process::ExitStatusExt as _;
+        #[cfg(windows)]
+        use std::os::windows::process::ExitStatusExt as _;
+        #[cfg(unix)]
+        const FAILURE_STATUS: i32 = 256;
+        #[cfg(windows)]
+        const FAILURE_STATUS: u32 = 1;
+        let output = Output {
+            status: std::process::ExitStatus::from_raw(FAILURE_STATUS),
+            stdout: b"PRIVATE_PROVIDER_STDOUT".to_vec(),
+            stderr: b"PRIVATE_PROVIDER_STDERR".to_vec(),
+        };
+        let error = private_result(output).unwrap_err().to_string();
+        assert!(error.contains("provider output remains private"));
+        assert!(!error.contains("PRIVATE_PROVIDER"));
     }
 }

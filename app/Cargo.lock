@@ -6774,7 +6774,7 @@ dependencies = [
 
 [[package]]
 name = "youarel-cli"
-version = "0.0.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -6797,22 +6797,22 @@ dependencies = [
 
 [[package]]
 name = "youarel-core"
-version = "0.0.0"
+version = "1.0.0"
 
 [[package]]
 name = "youarel-html"
-version = "0.0.0"
+version = "1.0.0"
 
 [[package]]
 name = "youarel-icon"
-version = "0.0.0"
+version = "1.0.0"
 dependencies = [
  "image",
 ]
 
 [[package]]
 name = "youarel-launcher"
-version = "0.0.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "base64 0.23.1",
@@ -6833,7 +6833,7 @@ dependencies = [
 
 [[package]]
 name = "youarel-link"
-version = "0.0.0"
+version = "1.0.0"
 dependencies = [
  "url",
  "youarel-core",
@@ -6841,7 +6841,7 @@ dependencies = [
 
 [[package]]
 name = "youarel-release"
-version = "0.0.0"
+version = "1.0.0"
 dependencies = [
  "libcrux-ml-dsa",
  "minisign-verify",
@@ -6853,7 +6853,7 @@ dependencies = [
 
 [[package]]
 name = "youarel-store"
-version = "0.0.0"
+version = "1.0.0"
 dependencies = [
  "getrandom 0.4.3",
  "redb",

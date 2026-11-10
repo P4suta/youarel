@@ -880,19 +880,10 @@ mod proofs {
     }
 
     #[kani::proof]
-    #[kani::unwind(33)]
+    #[kani::unwind(17)]
     fn every_record_reports_its_latest_stamp_of_the_requested_device() {
+        let stamps: [Stamp; 7] = core::array::from_fn(|_| any_stamp());
         let device = DeviceId(kani::any());
-        let stamps: [Stamp; 7] = core::array::from_fn(|_| {
-            let mut stamp = any_stamp();
-            let own: bool = kani::any();
-            if own {
-                stamp.device = device;
-            } else {
-                kani::assume(stamp.device != device);
-            }
-            stamp
-        });
         let folder: bool = kani::any();
         let Some(position) = Key::parse("a1") else {
             kani::assert(false, "the fixed position is admitted");
@@ -927,16 +918,20 @@ mod proofs {
         let latest = record.latest_of(device);
         if let Some(latest) = latest {
             kani::assert(
-                latest.device == device && fields.contains(&latest),
-                "the latest stamp is a field of this device",
+                latest.device == device,
+                "the latest stamp belongs to this device",
             );
-            kani::assert(
-                fields
-                    .iter()
-                    .filter(|stamp| stamp.device == device)
-                    .all(|stamp| *stamp <= latest),
-                "no field of this device follows the result",
-            );
+            let mut found = false;
+            for stamp in fields {
+                if stamp.device == device {
+                    found |= stamp.wall == latest.wall && stamp.counter == latest.counter;
+                    kani::assert(
+                        (stamp.wall, stamp.counter) <= (latest.wall, latest.counter),
+                        "no field of this device follows the result",
+                    );
+                }
+            }
+            kani::assert(found, "the latest stamp is a field of this device");
         } else {
             kani::assert(
                 fields.iter().all(|stamp| stamp.device != device),

@@ -5,7 +5,7 @@ use std::process::ExitCode;
 
 const USAGE_EXIT_CODE: u8 = 2;
 
-const USAGE: &str = "usage: cargo xtask check [--staged | --platform | --desktop] | release-check | structure | bench [--shortcuts N] [--folders F] [--seed S] [--dry-run] | commit-msg FILE | proofs [--fail-fast] [--only STEP] [--without STEP] [--inside], where STEP is kani|quint|miri|fuzz|mutants | proof-source SOURCE | fuzz TARGET RUNS | interface | app-linux | contain TASK... | gen [--check | --model NAME --native-quint PATH] | ci plan [BASE]|cache app|run JOB|check|test|gate NAME | release STEP...";
+const USAGE: &str = "usage: cargo xtask check [--staged | --platform | --desktop] | release-check [--plan] | structure | bench [--shortcuts N] [--folders F] [--seed S] [--dry-run] | commit-msg FILE | proofs [--fail-fast] [--only STEP] [--without STEP] [--inside], where STEP is kani|quint|miri|fuzz|mutants | proof-source SOURCE [--harness NAME] | fuzz TARGET RUNS | interface | app-linux | contain TASK... | gen [--check | --model NAME --native-quint PATH] | ci plan [BASE]|cache app|run JOB|check|test|gate NAME | release STEP...";
 
 fn report(task: &str, result: anyhow::Result<()>) -> ExitCode {
     match result {
@@ -65,6 +65,10 @@ fn dispatch(root: &Path, words: &[&str]) -> ExitCode {
                     ..xtask::proofs::Scope::default()
                 },
             ),
+        ),
+        ["proof-source", source, "--harness", name] => report(
+            "proof-source",
+            xtask::proofs::kani_harness(root, source, name),
         ),
         ["fuzz", target, runs] => report("fuzz", xtask::proofs::fuzz(root, target, runs)),
         ["contain", rest @ ..] if !rest.is_empty() => {

@@ -51,9 +51,9 @@ bench *args: trust
 proofs *args: trust
     mise x -- cargo xtask contain proofs {{ args }}
 
-# One rule module's Kani harnesses and rejecting probes, in the proof container.
-proof-source source: trust
-    mise x -- cargo xtask contain proof-source {{ quote(source) }}
+# One rule module's Kani checks, or --harness NAME with the module's rejecting probes.
+proof-source source *args: trust
+    mise x -- cargo xtask contain proof-source {{ quote(source) }} {{ args }}
 
 # Mutation testing of the pure crates alone, in the container.
 mutants: trust

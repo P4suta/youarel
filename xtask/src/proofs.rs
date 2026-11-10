@@ -375,7 +375,6 @@ fn kani_command(root: &Path, manifest: Option<&Path>, target: &Path, report: &Pa
     command
         .args([
             "--exact",
-            "--output-format=terse",
             "-Z",
             "unstable-options",
             &format!("--harness-timeout={HARNESS_TIMEOUT}"),
@@ -481,7 +480,7 @@ fn run_probe(root: &Path, scratch: &Path, manifest: Option<&Path>, probe: &Probe
     let target = scratch.join(format!("probe-{}", probe.harness));
     let report = scratch.join(format!("probe-{}.json", probe.harness));
     let mut command = kani_command(root, manifest, &target, &report);
-    command.args(["--harness", &probe.harness]);
+    command.args(["--output-format=terse", "--harness", &probe.harness]);
     let passed = tool::status(&mut command, "cargo kani")?;
     ensure!(
         !passed,
@@ -528,6 +527,47 @@ fn kani_manifest(root: &Path, selected: &[String]) -> Result<Manifest> {
 
 fn verify_kani(root: &Path, selected: &[String]) -> Result<()> {
     let manifest = kani_manifest(root, selected)?;
+    verify_kani_manifest(root, selected, &manifest, false)
+}
+
+fn select_harness(manifest: &mut Manifest, source: &str, name: &str) -> Result<()> {
+    for obligation in &mut manifest.obligation {
+        if let Obligation::Kani {
+            source: found,
+            harnesses,
+            ..
+        } = obligation
+            && found == source
+        {
+            ensure!(
+                harnesses.iter().any(|harness| harness.name == name),
+                "the source declares no harness {name}"
+            );
+            harnesses.retain(|harness| harness.name == name);
+            return Ok(());
+        }
+    }
+    bail!("the manifest declares no Kani source {source}")
+}
+
+/// Checks one declared Kani harness and its module's negative controls.
+///
+/// # Errors
+///
+/// Rejects an unknown selection, missing coverage, or an inconclusive verifier result.
+pub fn kani_harness(root: &Path, source: &str, name: &str) -> Result<()> {
+    let selected = [source.to_owned()];
+    let mut manifest = kani_manifest(root, &selected)?;
+    select_harness(&mut manifest, source, name)?;
+    verify_kani_manifest(root, &selected, &manifest, true)
+}
+
+fn verify_kani_manifest(
+    root: &Path,
+    selected: &[String],
+    manifest: &Manifest,
+    diagnostic: bool,
+) -> Result<()> {
     tool::require_version(
         Tool::Cargo.command(root).arg("kani"),
         "cargo-kani",
@@ -557,6 +597,12 @@ fn verify_kani(root: &Path, selected: &[String]) -> Result<()> {
     let harnesses: Vec<&Harness> = qualified.iter().collect();
     let report = scratch.path().join("proofs.json");
     let mut command = kani_command(root, None, &scratch.path().join("proofs"), &report);
+    command.arg("--fail-fast");
+    if diagnostic {
+        command.args(["--output-format=regular", "--verbose"]);
+    } else {
+        command.arg("--output-format=terse");
+    }
     for harness in &harnesses {
         command.args(["--harness", &harness.name]);
     }
@@ -1109,9 +1155,9 @@ pub fn scratch(root: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::{
-        FailureMode, Harness, Harnesses, KaniReport, MISSED_SUMMARY, Manifest, Options, Outcomes,
-        Step, TIMEOUT_SUMMARY, check_negative, check_positive, inventory_findings,
-        package_findings, qualify, verify_steps,
+        FailureMode, Harness, Harnesses, KaniReport, MISSED_SUMMARY, Manifest, Obligation, Options,
+        Outcomes, Probe, Step, TIMEOUT_SUMMARY, check_negative, check_positive, inventory_findings,
+        package_findings, qualify, select_harness, verify_steps,
     };
 
     #[test]
@@ -1154,6 +1200,38 @@ mod tests {
             contract: "fixture".to_owned(),
             input_domain: "fixture".to_owned(),
             bound: "fixture".to_owned(),
+        }
+    }
+
+    #[test]
+    fn a_diagnostic_harness_keeps_negative_controls_and_refuses_unknown_names() {
+        let fixture = || Manifest {
+            obligation: vec![Obligation::Kani {
+                source: "rules.rs".to_owned(),
+                harnesses: vec![harness("first"), harness("second")],
+                probes: vec![Probe {
+                    harness: "rejects_bad".to_owned(),
+                    assertion: "NEGATIVE_CONTROL".to_owned(),
+                }],
+            }],
+        };
+        let mut manifest = fixture();
+        select_harness(&mut manifest, "rules.rs", "second").unwrap();
+        let Obligation::Kani {
+            harnesses, probes, ..
+        } = manifest.obligation.first().unwrap()
+        else {
+            panic!("the diagnostic changed the verifier");
+        };
+        assert_eq!(harnesses.len(), 1);
+        assert_eq!(harnesses.first().unwrap().name, "second");
+        assert_eq!(probes.first().unwrap().harness, "rejects_bad");
+        for (source, name) in [
+            ("rules.rs", "unknown"),
+            ("unknown.rs", "second"),
+            ("rules.rs", ""),
+        ] {
+            select_harness(&mut fixture(), source, name).unwrap_err();
         }
     }
 

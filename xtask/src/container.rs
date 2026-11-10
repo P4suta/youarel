@@ -180,6 +180,7 @@ pub fn run(root: &Path, words: &[&str]) -> Result<()> {
         let options = proofs::Options::from_words(rest)
             .with_context(|| format!("unknown proof options {rest:?}"))?;
         let selected = options.selected();
+        anyhow::ensure!(!selected.is_empty(), "the campaign selects no verifiers");
         for step in selected.iter().filter(|step| step.contained()) {
             let hosted = proofs::Options {
                 only: Some(*step),

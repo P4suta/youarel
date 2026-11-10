@@ -153,32 +153,38 @@ impl Scope {
     }
 }
 
-/// Which verifiers run.
+/// Whether a failed verifier stops the campaign.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FailureMode {
+    Collect,
+    Stop,
+}
+
+/// The selected verification and failure behavior.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Options {
-    /// The explicit proof-only inventory, without mutation testing.
-    pub ci: bool,
     pub only: Option<Step>,
     /// A verifier to leave out.
     pub without: Option<Step>,
     /// Whether to leave out the steps that start their own containers, which the host runs outside the proof container.
     pub inside: bool,
+    pub failure: FailureMode,
 }
 
 impl Options {
-    /// Reads `--ci`, `--only STEP`, `--without STEP`, and `--inside`, refusing anything else.
+    /// Reads verifier selection, container scope, and `--fail-fast`.
     #[must_use]
     pub fn from_words(words: &[&str]) -> Option<Self> {
         let mut options = Self {
-            ci: false,
             only: None,
             without: None,
             inside: false,
+            failure: FailureMode::Collect,
         };
         let mut words = words.iter();
         while let Some(word) = words.next() {
             match *word {
-                "--ci" => options.ci = true,
+                "--fail-fast" => options.failure = FailureMode::Stop,
                 "--only" => options.only = Some(Step::named(words.next()?)?),
                 "--without" => options.without = Some(Step::named(words.next()?)?),
                 "--inside" => options.inside = true,
@@ -190,15 +196,9 @@ impl Options {
 
     #[must_use]
     pub fn selected(self) -> Vec<Step> {
-        let chosen: Vec<Step> = self.only.map_or_else(
-            || {
-                Step::ALL
-                    .into_iter()
-                    .filter(|step| !(self.ci && *step == Step::Mutants))
-                    .collect()
-            },
-            |step| vec![step],
-        );
+        let chosen: Vec<Step> = self
+            .only
+            .map_or_else(|| Step::ALL.to_vec(), |step| vec![step]);
         chosen
             .into_iter()
             .filter(|step| Some(*step) != self.without && !(self.inside && step.contained()))
@@ -1040,9 +1040,23 @@ fn verify(root: &Path, step: Step, scope: &Scope) -> Result<()> {
 /// Returns an error naming each failed verifier.
 pub fn run(root: &Path, options: Options) -> Result<()> {
     let scope = Scope::full(root)?;
+    verify_steps(&options.selected(), options.failure, |step| {
+        verify(root, step, &scope)
+    })
+}
+
+fn verify_steps(
+    steps: &[Step],
+    failure: FailureMode,
+    mut run: impl FnMut(Step) -> Result<()>,
+) -> Result<()> {
+    ensure!(!steps.is_empty(), "the campaign selects no verifiers");
     let mut report = Report::default();
-    for step in options.selected() {
-        report.stage(step.name(), || verify(root, step, &scope));
+    for step in steps {
+        report.stage(step.name(), || run(*step));
+        if failure == FailureMode::Stop && !report.failures().is_empty() {
+            break;
+        }
     }
     report.finish("proofs")
 }
@@ -1095,9 +1109,9 @@ pub fn scratch(root: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::{
-        Harness, Harnesses, KaniReport, MISSED_SUMMARY, Manifest, Options, Outcomes, Step,
-        TIMEOUT_SUMMARY, check_negative, check_positive, inventory_findings, package_findings,
-        qualify,
+        FailureMode, Harness, Harnesses, KaniReport, MISSED_SUMMARY, Manifest, Options, Outcomes,
+        Step, TIMEOUT_SUMMARY, check_negative, check_positive, inventory_findings,
+        package_findings, qualify, verify_steps,
     };
 
     #[test]
@@ -1151,40 +1165,37 @@ mod tests {
         serde_json::from_str(r#"{"metadata":{"kani_version":"0.68.0"},"property_details":[{"harness_id":"rejects_x","property_details":{"failed":1,"undetermined":0,"solver_error":0,"satisfied":0,"unsatisfiable":0}}],"verification_results":{"summary":{"total_harnesses":1,"executed":1,"status":"completed","successful":0,"failed":1},"results":[{"harness_id":"rejects_x","status":"Failure","checks":[{"status":"Failure","description":"NEGATIVE_X_CONTROL","category":"assertion"}]}]}}"#).unwrap()
     }
 
-    const fn options(ci: bool, only: Option<Step>, without: Option<Step>) -> Options {
+    const fn options(only: Option<Step>, without: Option<Step>) -> Options {
         Options {
-            ci,
             only,
             without,
             inside: false,
+            failure: FailureMode::Collect,
         }
     }
 
     #[test]
-    fn options_read_ci_only_and_without() {
-        assert_eq!(Options::from_words(&[]), Some(options(false, None, None)));
+    fn options_read_selection_and_failure_behavior() {
+        assert_eq!(Options::from_words(&[]), Some(options(None, None)));
         assert_eq!(
-            Options::from_words(&["--ci", "--only", "miri"]),
-            Some(options(true, Some(Step::Miri), None))
+            Options::from_words(&["--only", "miri"]),
+            Some(options(Some(Step::Miri), None))
         );
         assert_eq!(
             Options::from_words(&["--without", "quint"]),
-            Some(options(false, None, Some(Step::Quint)))
+            Some(options(None, Some(Step::Quint)))
         );
         assert_eq!(Options::from_words(&["--only"]), None);
         assert_eq!(Options::from_words(&["--only", "lean"]), None);
         assert_eq!(Options::from_words(&["--verbose"]), None);
+        assert_eq!(Options::from_words(&["--ci"]), None);
+        assert_eq!(options(None, None).selected(), Step::ALL);
         assert_eq!(
-            options(true, None, None).selected(),
-            [Step::Kani, Step::Quint, Step::Miri, Step::Fuzz]
-        );
-        assert_eq!(options(false, None, None).selected(), Step::ALL);
-        assert_eq!(
-            options(true, Some(Step::Mutants), None).selected(),
+            options(Some(Step::Mutants), None).selected(),
             [Step::Mutants]
         );
         assert_eq!(
-            options(false, None, Some(Step::Quint)).selected(),
+            options(None, Some(Step::Quint)).selected(),
             [Step::Kani, Step::Miri, Step::Fuzz, Step::Mutants]
         );
         let inside = Options::from_words(&["--inside"]).unwrap();
@@ -1192,10 +1203,31 @@ mod tests {
             inside.selected(),
             [Step::Kani, Step::Miri, Step::Fuzz, Step::Mutants]
         );
+        assert_eq!(options(Some(Step::Quint), Some(Step::Quint)).selected(), []);
         assert_eq!(
-            options(false, Some(Step::Quint), Some(Step::Quint)).selected(),
-            []
+            Options::from_words(&["--fail-fast"]).unwrap().failure,
+            FailureMode::Stop
         );
+    }
+
+    #[test]
+    fn release_campaigns_stop_before_expensive_work_after_a_failure() {
+        let mut ran = Vec::new();
+        verify_steps(
+            &[Step::Kani, Step::Miri, Step::Mutants],
+            FailureMode::Stop,
+            |step| {
+                ran.push(step);
+                anyhow::bail!("the verifier failed")
+            },
+        )
+        .unwrap_err();
+        assert_eq!(ran, [Step::Kani]);
+    }
+
+    #[test]
+    fn an_empty_campaign_never_claims_success() {
+        verify_steps(&[], FailureMode::Stop, |_step| Ok(())).unwrap_err();
     }
 
     #[test]

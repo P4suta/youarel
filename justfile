@@ -16,9 +16,9 @@ check *args: trust
 check-staged: trust
     mise x -- cargo xtask check --staged
 
-# The explicit full campaign: every check, the Linux window, and every proof.
-push-check: trust
-    mise x -- cargo xtask push-check
+# The local release gate: every check, the Linux window, and every proof on a committed source tree.
+release-check *args: trust
+    mise x -- cargo xtask release-check {{ args }}
 
 # Show the required verification for a base-to-HEAD range without executing it.
 ci-plan base: trust
@@ -35,9 +35,9 @@ check-win:
 # The checks that depend on the operating system, on every other host.
 check-fleet: check-linux check-win
 
-# The proofs a hosted Linux runner repeats, on the Linux host over the current files.
+# The full proof campaign in bounded containers on the Linux host over the current files.
 proofs-linux:
-    domyjob run linux --wait -- /bin/bash -lc 'export MISE_TRUSTED_CONFIG_PATHS="$PWD" RUSTC_WRAPPER=; mise x -- just proofs-ci'
+    domyjob run linux --wait -- /bin/bash -lc 'export MISE_TRUSTED_CONFIG_PATHS="$PWD" RUSTC_WRAPPER=; mise x -- just proofs'
 
 # The pure core keeps its boundary and every crate keeps its place.
 structure: trust
@@ -54,14 +54,6 @@ proofs *args: trust
 # One rule module's Kani harnesses and rejecting probes, in the proof container.
 proof-source source: trust
     mise x -- cargo xtask contain proof-source {{ quote(source) }}
-
-# The same proofs on this host without a container, as a hosted Linux runner runs them.
-proofs-native *args: trust
-    mise x -- cargo xtask proofs {{ args }}
-
-# The explicit proof-only inventory, without mutation testing.
-proofs-ci: trust
-    mise x -- cargo xtask proofs --ci
 
 # Mutation testing of the pure crates alone, in the container.
 mutants: trust

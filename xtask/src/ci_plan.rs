@@ -1,23 +1,18 @@
-//! Source-bound fast checks and the full inventory of a release candidate.
+//! Source-bound fast checks and explicitly selected native platforms.
 
-use crate::{fs, proofs, tool};
+use crate::{fs, tool};
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use youarel_core::verification_rules::{self, Confidence, Job, Selection, Stage};
 
-const SCHEMA: u8 = 2;
+pub(crate) const SCHEMA: u8 = 3;
 
 /// The workflow's stable rendering of a verification job.
 #[must_use]
 pub const fn job_name(job: Job) -> &'static str {
     match job {
         Job::Check => "check",
-        Job::Kani => "kani",
-        Job::Quint => "quint",
-        Job::Miri => "miri",
-        Job::Fuzz => "fuzz",
-        Job::Mutants => "mutants",
         Job::App => "app",
         Job::Macos => "macos",
         Job::Windows => "windows",
@@ -48,11 +43,10 @@ pub enum Reason {
 #[serde(deny_unknown_fields)]
 pub struct Plan {
     pub schema: u8,
-    pub campaign: bool,
+    pub full: bool,
     pub source: Source,
     pub reason: Reason,
     pub changed: Vec<String>,
-    pub proofs: proofs::Scope,
     pub app: bool,
     pub platforms: bool,
 }
@@ -62,11 +56,6 @@ impl Plan {
     pub fn jobs(&self) -> Selection {
         let mut affected = Selection::default();
         for (job, present) in [
-            (Job::Kani, !self.proofs.kani.is_empty()),
-            (Job::Quint, !self.proofs.quint.is_empty()),
-            (Job::Miri, !self.proofs.miri.is_empty()),
-            (Job::Fuzz, !self.proofs.fuzz.is_empty()),
-            (Job::Mutants, !self.proofs.mutants.is_empty()),
             (Job::App, self.app),
             (Job::Macos, self.platforms),
             (Job::Windows, self.platforms),
@@ -82,8 +71,8 @@ impl Plan {
             } else {
                 Confidence::Conservative
             },
-            if self.campaign {
-                Stage::Candidate
+            if self.full {
+                Stage::Platforms
             } else {
                 Stage::Development
             },
@@ -190,13 +179,12 @@ fn classify(root: &Path, paths: &[String]) -> Result<Reason> {
     Ok(Reason::Affected)
 }
 
-/// Exposes required work without executing it; candidate mode keeps the full inventory.
+/// Exposes required work without execution, including every native platform when requested.
 ///
 /// # Errors
 ///
-/// Returns an error for an absent inventory or unreadable source range.
+/// Returns an error for an unreadable source range.
 pub fn build(root: &Path, base: &str, full: bool) -> Result<Plan> {
-    let proofs = proofs::Scope::full(root)?;
     let (source, changed) = source(root, base)?;
     let reason = if full {
         Reason::Manual
@@ -208,11 +196,10 @@ pub fn build(root: &Path, base: &str, full: bool) -> Result<Plan> {
     let app = reason != Reason::Affected || changed.iter().any(|path| !prose(path));
     Ok(Plan {
         schema: SCHEMA,
-        campaign: full,
+        full,
         source,
         reason,
         changed,
-        proofs,
         app,
         platforms: full,
     })
@@ -242,7 +229,6 @@ pub fn validate(root: &Path, base: &str, full: bool, supplied: &str) -> Result<P
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::obligations;
 
     fn snapshot(root: &Path) -> String {
         git(root, &["add", "--all"]).unwrap();
@@ -277,14 +263,29 @@ mod tests {
         git(root, &["init", "--quiet"]).unwrap();
         fs::write(&root.join("app/ui/main.ts"), b"const first: number = 1;\n").unwrap();
         fs::write(&root.join("README.md"), b"Fixture.\n").unwrap();
-        fs::write(&root.join("fuzz/fuzz_targets/parse.rs"), b"fn main() {}\n").unwrap();
-        fs::write(&root.join(obligations::MANIFEST), b"[[obligation]]\nverifier = 'kani'\nsource = 'crates/youarel-core/src/rules.rs'\nharnesses = []\nprobes = []\n[[obligation]]\nverifier = 'quint'\nspec = 'specs/test.qnt'\nmain = 'test'\nprobe = 'probe'\ninvariant = 'safe'\nwitnesses = []\nseed = '0x2a'\nsamples = 1\nsteps = 1\ndistinct_states = 1\ntraces = 1\n").unwrap();
         snapshot(root);
         directory
     }
 
     #[test]
-    fn development_keeps_fast_checks_and_candidates_keep_every_contract() {
+    fn release_checks_bind_committed_files_and_refuse_uncommitted_changes() {
+        let repository = repository();
+        let root = repository.path();
+        let original = crate::release::source_tree(root).unwrap();
+        assert_eq!(original, git(root, &["rev-parse", "HEAD:"]).unwrap().trim());
+        fs::write(&root.join("README.md"), b"Changed.\n").unwrap();
+        crate::release::source_tree(root).unwrap_err();
+        snapshot(root);
+        let changed = crate::release::source_tree(root).unwrap();
+        assert_ne!(original, changed);
+        fs::write(&root.join("unexpected"), b"untracked").unwrap();
+        crate::release::source_tree(root).unwrap_err();
+        git(root, &["add", "unexpected"]).unwrap();
+        crate::release::source_tree(root).unwrap_err();
+    }
+
+    #[test]
+    fn development_keeps_fast_checks_and_explicit_runs_cover_native_platforms() {
         let repository = repository();
         let root = repository.path();
         let base = commit(root, "HEAD").unwrap().unwrap();
@@ -293,13 +294,10 @@ mod tests {
         let development = build(root, &base, false).unwrap();
         assert!(development.jobs().includes(Job::Check));
         assert!(development.jobs().includes(Job::App));
-        assert!(!development.jobs().includes(Job::Mutants));
+        assert!(!development.jobs().includes(Job::Macos));
+        assert!(!development.jobs().includes(Job::Windows));
         let candidate = build(root, &base, true).unwrap();
         assert_eq!(candidate.jobs(), Selection::all());
-        assert_eq!(
-            candidate.proofs.mutants.len(),
-            proofs::MUTANT_PACKAGES.len()
-        );
     }
 
     #[test]
@@ -351,8 +349,8 @@ mod tests {
             let plan = build(root, other_base, false).unwrap();
             assert!(plan.jobs().includes(Job::Check));
             assert!(plan.jobs().includes(Job::App));
-            assert!(!plan.jobs().includes(Job::Mutants));
-            assert_eq!(plan.proofs.mutants.len(), proofs::MUTANT_PACKAGES.len());
+            assert!(!plan.jobs().includes(Job::Macos));
+            assert!(!plan.jobs().includes(Job::Windows));
         }
     }
 
@@ -366,5 +364,18 @@ mod tests {
         let plan = build(root, &base, false).unwrap();
         assert!(plan.jobs().includes(Job::Check));
         assert!(!plan.jobs().includes(Job::App));
+    }
+
+    #[test]
+    fn manual_hosted_checks_select_shipping_checks_without_campaigns() {
+        let repository = repository();
+        let root = repository.path();
+        let plan = build(root, "", true).unwrap();
+        let jobs: Vec<&str> = Job::ALL
+            .into_iter()
+            .filter(|job| plan.jobs().includes(*job))
+            .map(job_name)
+            .collect();
+        assert_eq!(jobs, ["check", "app", "macos", "windows"]);
     }
 }

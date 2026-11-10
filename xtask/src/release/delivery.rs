@@ -107,6 +107,12 @@ fn identity(root: &Path) -> Result<Identity> {
             && youarel_core::update_rules::Version::parse(&expected.version).is_some(),
         "release version is not reserved"
     );
+    let original = super::distribution::candidate_run(
+        root,
+        &expected.source,
+        &expected.version,
+        &expected.run,
+    )?;
     for target in desktop::TARGETS {
         let record: candidate::Candidate = serde_json::from_slice(&fs::read(
             &root.join(DIST).join(format!("candidate-{target}.json")),
@@ -114,12 +120,12 @@ fn identity(root: &Path) -> Result<Identity> {
         ensure!(
             record.source == expected.source
                 && record.version == expected.version
-                && record.run == expected.run
+                && record.run == original
                 && record
                     .attempt
                     .parse::<u32>()
                     .is_ok_and(|attempt| attempt > 0)
-                && record.builder == "P4suta/youarel/.github/workflows/release.yml@refs/heads/main"
+                && record.builder == candidate::BUILDER
                 && record.target == target,
             "{target} belongs to another candidate"
         );

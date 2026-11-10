@@ -21,9 +21,11 @@ mod candidate;
 mod credentials;
 mod delivery;
 mod desktop;
+mod distribution;
 mod esigner;
 mod install;
 mod proposal;
+mod runs;
 
 /// Checks product version synchronization and the pinned proposal updaters.
 ///
@@ -32,6 +34,28 @@ mod proposal;
 /// Reports drift, an unavailable checker, or a rejected updater result.
 pub fn check_proposal(root: &Path) -> Result<()> {
     proposal::check(root)
+}
+
+pub(crate) fn source_tree(root: &Path) -> Result<String> {
+    let changes = tool::capture(
+        tool::repository_git(root).args(["status", "--porcelain", "--untracked-files=all"]),
+        "check the committed release source",
+    )?;
+    ensure!(
+        changes.is_empty(),
+        "release checks require a clean committed checkout"
+    );
+    let tree = tool::capture(
+        tool::repository_git(root).args(["rev-parse", "HEAD:"]),
+        "read release source tree",
+    )?
+    .trim()
+    .to_owned();
+    ensure!(
+        candidate::valid_source(&tree),
+        "the release tree is not a full object identifier"
+    );
+    Ok(tree)
 }
 
 /// Writes the application payload for the macOS installer.
@@ -77,7 +101,7 @@ const SIGNATURE_PATH: &str = "YOUAREL_SIGNATURE_PROGRAM";
 const WINDOWS_PROGRAM_COUNT: usize = 2;
 const WINDOWS_SDK_QUERY: &str = r"$ErrorActionPreference = 'Stop'; $root = Get-ItemPropertyValue -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Windows Kits\Installed Roots' -Name KitsRoot10; $tool = Get-ChildItem -LiteralPath (Join-Path $root 'bin') -Directory | Where-Object Name -Match '^\d+\.\d+\.\d+\.\d+$' | Sort-Object { [version]$_.Name } -Descending | ForEach-Object { Join-Path $_.FullName 'x64\signtool.exe' } | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1; if (!$tool) { throw 'The Windows SDK SignTool verifier is missing.' }; $signature = Get-AuthenticodeSignature -LiteralPath $tool; if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notlike '*O=Microsoft Corporation*') { throw 'The Windows SDK verifier is not trusted Microsoft code.' }; $tool";
 
-const USAGE: &str = "usage: cargo xtask release version | check-versions | propose | plan candidate|sign | plan-publication draft|publish | build TARGET | seal TARGET | restore TARGET | bundle TARGET | check-bundle TARGET | manifest | sign | checksums | verify-dist | verify-provenance | attach-provenance FILE | attach-build-provenance TARGET FILE | verify-build-run | credential-inputs PURPOSE | verify-credentials PURPOSE | access inventory|sync-inventory|sync-prepare AUTH_SCOPE | sign-macos program|package TARGET | notarize submit|finish | stage-windows TARGET | accept-windows TARGET | prepare-windows | sign-windows TARGET | verify-windows TARGET | install-check TARGET | resume-build TARGET | resume-windows TARGET | resume-notarization | resume-distribution | draft | publish | candidate | keygen DIRECTORY";
+const USAGE: &str = "usage: cargo xtask release version | check-versions | propose | plan candidate|sign | plan-publication draft|publish | build TARGET | seal TARGET | restore TARGET | inspect-candidate | record-distribution | bundle TARGET | check-bundle TARGET | manifest | sign | checksums | verify-dist | verify-provenance | attach-provenance FILE | attach-build-provenance TARGET FILE | verify-build-run | credential-inputs PURPOSE | verify-credentials PURPOSE | access inventory|sync-inventory|sync-prepare AUTH_SCOPE | sign-macos program|package TARGET | notarize submit|finish | stage-windows TARGET | accept-windows TARGET | prepare-windows | sign-windows TARGET | verify-windows TARGET | install-check TARGET | resume-build TARGET | resume-windows TARGET | resume-notarization | resume-distribution | draft | publish | candidate | keygen DIRECTORY";
 
 /// Runs one release task.
 ///
@@ -91,6 +115,8 @@ pub fn run(root: &Path, words: &[&str]) -> Result<()> {
         ["seal", target] => candidate::seal(root, target),
         ["restore", target] => candidate::restore(root, target),
         ["verify-build-run"] => candidate::verify_run(root),
+        ["record-distribution"] => distribution::write(root),
+        ["inspect-candidate"] => candidate::inspect(root),
         ["verify-dist"] => delivery::verify(root),
         ["credential-inputs", purpose] => credentials::inputs(purpose),
         ["verify-credentials", purpose] => credentials::verify(root, purpose),

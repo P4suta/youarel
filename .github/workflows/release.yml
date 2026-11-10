@@ -16,6 +16,12 @@ on:
         description: Reserved product version without the v prefix
         type: string
         required: true
+      checked_tree:
+        description: Git tree reported by successful local release-check (candidate only)
+        type: string
+      candidate_run:
+        description: Successful unsigned candidate run to consume (sign only)
+        type: string
 
 permissions:
   contents: read
@@ -30,6 +36,8 @@ env:
   RELEASE_SOURCE_SHA: ${{ inputs.source }}
   RELEASE_VERSION: ${{ inputs.version }}
   RELEASE_BUILD_RUN: ${{ github.run_id }}
+  RELEASE_CHECKED_TREE: ${{ inputs.checked_tree }}
+  RELEASE_CANDIDATE_RUN: ${{ inputs.candidate_run }}
   RELEASES_ENABLED: ${{ vars.RELEASES_ENABLED }}
   WINDOWS_SIGNING_IDENTITY_SHA256: ${{ vars.WINDOWS_SIGNING_IDENTITY_SHA256 }}
   MACOS_APPLICATION_IDENTITY_SHA1: ${{ vars.MACOS_APPLICATION_IDENTITY_SHA1 }}
@@ -40,7 +48,15 @@ jobs:
     name: Verify the requested release
     if: github.repository == 'P4suta/youarel' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-26.04
-    timeout-minutes: 120
+    timeout-minutes: 30
+    permissions:
+      contents: read # Read the selected source without modifying the repository.
+      actions: read # Verify the original candidate before signing.
+    outputs:
+      candidate_run: ${{ steps.plan.outputs.candidate_run }}
+    env:
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+      CARGO_PROFILE_TEST_DEBUG: line-tables-only
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -48,20 +64,25 @@ jobs:
           persist-credentials: false
       - uses: jdx/mise-action@f5be966e4a917d54244728e6a5fdcd1d93a35e6c # v5.2.6
         with:
-          install_args: rust node npm:typescript taplo typos actionlint zizmor aqua:EmbarkStudios/cargo-deny aqua:rustsec/rustsec/cargo-audit aqua:nextest-rs/nextest/cargo-nextest cargo:kani-verifier cargo:cargo-fuzz cargo:cargo-mutants
+          install_args: rust node npm:typescript taplo typos actionlint zizmor gh aqua:EmbarkStudios/cargo-deny aqua:rustsec/rustsec/cargo-audit aqua:nextest-rs/nextest/cargo-nextest
           cache: false
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: youarel-check-v3
+          cache-bin: false
       - name: Show and validate the requested operation
+        id: plan
         env:
           OPERATION: ${{ inputs.operation }}
+          GH_TOKEN: ${{ github.token }}
         run: cargo xtask release plan "$OPERATION"
-      - name: Install the pinned verifier toolchain
-        run: rustup toolchain install nightly-2026-08-21 --profile minimal --component miri --component rust-src
-      - run: cargo kani setup
-      - name: Require the full release verification inventory
-        run: cargo xtask ci assurance
+      - name: Check portable shipping behavior
+        if: inputs.operation == 'candidate'
+        run: cargo xtask ci check
 
   build:
     name: Build ${{ matrix.target }}
+    if: inputs.operation == 'candidate'
     needs: [check]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
@@ -72,6 +93,7 @@ jobs:
       attestations: write # Preserve the original native build provenance.
     strategy:
       fail-fast: false
+      max-parallel: 6
       matrix:
         include:
           - os: ubuntu-24.04
@@ -92,11 +114,18 @@ jobs:
           persist-credentials: false
       - name: Install Linux desktop build dependencies
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev patchelf
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev patchelf xvfb xauth xdotool dbus-x11 at-spi2-core
       - uses: jdx/mise-action@f5be966e4a917d54244728e6a5fdcd1d93a35e6c # v5.2.6
         with:
           install_args: rust node npm:typescript npm:@tauri-apps/cli cargo:cargo-cyclonedx gh aqua:nextest-rs/nextest/cargo-nextest
           cache: false
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: youarel-release-${{ matrix.target }}
+          cache-bin: false
+          workspaces: |
+            . -> target
+            app -> target
       - name: Add the native target
         shell: bash
         env:
@@ -111,7 +140,7 @@ jobs:
         run: cargo xtask release resume-build "$TARGET"
       - name: Check native behavior
         if: steps.resume.outputs.reused != 'true'
-        run: cargo xtask check --platform
+        run: cargo xtask check --desktop
       - name: Build and verify both programs without release credentials
         if: steps.resume.outputs.reused != 'true'
         shell: bash
@@ -162,7 +191,7 @@ jobs:
   sign:
     name: Sign ${{ matrix.target }}
     if: inputs.operation == 'sign'
-    needs: [build]
+    needs: [check]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 40
     environment: release-${{ matrix.platform }}
@@ -203,6 +232,8 @@ jobs:
         with:
           name: candidate-${{ matrix.target }}
           path: release-candidate
+          run-id: ${{ needs.check.outputs.candidate_run }}
+          github-token: ${{ github.token }}
       - name: Verify and restore the original candidate without executing it
         id: resume
         shell: bash
@@ -346,9 +377,12 @@ jobs:
   install:
     name: Install ${{ matrix.target }}
     if: inputs.operation == 'sign'
-    needs: [build, sign, notarize]
+    needs: [check, sign, notarize]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
+    permissions:
+      contents: read # Read the trusted installation controller.
+      actions: read # Download unsigned Linux packages from the original candidate run.
     strategy:
       fail-fast: false
       matrix:
@@ -385,9 +419,17 @@ jobs:
       - name: Compile the controller without platform credentials
         run: cargo build --locked --package xtask
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: runner.os != 'Linux'
         with:
           name: ${{ matrix.artifact }}
           path: dist
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: runner.os == 'Linux'
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist
+          run-id: ${{ needs.check.outputs.candidate_run }}
+          github-token: ${{ github.token }}
       - name: Exercise the distributed installation on a fresh native runner
         shell: bash
         env:
@@ -398,7 +440,7 @@ jobs:
   assemble:
     name: Assemble verified distributions
     if: inputs.operation == 'sign'
-    needs: [check, build, sign, notarize, install]
+    needs: [check, sign, notarize, install]
     runs-on: ubuntu-26.04
     timeout-minutes: 30
     environment: release-manifest
@@ -428,6 +470,8 @@ jobs:
           pattern: unsigned-dist-*-linux-gnu
           merge-multiple: true
           path: dist
+          run-id: ${{ needs.check.outputs.candidate_run }}
+          github-token: ${{ github.token }}
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         if: steps.resume.outputs.reused != 'true'
         with:
@@ -447,6 +491,7 @@ jobs:
           RELEASE_ML_DSA_KEY: ${{ secrets.RELEASE_ML_DSA_KEY }}
         run: |
           ./target/debug/xtask release credential-inputs manifest
+          ./target/debug/xtask release record-distribution
           ./target/debug/xtask release manifest
           ./target/debug/xtask release sign
           ./target/debug/xtask release checksums

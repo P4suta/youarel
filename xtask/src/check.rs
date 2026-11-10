@@ -18,6 +18,8 @@ pub enum Scope {
     Staged,
     /// The checks whose outcome depends on the operating system, for a host that receives the files without their Git history.
     Platform,
+    /// Native release checks, including the Linux desktop and its real window.
+    Desktop,
 }
 
 const WORKFLOWS: &str = ".github/workflows";
@@ -208,6 +210,41 @@ fn app_native(root: &Path) -> Result<()> {
     )
 }
 
+fn desktop_app(root: &Path) -> Result<()> {
+    succeed(
+        Tool::Tsc
+            .command(root)
+            .args(["--project", "app/tsconfig.json"]),
+        "compile the renderer",
+    )?;
+    app_native(root)?;
+    if cfg!(target_os = "linux") {
+        succeed(
+            Tool::XvfbRun.command(root).args([
+                "-a",
+                "--server-args=-screen 0 1280x800x24",
+                "dbus-run-session",
+                "--",
+                "cargo",
+                "nextest",
+                "run",
+                "--locked",
+                "--no-tests=fail",
+                "--manifest-path",
+                APP_MANIFEST,
+                "--target-dir",
+                APP_TARGET,
+                "--run-ignored",
+                "only",
+                "--test",
+                "window",
+            ]),
+            "check the Linux window on a virtual display",
+        )?;
+    }
+    Ok(())
+}
+
 /// Builds the core for a target without an operating system, which fails the moment the core reaches `std`.
 fn bare(root: &Path) -> Result<()> {
     succeed(
@@ -299,6 +336,7 @@ fn workflows(root: &Path) -> Result<()> {
     if !fs::is_directory(&root.join(WORKFLOWS))? {
         return Ok(());
     }
+    crate::workflows::check(root)?;
     succeed(&mut Tool::Actionlint.command(root), "actionlint")?;
     succeed(
         Tool::Zizmor
@@ -380,17 +418,24 @@ fn staged(root: &Path) -> Result<()> {
 /// The compiler, the lints under the host's configuration, the structure, the bare build, and the tests.
 ///
 /// Formatting, spelling, the records, the generated files, and the workflows read the same bytes on every host and need the Git history, so the full check covers them.
-/// A Linux host builds the window launcher only with the `WebKitGTK` development packages, so there the container of `just app-linux` covers it instead.
-fn platform(root: &Path) -> Result<()> {
+/// The platform scope leaves Linux app checks to the `just app-linux` container.
+/// The desktop scope uses installed native dependencies without repeating browser checks.
+fn platform(root: &Path, scope: Scope) -> Result<()> {
     let mut report = Report::default();
     report.stage("clippy", || clippy(root));
     report.stage("structure", || structure::check(root));
     report.stage("bare", || bare(root));
     report.stage("tests", || tests(root));
-    if !cfg!(target_os = "linux") {
+    if scope == Scope::Desktop {
+        report.stage("app", || desktop_app(root));
+    } else if !cfg!(target_os = "linux") {
         report.stage("app", || app(root));
     }
-    report.finish("check --platform")
+    report.finish(if scope == Scope::Desktop {
+        "check --desktop"
+    } else {
+        "check --platform"
+    })
 }
 
 /// Runs the checks of one scope and reports every failure together.
@@ -403,7 +448,7 @@ pub fn run(root: &Path, scope: Scope) -> Result<()> {
         Scope::Everything => everything(root, true),
         Scope::Hosted => everything(root, false),
         Scope::Staged => staged(root),
-        Scope::Platform => platform(root),
+        Scope::Platform | Scope::Desktop => platform(root, scope),
     }
 }
 
@@ -413,10 +458,43 @@ pub fn run(root: &Path, scope: Scope) -> Result<()> {
 /// # Errors
 ///
 /// Returns an error when a check or a proof fails.
-pub fn push_check(root: &Path) -> Result<()> {
+pub fn release_check(root: &Path) -> Result<()> {
+    let tree = crate::release::source_tree(root)?;
     run(root, Scope::Everything)?;
     crate::app::linux(root)?;
-    crate::container::run(root, &["proofs"])
+    crate::container::run(root, &["proofs", "--fail-fast"])?;
+    anyhow::ensure!(
+        crate::release::source_tree(root)? == tree,
+        "release source changed during verification"
+    );
+    println!("Release checks passed.\nChecked source tree: {tree}");
+    Ok(())
+}
+
+/// Shows the full local release inventory without running checks.
+///
+/// # Errors
+///
+/// Rejects an incomplete verification inventory or missing image inputs.
+pub fn release_plan(root: &Path) -> Result<()> {
+    let scope = proofs::Scope::full(root)?;
+    println!("Checks: just check; just app-linux");
+    println!(
+        "Campaign inventory: Kani modules {}; Quint models {}; Miri packages {}; fuzz targets {}; mutation packages {}",
+        scope.kani.len(),
+        scope.quint.len(),
+        scope.miri.len(),
+        scope.fuzz.len(),
+        scope.mutants.len()
+    );
+    println!("Proof image: {}", crate::container::image(root)?);
+    println!(
+        "Container ceiling: {} CPUs; {} memory; no additional swap",
+        crate::container::PROCESSORS,
+        crate::container::MEMORY
+    );
+    println!("Campaigns run sequentially and stop after a failed phase.");
+    Ok(())
 }
 
 /// Writes the generated files from their sources.

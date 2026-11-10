@@ -88,6 +88,8 @@ pub enum Tool {
     Pkgutil,
     Xcrun,
     Spctl,
+    /// A virtual display with automatic server selection and cleanup.
+    XvfbRun,
 }
 
 impl Tool {
@@ -124,6 +126,7 @@ impl Tool {
             Self::Pkgutil => PKGUTIL,
             Self::Xcrun => XCRUN,
             Self::Spctl => SPCTL,
+            Self::XvfbRun => "xvfb-run",
         }
     }
 

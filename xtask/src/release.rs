@@ -34,7 +34,7 @@ pub fn check_proposal(root: &Path) -> Result<()> {
     proposal::check(root)
 }
 
-/// Writes the app payload for the macOS installer.
+/// Writes the application payload for the macOS installer.
 ///
 /// # Errors
 ///
@@ -45,7 +45,7 @@ pub(crate) fn write_application(base: &Path, entries: &[Entry]) -> Result<()> {
 
 /// The directory a release assembles its artifacts in.
 pub const DIST: &str = "dist";
-/// The variable that enables releasing, which stays unset during the release hold.
+/// The variable that enables releasing, which stays unset while releases are prohibited.
 pub const ENABLED: &str = "RELEASES_ENABLED";
 pub(super) const MACOS_APPLICATION_IDENTITY: &str = "MACOS_APPLICATION_IDENTITY_SHA1";
 pub(super) const MACOS_INSTALLER_IDENTITY: &str = "MACOS_INSTALLER_IDENTITY_SHA1";
@@ -61,7 +61,7 @@ const MAINTAINER: &str = "P4suta <noreply@github.com>";
 const HOMEPAGE: &str = "https://github.com/P4suta/youarel";
 /// The machine-readable format of a Debian package's copyright file.
 const COPYRIGHT_FORMAT: &str = "https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/";
-/// Debian package metadata.
+/// What the Debian package says it is.
 const SUMMARY: &str = "Save, organize, find, and open web bookmarks";
 /// Where the release keeps the receipts of its notarization submissions.
 const NOTARIZATION: &str = "notarization";
@@ -136,7 +136,7 @@ pub fn run(root: &Path, words: &[&str]) -> Result<()> {
     }
 }
 
-/// A variable's nonempty value, or `None`.
+/// A variable's value, or `None` when it is unset or empty.
 fn variable(name: &str) -> Result<Option<String>> {
     match std::env::var(name) {
         Ok(value) if value.is_empty() => Ok(None),
@@ -192,7 +192,7 @@ fn version(root: &Path) -> Result<Version> {
     Ok(version)
 }
 
-/// The filename of the program on a target.
+/// The file name of the program on a target.
 fn program_name(target: &str) -> String {
     if target.contains("windows") {
         format!("{PROGRAM}.exe")
@@ -253,7 +253,7 @@ fn debian_architecture(target: &str) -> Option<&'static str> {
     }
 }
 
-/// What a target's bundle holds: every filename and its bytes, apart from the macOS package.
+/// What a target's bundle holds: every file name and its bytes, apart from the macOS package.
 fn bundle_files(
     root: &Path,
     target: &str,
@@ -443,7 +443,7 @@ fn write_manifest(root: &Path) -> Result<()> {
     fs::write(&root.join(DIST).join("manifest.json"), text.as_bytes())
 }
 
-/// The two signatures of the manifest: minisign under the secret key the variables hold, and `ML-DSA-65` under its signing key.
+/// The two signatures of the manifest: minisign under the secret key the variables hold, and ML-DSA-65 under its signing key.
 fn signatures(
     bytes: &[u8],
     minisign_key: &minisign::SecretKey,
@@ -555,7 +555,7 @@ fn with_keychain(root: &Path, work: impl FnOnce(&apple::Keychain) -> Result<()>)
     result
 }
 
-/// Signs a macOS target's built program with the Developer ID Application identity before bundling.
+/// Signs a macOS target's built program with the Developer ID Application identity, before it is bundled.
 fn sign_macos_program(root: &Path, target: &str) -> Result<()> {
     ensure_enabled()?;
     desktop::supported(target)?;
@@ -610,7 +610,7 @@ struct Receipt {
     sha256: String,
 }
 
-/// Runs `work` with the configured notary key in a private temporary file and removes the file afterward.
+/// Runs `work` with the notary key the variables hold, written to a private file that is gone afterward.
 fn with_notary_key(work: impl FnOnce(&apple::NotaryKey<'_>) -> Result<()>) -> Result<()> {
     let directory = tempfile::tempdir().context("create the notary key directory")?;
     let file = directory.path().join("notary.p8");
@@ -1049,7 +1049,7 @@ fn check_bundle(root: &Path, target: &str, version: Version, program: &[u8]) -> 
     }
     if target.contains("apple") {
         // A `._` entry holds the extended attributes of its file, which the installer applies to the file instead of installing it.
-        // A workstation marks every file its sessions write with an attribute that no tool removes, and a hosted runner doesn't.
+        // A workstation marks every file its sessions write with an attribute that no tool removes, and a hosted runner does not.
         let files = apple::payload_files(root, &dist.join(format!("{folder}-unsigned.pkg")))?;
         let installed: Vec<&str> = files
             .iter()

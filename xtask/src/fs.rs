@@ -121,7 +121,7 @@ mod raw {
     }
 }
 
-/// The mode of a secret's file: its owner alone may read and write it.
+/// The mode of a secret's file: its owner may read and write it, and nobody else may touch it.
 #[cfg(unix)]
 const PRIVATE_MODE: u32 = 0o600;
 #[cfg(unix)]
@@ -180,8 +180,7 @@ pub fn lock_run(path: &Path) -> Result<RunLock> {
 
 /// # Errors
 ///
-/// Reports unreadable metadata.
-/// An absent synthetic file has no bytes yet.
+/// Reports unreadable metadata; an absent synthetic file has no bytes yet.
 pub fn file_bytes_if_present(path: &Path) -> Result<u64> {
     match raw::metadata(path) {
         Ok(metadata) => Ok(metadata.len()),
@@ -208,11 +207,11 @@ pub fn temporary_in(path: &Path) -> Result<tempfile::TempDir> {
         .with_context(|| format!("create a temporary workspace at {}", path.display()))
 }
 
-/// Appends bytes to a file, creating an absent file.
+/// Appends bytes to a file, creating it when it is absent.
 ///
 /// # Errors
 ///
-/// Reports file write failures with the affected path.
+/// Returns an error naming the path when the file cannot be written.
 pub fn append(path: &Path, bytes: &[u8]) -> Result<()> {
     use std::io::Write as _;
     let mut file = raw::append(path).with_context(|| format!("open {}", path.display()))?;
@@ -224,7 +223,7 @@ pub fn append(path: &Path, bytes: &[u8]) -> Result<()> {
 ///
 /// # Errors
 ///
-/// Reports existing destinations and file write failures with the affected path.
+/// Returns an error naming the path when the file exists or cannot be written.
 pub fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
     use std::io::Write as _;
     let mut file =
@@ -237,7 +236,7 @@ pub fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
 ///
 /// # Errors
 ///
-/// Reports existing destinations and file write failures with the affected path.
+/// Returns an error naming the path when the file exists or cannot be written.
 pub fn write_executable(path: &Path, bytes: &[u8]) -> Result<()> {
     use std::io::Write as _;
     let mut file =
@@ -258,7 +257,7 @@ pub enum Kind {
 ///
 /// # Errors
 ///
-/// Reports file read and UTF-8 decoding failures with the affected path.
+/// Returns an error naming the path when it cannot be read as UTF-8 text.
 pub fn read_to_string(path: &Path) -> Result<String> {
     raw::read_to_string(path).with_context(|| format!("read {}", path.display()))
 }
@@ -267,7 +266,7 @@ pub fn read_to_string(path: &Path) -> Result<String> {
 ///
 /// # Errors
 ///
-/// Reports file read failures with the affected path.
+/// Returns an error naming the path when it cannot be read.
 pub fn read(path: &Path) -> Result<Vec<u8>> {
     raw::read(path).with_context(|| format!("read {}", path.display()))
 }
@@ -276,7 +275,7 @@ pub fn read(path: &Path) -> Result<Vec<u8>> {
 ///
 /// # Errors
 ///
-/// Reports directory creation and file write failures with the affected path.
+/// Returns an error naming the path when a directory or the file cannot be written.
 pub fn write(path: &Path, bytes: &[u8]) -> Result<()> {
     if let Some(parent) = path.parent() {
         create_dir_all(parent)?;
@@ -288,7 +287,7 @@ pub fn write(path: &Path, bytes: &[u8]) -> Result<()> {
 ///
 /// # Errors
 ///
-/// Reports directory creation failures with the affected path.
+/// Returns an error naming the path when a directory cannot be created.
 pub fn create_dir_all(path: &Path) -> Result<()> {
     raw::create_dir_all(path).with_context(|| format!("create {}", path.display()))
 }
@@ -375,7 +374,7 @@ fn refuse_granting_acl(path: &Path) -> Result<()> {
 ///
 /// # Errors
 ///
-/// Reports directory removal failures with the affected path.
+/// Returns an error naming the path when a present tree cannot be removed.
 pub fn remove_dir_all(path: &Path) -> Result<()> {
     match raw::remove_dir_all(path) {
         Ok(()) => Ok(()),
@@ -388,7 +387,7 @@ pub fn remove_dir_all(path: &Path) -> Result<()> {
 ///
 /// # Errors
 ///
-/// Reports metadata failures with the affected path.
+/// Returns an error naming the path when it is present but unreadable.
 pub fn kind(path: &Path) -> Result<Option<Kind>> {
     match std::fs::metadata(path) {
         Ok(metadata) if metadata.is_file() => Ok(Some(Kind::File)),
@@ -403,7 +402,7 @@ pub fn kind(path: &Path) -> Result<Option<Kind>> {
 ///
 /// # Errors
 ///
-/// Reports metadata failures with the affected path.
+/// Returns an error naming the path when it is present but unreadable.
 pub fn is_directory(path: &Path) -> Result<bool> {
     Ok(kind(path)? == Some(Kind::Directory))
 }
@@ -412,7 +411,7 @@ pub fn is_directory(path: &Path) -> Result<bool> {
 ///
 /// # Errors
 ///
-/// Reports metadata failures with the affected path.
+/// Returns an error naming the path when it is present but unreadable.
 pub fn is_file(path: &Path) -> Result<bool> {
     Ok(kind(path)? == Some(Kind::File))
 }
@@ -421,7 +420,7 @@ pub fn is_file(path: &Path) -> Result<bool> {
 ///
 /// # Errors
 ///
-/// Reports directory listing failures with the affected path.
+/// Returns an error naming the path when a present directory cannot be listed.
 pub fn entries(directory: &Path) -> Result<Vec<PathBuf>> {
     let listing = match std::fs::read_dir(directory) {
         Ok(listing) => listing,
@@ -441,7 +440,7 @@ pub fn entries(directory: &Path) -> Result<Vec<PathBuf>> {
 ///
 /// # Errors
 ///
-/// Reports directory listing failures with the affected path.
+/// Returns an error naming the directory that cannot be listed.
 pub fn files_with_suffix(directory: &Path, suffix: &str) -> Result<Vec<PathBuf>> {
     let mut found = Vec::new();
     collect(directory, suffix, &mut found)?;

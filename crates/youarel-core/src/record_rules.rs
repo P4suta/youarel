@@ -868,7 +868,7 @@ mod proofs {
                 "framing is the four counts, magic, version, and dictionary",
             ),
             Err(error) => kani::assert(
-                error == super::WireError::Length && expected > usize::MAX as u128,
+                error == WireError::Length && expected > usize::MAX as u128,
                 "only framing beyond memory refuses",
             ),
         }
@@ -897,7 +897,7 @@ mod proofs {
                     mark: register(String::new(), stamps[1]),
                     parent: register(None, stamps[2]),
                     position: register(position, stamps[3]),
-                    presence: register(super::Presence::Live, stamps[4]),
+                    presence: register(Presence::Live, stamps[4]),
                 },
             )
         } else {
@@ -909,7 +909,7 @@ mod proofs {
                     alias: register(String::new(), stamps[2]),
                     folder: register(None, stamps[3]),
                     position: register(position, stamps[4]),
-                    presence: register(super::Presence::Live, stamps[5]),
+                    presence: register(Presence::Live, stamps[5]),
                     note: register(String::new(), stamps[6]),
                 },
             )
@@ -1154,6 +1154,25 @@ mod tests {
             position: register(key("V"), NEVER),
             presence: register(Presence::Purged, at(0, 0, SECOND)),
         }
+    }
+
+    #[test]
+    fn record_latest_stamps_filter_by_writer_for_every_record_kind() {
+        let name = register(String::from("Desktop"), at(BASE, 2, FIRST));
+        let named = super::Record::Device(crate::device_rules::MemberId([7; 32]), name);
+        assert_eq!(named.latest_of(FIRST), Some(at(BASE, 2, FIRST)));
+        assert_eq!(named.latest_of(SECOND), None);
+        let shortcut = super::Record::Shortcut(ID, full());
+        assert_eq!(shortcut.latest_of(FIRST), Some(at(BASE, 2, FIRST)));
+        assert_eq!(
+            shortcut.latest_of(SECOND),
+            Some(at(u64::MAX, u32::MAX, SECOND))
+        );
+        assert_eq!(shortcut.latest_of(DeviceId([9; 16])), None);
+        let folder = super::Record::Folder(ID, marked());
+        assert_eq!(folder.latest_of(FIRST), Some(at(BASE + 1, 1, FIRST)));
+        assert_eq!(folder.latest_of(SECOND), Some(at(BASE, 0, SECOND)));
+        assert_eq!(folder.latest_of(DeviceId([9; 16])), None);
     }
 
     fn written(shortcut: &Shortcut) -> Vec<u8> {

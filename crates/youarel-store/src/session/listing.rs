@@ -1204,9 +1204,10 @@ impl Session {
                     0
                 };
                 let order = library_rules::order(part.sort, id, &shortcut, opened);
-                if first.as_ref().is_none_or(|(before, _)| order < *before) {
-                    first = Some((order, id));
-                }
+                first = Some(match first {
+                    Some(before) => before.min((order, id)),
+                    None => (order, id),
+                });
             }
         }
         Ok(first.map(|(_, id)| id))
@@ -1228,9 +1229,10 @@ impl Session {
                 && typeahead_rules::starts(&shortcut.title.value, letters)
             {
                 let order = library_rules::order(Sort::Title, id, &shortcut, 0);
-                if first.as_ref().is_none_or(|(before, _)| order < *before) {
-                    first = Some((order, id));
-                }
+                first = Some(match first {
+                    Some(before) => before.min((order, id)),
+                    None => (order, id),
+                });
             }
         }
         Ok(first.map(|(_, id)| id))

@@ -207,6 +207,37 @@ mod tests {
     use super::*;
 
     #[test]
+    fn each_job_can_be_selected_independently_and_repeatedly() {
+        for selected in Job::ALL {
+            let once = Selection::default().with(selected);
+            assert_eq!(once.with(selected), once);
+            for job in Job::ALL {
+                assert_eq!(once.includes(job), job == selected);
+                assert!(Selection::all().includes(job));
+            }
+        }
+    }
+
+    #[test]
+    fn unselected_jobs_accept_success_or_skipping_and_refuse_other_outcomes() {
+        for job in Job::ALL {
+            let selected = Selection::default();
+            assert!(accepts(selected, job, Outcome::Success));
+            assert!(accepts(selected, job, Outcome::Skipped));
+            for outcome in [Outcome::Failure, Outcome::Cancelled, Outcome::Incomplete] {
+                assert!(!accepts(selected, job, outcome));
+            }
+        }
+    }
+
+    #[test]
+    fn cache_fields_refuse_only_line_breaks_and_quotes() {
+        for byte in u8::MIN..=u8::MAX {
+            assert_eq!(cache_field_byte(byte), !b"\r\n\"".contains(&byte));
+        }
+    }
+
+    #[test]
     fn frontend_work_does_not_require_unrelated_proofs() {
         let selected = select(
             Selection::default().with(Job::App),

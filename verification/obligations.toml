@@ -6,10 +6,10 @@
 verifier = "kani"
 source = "crates/youarel-core/src/device_rules.rs"
 harnesses = [
-  { name = "checks::admitted_short_names_round_trip_through_the_production_codec", covers = 2, contract = "the production codec admits exactly valid short device names and preserves their full membership identity and stamp without trailing bytes", input_domain = "every valid UTF-8 prefix of up to four arbitrary bytes, every 32-byte membership identity, and every u64 wall and u32 counter", bound = "four UTF-8 bytes and one fixed writer; native tests cover the 128-byte boundary, multiple writers, Unicode, whole bodies, and segment partitions" },
+  { name = "proofs::admitted_short_names_round_trip_through_the_production_codec", covers = 2, contract = "the production codec admits exactly valid short device names and preserves their full membership identity and stamp without trailing bytes", input_domain = "every valid UTF-8 prefix of up to four arbitrary bytes, every 32-byte membership identity, and every u64 wall and u32 counter", bound = "four UTF-8 bytes and one fixed writer; native tests cover the 128-byte boundary, multiple writers, Unicode, whole bodies, and segment partitions" },
 ]
 probes = [
-  { harness = "checks::rejects_a_name_with_a_control_character", assertion = "NEGATIVE_DEVICE_CONTROL" },
+  { harness = "proofs::rejects_a_name_with_a_control_character", assertion = "NEGATIVE_DEVICE_CONTROL" },
 ]
 
 [[obligation]]

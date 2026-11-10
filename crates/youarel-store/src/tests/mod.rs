@@ -1,5 +1,6 @@
 //! The store's tests: sessions, the database's files, icons, and the record of a publish.
 
+mod device_names;
 mod differential;
 
 use super::{DATABASE_FILE, FORMAT, LOCK_FILE, Record, Store, StoreError, icons};

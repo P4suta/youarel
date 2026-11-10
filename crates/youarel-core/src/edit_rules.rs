@@ -814,6 +814,35 @@ mod tests {
     }
 
     #[test]
+    fn device_name_edits_preserve_admitted_names_and_refuse_invalid_names() {
+        let id = crate::device_rules::MemberId([7; 32]);
+        let facts = live(Neighbors::default());
+        for name in ["", "Desktop", "仕事"] {
+            let name = String::from(name);
+            assert_eq!(
+                apply(
+                    Edit::NameDevice {
+                        id,
+                        name: name.clone()
+                    },
+                    &facts
+                ),
+                Ok(Write::DeviceName { id, name })
+            );
+        }
+        for name in [
+            String::from(" padded"),
+            String::from("a\nb"),
+            "x".repeat(129),
+        ] {
+            assert_eq!(
+                apply(Edit::NameDevice { id, name }, &facts),
+                Err(EditError::DeviceName)
+            );
+        }
+    }
+
+    #[test]
     fn the_trash_takes_a_live_entry_and_gives_back_one_it_holds() {
         let facts = live(Neighbors::default());
         let shortcut = Entry::Shortcut(id(1));

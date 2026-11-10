@@ -152,6 +152,79 @@ fn a_title_prefix_finds_the_first_match_of_each_scope_and_order() {
 }
 
 #[test]
+fn a_prefix_in_opened_order_uses_visits_before_creation_time() {
+    let (_directory, store) = store();
+    let oldest = made(NOW - 2, 1);
+    let newest = made(NOW - 1, 2);
+    store
+        .session(NOW, |session| {
+            add(session, oldest, ("https://old.example/", "Alpha"), None);
+            add(session, newest, ("https://new.example/", "Alpine"), None);
+            session.visit(newest)
+        })
+        .unwrap();
+    store
+        .session(NOW + 1, |session| session.visit(oldest))
+        .unwrap();
+    store
+        .session(NOW + 2, |session| {
+            let part = Part {
+                span: Span::Scope(Scope::All),
+                sort: Sort::Opened,
+                within: Within::Whole,
+            };
+            assert_eq!(session.starting(&part, "al")?, Some(oldest));
+            assert_eq!(session.page(&part, 0, 2)?, [oldest, newest]);
+            Ok(())
+        })
+        .unwrap();
+}
+
+#[test]
+fn trash_prefixes_compare_complete_titles_after_their_folded_index_keys() {
+    let (_directory, store) = store();
+    let lower = made(NOW, 1);
+    let upper = made(NOW, 2);
+    store
+        .session(NOW, |session| {
+            add(session, lower, ("https://lower.example/", "alpha"), None);
+            add(session, upper, ("https://upper.example/", "Alpha"), None);
+            for id in [lower, upper] {
+                session.edit(Edit::Trash {
+                    entry: Entry::Shortcut(id),
+                })?;
+            }
+            assert_eq!(session.trash_starting("al")?, Some(upper));
+            assert_eq!(session.trash_starting("missing")?, None);
+            Ok(())
+        })
+        .unwrap();
+}
+
+#[test]
+fn moving_before_a_folder_keeps_the_nearest_lower_folder_as_its_neighbor() {
+    let (_directory, store) = store();
+    let [first, second, third, moving] = [1, 2, 3, 4].map(|byte| made(NOW, byte));
+    store
+        .session(NOW, |session| {
+            for id in [first, second, third, moving] {
+                folder(session, id, "Folder", None);
+            }
+            session.edit(Edit::Move {
+                entry: Entry::Folder(moving),
+                folder: None,
+                slot: Slot::Before(Entry::Folder(third)),
+            })?;
+            assert_eq!(
+                session.entries(None)?,
+                [first, second, moving, third].map(Entry::Folder)
+            );
+            Ok(())
+        })
+        .unwrap();
+}
+
+#[test]
 fn a_run_of_tied_kept_starts_sorts_by_its_records_as_far_as_its_bound() {
     let (_directory, store) = store();
     let early = ItemId([1; 16]);

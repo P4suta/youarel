@@ -11,8 +11,7 @@ pub fn admitted_name(name: &str) -> bool {
 }
 
 #[cfg(kani)]
-mod checks {
-    #[cfg(kani)]
+mod proofs {
     #[kani::proof]
     #[kani::unwind(129)]
     fn admitted_short_names_round_trip_through_the_production_codec() {

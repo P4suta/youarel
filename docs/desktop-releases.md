@@ -67,6 +67,12 @@ Use `just proofs` in place of `just proofs-native`, `just proofs-ci`, and `cargo
 The replacement runs the full campaign in bounded containers, including mutation testing that `--ci` omitted.
 Update local scripts to use the replacement commands.
 
+`cargo xtask ci plan BASE` now emits schema 3 instead of schema 2.
+Read `full` instead of `campaign`, and stop expecting the `proofs` inventory in JSON.
+The plan selects from `check`, `app`, `macos`, and `windows`.
+Use `cargo xtask release-check --plan` for the complete local verifier inventory.
+These repository development interfaces change before the initial 1.0.0 release.
+
 Candidate dispatch now requires `checked_tree` from successful local release checks.
 Signing dispatch now requires `candidate_run` from a successful unsigned candidate.
 Prepare another unsigned candidate when the source tree changes.

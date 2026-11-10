@@ -910,11 +910,16 @@ fn campaign(
     command.arg("--output").arg(output);
     let status = tool::exit_status(&mut command, "cargo mutants")?;
     let path = output.join("mutants.out/outcomes.json");
-    let bytes = fs::read(&path)?;
+    let bytes = fs::read(&path).with_context(|| {
+        format!("read the mutation report after cargo-mutants ended with {status}")
+    })?;
     let outcomes =
         serde_json::from_slice(&bytes).with_context(|| format!("parse {}", path.display()))?;
     let inventory = output.join("mutants.out/mutants.json");
-    let mutants: Vec<serde::de::IgnoredAny> = serde_json::from_slice(&fs::read(&inventory)?)
+    let inventory_bytes = fs::read(&inventory).with_context(|| {
+        format!("read the mutation inventory after cargo-mutants ended with {status}")
+    })?;
+    let mutants: Vec<serde::de::IgnoredAny> = serde_json::from_slice(&inventory_bytes)
         .with_context(|| format!("parse {}", inventory.display()))?;
     check_campaign(status.code(), mutants.len(), &outcomes)?;
     Ok(outcomes)

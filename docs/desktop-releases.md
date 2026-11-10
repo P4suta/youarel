@@ -39,6 +39,7 @@ Generate both manifest key pairs with `cargo xtask release keygen PRIVATE_PARENT
 The command requires an existing private parent, refuses an existing destination, and atomically creates an owner-only directory.
 Earlier versions accepted existing destinations.
 Use a fresh destination with the current command.
+If generation fails after creating output, preserve the private files and retry with a fresh destination.
 Key generation refuses Windows hosts before creating output because inherited permissions can expose private inputs.
 On macOS, the command also refuses granting access control entries on the parent and its ancestors.
 The output contains encrypted minisign inputs, an `ML-DSA-65` signing key, and matching public keys.

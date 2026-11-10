@@ -14,6 +14,7 @@ The owner excluded automatic Kani, Miri, and mutation campaigns.
 
 Hosted gates check lints, types, tests, dependencies, native behavior, and packages.
 Run full campaigns locally before release, once for the checked source tree.
+Replace historical [verification commands](verification-follows-affected-contracts.md) and [native proof entry points](proofs-run-in-memory-limited-containers.md) with the [release guide's commands](../desktop-releases.md#command-migration).
 
 Build six native targets without release credentials, using [isolated compiler caches](https://docs.github.com/en/actions/reference/workflows-and-actions/dependency-caching#restrictions-for-accessing-a-cache).
 Caches never replace checks.

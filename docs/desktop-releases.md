@@ -59,6 +59,18 @@ The manifest check validates the minisign trust anchor and `ML-DSA-65` key encod
 A signed rehearsal verifies that the `ML-DSA-65` secret matches its public key.
 The verification workflow never signs, submits, tags, or publishes.
 
+## Command migration
+
+Use `just check` before ordinary pushes.
+Replace `just push-check` and `cargo xtask push-check` with `just release-check` for the full gate on a clean committed checkout.
+Use `just proofs` in place of `just proofs-native`, `just proofs-ci`, and `cargo xtask proofs --ci`.
+The replacement runs the full campaign in bounded containers, including mutation testing that `--ci` omitted.
+Update local scripts to use the replacement commands.
+
+Candidate dispatch now requires `checked_tree` from successful local release checks.
+Signing dispatch now requires `candidate_run` from a successful unsigned candidate.
+Prepare another unsigned candidate when the source tree changes.
+
 ## Candidate verification
 
 Run `just release-check` locally on a clean committed checkout before preparing a release candidate.

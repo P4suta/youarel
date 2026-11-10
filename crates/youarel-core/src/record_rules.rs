@@ -882,8 +882,17 @@ mod proofs {
     #[kani::proof]
     #[kani::unwind(33)]
     fn every_record_reports_its_latest_stamp_of_the_requested_device() {
-        let stamps: [Stamp; 7] = core::array::from_fn(|_| any_stamp());
         let device = DeviceId(kani::any());
+        let stamps: [Stamp; 7] = core::array::from_fn(|_| {
+            let mut stamp = any_stamp();
+            let own: bool = kani::any();
+            if own {
+                stamp.device = device;
+            } else {
+                kani::assume(stamp.device != device);
+            }
+            stamp
+        });
         let folder: bool = kani::any();
         let Some(position) = Key::parse("a1") else {
             kani::assert(false, "the fixed position is admitted");

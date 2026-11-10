@@ -791,6 +791,10 @@ pub struct Outcomes {
     pub caught: u64,
     pub timeout: u64,
     pub unviable: u64,
+    #[serde(default)]
+    end_time: Option<String>,
+    #[serde(default)]
+    cargo_mutants_version: String,
     /// Every run of the campaign, including the baseline, under the key cargo-mutants writes.
     #[serde(default, rename = "outcomes")]
     pub runs: Vec<Run>,
@@ -817,6 +821,9 @@ pub struct Mutant {
 
 const TIMEOUT_SUMMARY: &str = "Timeout";
 const MISSED_SUMMARY: &str = "MissedMutant";
+const MUTANTS_SUCCESS_EXIT: i32 = 0;
+const MUTANTS_MISSED_EXIT: i32 = 2;
+const MUTANTS_TIMEOUT_EXIT: i32 = 3;
 
 impl Outcomes {
     /// A campaign that found nothing to mutate, which writes no outcomes.
@@ -826,6 +833,8 @@ impl Outcomes {
         caught: 0,
         timeout: 0,
         unviable: 0,
+        end_time: None,
+        cargo_mutants_version: String::new(),
         runs: Vec::new(),
     };
 
@@ -841,6 +850,43 @@ impl Outcomes {
             })
             .collect()
     }
+}
+
+fn check_campaign(code: Option<i32>, inventory: usize, outcomes: &Outcomes) -> Result<()> {
+    ensure!(
+        outcomes.cargo_mutants_version == MUTANTS_VERSION
+            && outcomes
+                .end_time
+                .as_ref()
+                .is_some_and(|end| !end.is_empty()),
+        "the mutation campaign needs a completed report from cargo-mutants {MUTANTS_VERSION}"
+    );
+    let inventory = u64::try_from(inventory).context("count the mutation inventory")?;
+    ensure!(
+        inventory > 0 && outcomes.total_mutants == inventory,
+        "the mutation campaign completed {} of {inventory} generated mutants",
+        outcomes.total_mutants
+    );
+    let classified = u128::from(outcomes.missed)
+        .saturating_add(u128::from(outcomes.caught))
+        .saturating_add(u128::from(outcomes.timeout))
+        .saturating_add(u128::from(outcomes.unviable));
+    ensure!(
+        classified == u128::from(outcomes.total_mutants),
+        "the mutation counts do not account for every generated mutant"
+    );
+    let expected = if outcomes.timeout > 0 {
+        MUTANTS_TIMEOUT_EXIT
+    } else if outcomes.missed > 0 {
+        MUTANTS_MISSED_EXIT
+    } else {
+        MUTANTS_SUCCESS_EXIT
+    };
+    ensure!(
+        code == Some(expected),
+        "cargo-mutants exited with {code:?}, but its completed report requires {expected}"
+    );
+    Ok(())
 }
 
 fn campaign(
@@ -862,13 +908,16 @@ fn campaign(
         command.args(["--package", package, "--test-package", package]);
     }
     command.arg("--output").arg(output);
-    tool::status(&mut command, "cargo mutants")?;
+    let status = tool::exit_status(&mut command, "cargo mutants")?;
     let path = output.join("mutants.out/outcomes.json");
-    if !fs::is_file(&path)? {
-        return Ok(Outcomes::NONE);
-    }
     let bytes = fs::read(&path)?;
-    serde_json::from_slice(&bytes).with_context(|| format!("parse {}", path.display()))
+    let outcomes =
+        serde_json::from_slice(&bytes).with_context(|| format!("parse {}", path.display()))?;
+    let inventory = output.join("mutants.out/mutants.json");
+    let mutants: Vec<serde::de::IgnoredAny> = serde_json::from_slice(&fs::read(&inventory)?)
+        .with_context(|| format!("parse {}", inventory.display()))?;
+    check_campaign(status.code(), mutants.len(), &outcomes)?;
+    Ok(outcomes)
 }
 
 /// Whether a count stays within its ceiling.
@@ -1156,8 +1205,8 @@ pub fn scratch(root: &Path) -> PathBuf {
 mod tests {
     use super::{
         FailureMode, Harness, Harnesses, KaniReport, MISSED_SUMMARY, Manifest, Obligation, Options,
-        Outcomes, Probe, Step, TIMEOUT_SUMMARY, check_negative, check_positive, inventory_findings,
-        package_findings, qualify, select_harness, verify_steps,
+        Outcomes, Probe, Step, TIMEOUT_SUMMARY, check_campaign, check_negative, check_positive,
+        inventory_findings, package_findings, qualify, select_harness, verify_steps,
     };
 
     #[test]
@@ -1191,6 +1240,71 @@ mod tests {
             package_findings("youarel-core", &Outcomes::NONE),
             Vec::<String>::new()
         );
+    }
+
+    #[test]
+    fn mutation_reports_require_completion_inventory_and_the_expected_process_result() {
+        let complete = Outcomes {
+            total_mutants: 2,
+            caught: 1,
+            unviable: 1,
+            end_time: Some("2026-11-10T19:00:00Z".to_owned()),
+            cargo_mutants_version: super::MUTANTS_VERSION.to_owned(),
+            ..Outcomes::NONE
+        };
+        check_campaign(Some(0), 2, &complete).unwrap();
+        for code in [None, Some(1), Some(2), Some(3), Some(70), Some(137)] {
+            check_campaign(code, 2, &complete).unwrap_err();
+        }
+        for inventory in [0, 1, 3] {
+            check_campaign(Some(0), inventory, &complete).unwrap_err();
+        }
+        for end_time in [None, Some(String::new())] {
+            let report = Outcomes {
+                end_time,
+                ..complete.clone()
+            };
+            check_campaign(Some(0), 2, &report).unwrap_err();
+        }
+        let stale = Outcomes {
+            cargo_mutants_version: "unsupported".to_owned(),
+            ..complete.clone()
+        };
+        check_campaign(Some(0), 2, &stale).unwrap_err();
+        let inconsistent = Outcomes {
+            caught: 0,
+            ..complete.clone()
+        };
+        check_campaign(Some(0), 2, &inconsistent).unwrap_err();
+        let overflowing = Outcomes {
+            total_mutants: u64::MAX,
+            caught: u64::MAX,
+            ..complete.clone()
+        };
+        check_campaign(Some(0), usize::MAX, &overflowing).unwrap_err();
+        let missed = Outcomes {
+            caught: 0,
+            missed: 1,
+            ..complete.clone()
+        };
+        check_campaign(Some(2), 2, &missed).unwrap();
+        check_campaign(Some(0), 2, &missed).unwrap_err();
+        check_campaign(Some(70), 2, &missed).unwrap_err();
+        let timed_out = Outcomes {
+            caught: 0,
+            timeout: 1,
+            ..complete
+        };
+        check_campaign(Some(3), 2, &timed_out).unwrap();
+        check_campaign(Some(0), 2, &timed_out).unwrap_err();
+        check_campaign(Some(2), 2, &timed_out).unwrap_err();
+        let mixed = Outcomes {
+            missed: 1,
+            unviable: 0,
+            ..timed_out
+        };
+        check_campaign(Some(3), 2, &mixed).unwrap();
+        check_campaign(Some(2), 2, &mixed).unwrap_err();
     }
 
     fn harness(name: &str) -> Harness {

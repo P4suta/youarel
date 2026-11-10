@@ -9,7 +9,7 @@ pub enum Job {
     Windows,
 }
 
-const CHECK_BIT: u16 = 1 << 0;
+const CHECK_BIT: u16 = 1;
 const APP_BIT: u16 = 1 << 1;
 const MACOS_BIT: u16 = 1 << 2;
 const WINDOWS_BIT: u16 = 1 << 3;
@@ -63,7 +63,7 @@ pub enum Stage {
     Platforms,
 }
 
-const FAST_JOBS: u16 = Job::Check.bit() | Job::App.bit();
+const FAST_JOBS: u16 = Selection(0).with(Job::Check).with(Job::App).0;
 
 /// A selected job must finish successfully; a safety stop provides no verdict.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

@@ -1,7 +1,8 @@
 //! The keys a build trusts and the two signatures a manifest needs under one of them.
 //!
-//! A minisign signature is Ed25519 over the `BLAKE2b` digest of the manifest, and the ML-DSA-65 signature covers the manifest under [`ML_DSA_CONTEXT`].
+//! A minisign signature is Ed25519 over the `BLAKE2b` digest of the manifest, and the `ML-DSA-65` signature covers the manifest under [`ML_DSA_CONTEXT`].
 //! Either alone proves nothing, so a break of one scheme forges no release.
+//! Key and signature sizes follow [Federal Information Processing Standard 204, table 2](https://doi.org/10.6028/NIST.FIPS.204).
 
 use crate::manifest::{self, Manifest, ManifestError};
 use libcrux_ml_dsa::ml_dsa_65::{
@@ -9,40 +10,43 @@ use libcrux_ml_dsa::ml_dsa_65::{
 };
 use libcrux_ml_dsa::{KEY_GENERATION_RANDOMNESS_SIZE, SIGNING_RANDOMNESS_SIZE};
 
-/// The bytes of an ML-DSA-65 verification key (FIPS 204, table 2).
+/// The byte length of an `ML-DSA-65` verification key.
 pub const ML_DSA_KEY_BYTES: usize = 1952;
-/// The bytes of an ML-DSA-65 signing key (FIPS 204, table 2).
+/// The byte length of an `ML-DSA-65` signing key.
 pub const ML_DSA_SIGNING_KEY_BYTES: usize = 4032;
-/// The bytes of an ML-DSA-65 signature (FIPS 204, table 2).
+/// The byte length of an `ML-DSA-65` signature.
 pub const ML_DSA_SIGNATURE_BYTES: usize = 3309;
 /// The longest minisign signature file a reader accepts, which holds two comment lines and two base64 lines.
 pub const LONGEST_MINISIGN: usize = 4096;
-/// The context of every ML-DSA-65 release signature, which binds it to this purpose.
+/// The context of every `ML-DSA-65` release signature, which binds it to this purpose.
 pub const ML_DSA_CONTEXT: &[u8] = b"youarel/v1/release";
 
-/// A release key: the minisign public key in its base64 form and the ML-DSA-65 verification key.
+/// A release key: the minisign public key in its base64 form and the `ML-DSA-65` verification key.
 #[derive(Clone, Copy, Debug)]
 pub struct ReleaseKey<'a> {
     pub minisign: &'a str,
     pub ml_dsa: &'a [u8],
 }
 
-/// The keys this build trusts: none until the owner makes the first release key, so no download is trusted yet.
-pub const RELEASE_KEYS: &[ReleaseKey<'static>] = &[];
+/// Public trust anchors for the release manifest's required minisign and `ML-DSA-65` signatures.
+pub const RELEASE_KEYS: &[ReleaseKey<'static>] = &[ReleaseKey {
+    minisign: "RWSk2i6djAa4EQqgYx7HIu88fdFgRYOnbc54BV6PMBz9GI54sPUKavBJ",
+    ml_dsa: include_bytes!("manifest-ml-dsa.pub"),
+}];
 
-/// The two signatures of a manifest: the text of its minisign file and the bytes of its ML-DSA-65 file.
+/// The two signatures of a manifest: the text of its minisign file and the bytes of its `ML-DSA-65` file.
 #[derive(Clone, Copy, Debug)]
 pub struct Signatures<'a> {
     pub minisign: &'a str,
     pub ml_dsa: &'a [u8],
 }
 
-/// Why a manifest is not trusted.
+/// Why verification rejects a manifest.
 #[derive(Debug)]
 pub enum TrustError {
     /// The build trusts no key, so it trusts no release.
     NoKey,
-    /// A key compiled into the build is malformed.
+    /// A compiled key has invalid encoding.
     MalformedKey,
     /// No trusted key verifies both signatures.
     Unsigned,
@@ -85,7 +89,7 @@ fn classical(key: &ReleaseKey<'_>, bytes: &[u8], signature: &str) -> Result<bool
     Ok(public.verify(bytes, &signature, false).is_ok())
 }
 
-/// Whether the ML-DSA-65 signature verifies `bytes` under the key.
+/// Whether the `ML-DSA-65` signature verifies `bytes` under the key.
 fn post_quantum(key: &ReleaseKey<'_>, bytes: &[u8], signature: &[u8]) -> Result<bool, TrustError> {
     let public: [u8; ML_DSA_KEY_BYTES] = key
         .ml_dsa
@@ -107,7 +111,7 @@ fn post_quantum(key: &ReleaseKey<'_>, bytes: &[u8], signature: &[u8]) -> Result<
 ///
 /// # Errors
 ///
-/// Returns a [`TrustError`] when no key is trusted, a key is malformed, no key verifies both signatures, or the signed bytes are no manifest.
+/// Returns a [`TrustError`] for missing or malformed trust anchors, unmatched signatures, or invalid manifest bytes.
 pub fn verify(
     bytes: &[u8],
     signatures: &Signatures<'_>,
@@ -129,7 +133,7 @@ pub fn verify(
     Err(TrustError::Unsigned)
 }
 
-/// An ML-DSA-65 key pair from 32 random bytes: the signing key and the verification key.
+/// An `ML-DSA-65` key pair from 32 random bytes: the signing key and the verification key.
 #[must_use]
 pub fn ml_dsa_key_pair(randomness: [u8; KEY_GENERATION_RANDOMNESS_SIZE]) -> (Vec<u8>, Vec<u8>) {
     let pair = ml_dsa_65::generate_key_pair(randomness);
@@ -139,7 +143,7 @@ pub fn ml_dsa_key_pair(randomness: [u8; KEY_GENERATION_RANDOMNESS_SIZE]) -> (Vec
     )
 }
 
-/// The ML-DSA-65 signature of `bytes` under a signing key, drawn with 32 random bytes.
+/// The `ML-DSA-65` signature of `bytes` under a signing key, drawn with 32 random bytes.
 ///
 /// # Errors
 ///

@@ -67,6 +67,12 @@ const SUMMARY: &str = "Save, organize, find, and open web bookmarks";
 const NOTARIZATION: &str = "notarization";
 /// The trusted comment of a manifest's minisign signature.
 const TRUSTED_COMMENT: &str = "youarel release manifest";
+const KEY_RANDOMNESS_BYTES: usize = 32;
+const KEY_INPUTS: &str = "manifest-secrets.json";
+const MINISIGN_PUBLIC_KEY: &str = "minisign.public";
+const ML_DSA_SECRET_KEY: &str = "ml-dsa.secret";
+const ML_DSA_PUBLIC_KEY: &str = "ml-dsa.public";
+const ML_DSA_PUBLIC_KEY_BYTES: &str = "ml-dsa-public-key.bin";
 const SIGNATURE_PATH: &str = "YOUAREL_SIGNATURE_PROGRAM";
 const WINDOWS_PROGRAM_COUNT: usize = 2;
 const WINDOWS_SDK_QUERY: &str = r"$ErrorActionPreference = 'Stop'; $root = Get-ItemPropertyValue -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Windows Kits\Installed Roots' -Name KitsRoot10; $tool = Get-ChildItem -LiteralPath (Join-Path $root 'bin') -Directory | Where-Object Name -Match '^\d+\.\d+\.\d+\.\d+$' | Sort-Object { [version]$_.Name } -Descending | ForEach-Object { Join-Path $_.FullName 'x64\signtool.exe' } | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1; if (!$tool) { throw 'The Windows SDK SignTool verifier is missing.' }; $signature = Get-AuthenticodeSignature -LiteralPath $tool; if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notlike '*O=Microsoft Corporation*') { throw 'The Windows SDK verifier is not trusted Microsoft code.' }; $tool";
@@ -898,23 +904,38 @@ fn unhex(text: &str) -> Option<Vec<u8>> {
         .collect()
 }
 
-/// Makes a release ML-DSA-65 key pair in `directory`: the signing key, which only its owner may read, for the release environment's secret, and the verification key for the keys the program trusts.
-///
-/// The minisign half comes from `minisign -G`, which protects its secret key with a password.
+/// Creates both manifest keys in a fresh directory with private Doppler inputs and matching public trust anchors.
 fn keygen(directory: &Path) -> Result<()> {
-    let mut seed = [0_u8; 32];
+    let directory = fs::create_private_directory(directory)?;
+    let mut seed = [0_u8; KEY_RANDOMNESS_BYTES];
     getrandom::fill(&mut seed).map_err(|error| anyhow::anyhow!("draw a release key: {error}"))?;
     let (secret, public) = trust::ml_dsa_key_pair(seed);
-    fs::create_dir_all(directory)?;
-    let secret_path = directory.join("ml-dsa.secret");
+    let mut password_bytes = [0_u8; KEY_RANDOMNESS_BYTES];
+    getrandom::fill(&mut password_bytes)
+        .map_err(|error| anyhow::anyhow!("draw a minisign password: {error}"))?;
+    let password = crate::hex(&password_bytes);
+    let minisign = minisign::KeyPair::generate_encrypted_keypair(Some(password.clone()))
+        .context("create an encrypted minisign key")?;
+    let inputs = serde_json::json!({
+        "RELEASE_MINISIGN_KEY": minisign.sk.to_box(None)?.into_string(),
+        "RELEASE_MINISIGN_PASSWORD": password,
+        "RELEASE_ML_DSA_KEY": crate::hex(&secret),
+    });
+    fs::write_private(&directory.join(KEY_INPUTS), &serde_json::to_vec(&inputs)?)?;
+    let secret_path = directory.join(ML_DSA_SECRET_KEY);
     fs::write_private(&secret_path, crate::hex(&secret).as_bytes())?;
     fs::write(
-        &directory.join("ml-dsa.public"),
+        &directory.join(ML_DSA_PUBLIC_KEY),
         crate::hex(&public).as_bytes(),
     )?;
+    fs::write(&directory.join(ML_DSA_PUBLIC_KEY_BYTES), &public)?;
+    fs::write(
+        &directory.join(MINISIGN_PUBLIC_KEY),
+        minisign.pk.to_base64().as_bytes(),
+    )?;
     println!(
-        "wrote {} for the RELEASE_ML_DSA_KEY secret and ml-dsa.public for trust::RELEASE_KEYS; make the minisign half with `minisign -G`",
-        secret_path.display()
+        "Created private manifest inputs in {} and matching public trust anchors without signing or publication.",
+        directory.display()
     );
     Ok(())
 }
@@ -1087,6 +1108,119 @@ fn check_program(root: &Path, target: &str, dist: &Path) -> Result<()> {
 mod tests {
     use super::{DOCUMENTS, SIGNATURE_PATH, bundle_files, fs, package, windows_signature};
     use youarel_core::update_rules::Version;
+
+    #[cfg(unix)]
+    #[test]
+    fn generated_keys_prepare_matching_manifest_inputs_without_overwriting_an_identity() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let workspace = tempfile::Builder::new()
+            .permissions(std::fs::Permissions::from_mode(0o700))
+            .tempdir()
+            .unwrap();
+        let directory = workspace.path().join("keys");
+        super::keygen(&directory).unwrap();
+        let original = fs::read(&directory.join(super::KEY_INPUTS)).unwrap();
+        let inputs: serde_json::Value = serde_json::from_slice(&original).unwrap();
+        let password = inputs["RELEASE_MINISIGN_PASSWORD"].as_str().unwrap();
+        assert_eq!(
+            password.len(),
+            super::KEY_RANDOMNESS_BYTES.saturating_mul(2)
+        );
+        let secret =
+            minisign::SecretKeyBox::from_string(inputs["RELEASE_MINISIGN_KEY"].as_str().unwrap())
+                .unwrap();
+        secret
+            .clone()
+            .into_secret_key(Some(String::new()))
+            .unwrap_err();
+        let secret = secret.into_secret_key(Some(password.to_owned())).unwrap();
+        assert_eq!(
+            minisign::PublicKey::from_secret_key(&secret)
+                .unwrap()
+                .to_base64(),
+            fs::read_to_string(&directory.join(super::MINISIGN_PUBLIC_KEY)).unwrap()
+        );
+        let ml_dsa = super::unhex(inputs["RELEASE_ML_DSA_KEY"].as_str().unwrap()).unwrap();
+        assert_eq!(
+            ml_dsa.len(),
+            youarel_release::trust::ML_DSA_SIGNING_KEY_BYTES
+        );
+        assert_eq!(
+            fs::read_to_string(&directory.join(super::ML_DSA_SECRET_KEY)).unwrap(),
+            inputs["RELEASE_ML_DSA_KEY"].as_str().unwrap()
+        );
+        assert_eq!(
+            super::unhex(&fs::read_to_string(&directory.join(super::ML_DSA_PUBLIC_KEY)).unwrap())
+                .unwrap(),
+            fs::read(&directory.join(super::ML_DSA_PUBLIC_KEY_BYTES)).unwrap()
+        );
+        assert_prepared_signatures(&secret, &ml_dsa, &directory);
+        let refusal = super::keygen(&directory).unwrap_err();
+        assert_eq!(
+            refusal.downcast_ref::<std::io::Error>().unwrap().kind(),
+            std::io::ErrorKind::AlreadyExists
+        );
+        assert_eq!(
+            fs::read(&directory.join(super::KEY_INPUTS)).unwrap(),
+            original
+        );
+        {
+            assert_eq!(
+                fs::entry_metadata(&directory).unwrap().permissions().mode() & 0o777,
+                0o700
+            );
+            assert_eq!(
+                fs::entry_metadata(&directory.join(super::KEY_INPUTS))
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    fn assert_prepared_signatures(
+        secret: &minisign::SecretKey,
+        ml_dsa: &[u8],
+        directory: &std::path::Path,
+    ) {
+        let manifest = youarel_release::manifest::Manifest {
+            version: Version::parse("1.0.0").unwrap(),
+            assets: std::collections::BTreeMap::new(),
+        };
+        let encoded = youarel_release::manifest::encode(&manifest).unwrap();
+        let (classical, post_quantum) =
+            super::signatures(encoded.as_bytes(), secret, ml_dsa).unwrap();
+        let public = fs::read_to_string(&directory.join(super::MINISIGN_PUBLIC_KEY)).unwrap();
+        let ml_dsa_public = fs::read(&directory.join(super::ML_DSA_PUBLIC_KEY_BYTES)).unwrap();
+        assert_eq!(
+            youarel_release::trust::verify(
+                encoded.as_bytes(),
+                &youarel_release::trust::Signatures {
+                    minisign: &classical,
+                    ml_dsa: &post_quantum,
+                },
+                &[youarel_release::trust::ReleaseKey {
+                    minisign: &public,
+                    ml_dsa: &ml_dsa_public,
+                }],
+            )
+            .unwrap(),
+            manifest
+        );
+    }
+
+    #[cfg(not(unix))]
+    #[test]
+    fn key_generation_refuses_hosts_without_private_directory_support() {
+        let workspace = tempfile::tempdir().unwrap();
+        let directory = workspace.path().join("keys");
+        let refusal = super::keygen(&directory).unwrap_err();
+        assert!(format!("{refusal:#}").contains("Unix"));
+        assert_eq!(fs::kind(&directory).unwrap(), None);
+    }
 
     #[test]
     fn windows_signature_paths_remain_literal_data_outside_the_powershell_program() {

@@ -906,10 +906,7 @@ fn unhex(text: &str) -> Option<Vec<u8>> {
 
 /// Creates both manifest keys in a fresh directory with private Doppler inputs and matching public trust anchors.
 fn keygen(directory: &Path) -> Result<()> {
-    ensure!(
-        fs::kind(directory)?.is_none(),
-        "the release key directory already exists"
-    );
+    let directory = fs::create_private_directory(directory)?;
     let mut seed = [0_u8; KEY_RANDOMNESS_BYTES];
     getrandom::fill(&mut seed).map_err(|error| anyhow::anyhow!("draw a release key: {error}"))?;
     let (secret, public) = trust::ml_dsa_key_pair(seed);
@@ -924,7 +921,6 @@ fn keygen(directory: &Path) -> Result<()> {
         "RELEASE_MINISIGN_PASSWORD": password,
         "RELEASE_ML_DSA_KEY": crate::hex(&secret),
     });
-    fs::create_dir_all(directory)?;
     fs::write_private(&directory.join(KEY_INPUTS), &serde_json::to_vec(&inputs)?)?;
     let secret_path = directory.join(ML_DSA_SECRET_KEY);
     fs::write_private(&secret_path, crate::hex(&secret).as_bytes())?;
@@ -1113,9 +1109,14 @@ mod tests {
     use super::{DOCUMENTS, SIGNATURE_PATH, bundle_files, fs, package, windows_signature};
     use youarel_core::update_rules::Version;
 
+    #[cfg(unix)]
     #[test]
     fn generated_keys_prepare_matching_manifest_inputs_without_overwriting_an_identity() {
-        let workspace = tempfile::tempdir().unwrap();
+        use std::os::unix::fs::PermissionsExt as _;
+        let workspace = tempfile::Builder::new()
+            .permissions(std::fs::Permissions::from_mode(0o700))
+            .tempdir()
+            .unwrap();
         let directory = workspace.path().join("keys");
         super::keygen(&directory).unwrap();
         let original = fs::read(&directory.join(super::KEY_INPUTS)).unwrap();
@@ -1153,13 +1154,45 @@ mod tests {
                 .unwrap(),
             fs::read(&directory.join(super::ML_DSA_PUBLIC_KEY_BYTES)).unwrap()
         );
+        assert_prepared_signatures(&secret, &ml_dsa, &directory);
+        let refusal = super::keygen(&directory).unwrap_err();
+        assert_eq!(
+            refusal.downcast_ref::<std::io::Error>().unwrap().kind(),
+            std::io::ErrorKind::AlreadyExists
+        );
+        assert_eq!(
+            fs::read(&directory.join(super::KEY_INPUTS)).unwrap(),
+            original
+        );
+        {
+            assert_eq!(
+                fs::entry_metadata(&directory).unwrap().permissions().mode() & 0o777,
+                0o700
+            );
+            assert_eq!(
+                fs::entry_metadata(&directory.join(super::KEY_INPUTS))
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    fn assert_prepared_signatures(
+        secret: &minisign::SecretKey,
+        ml_dsa: &[u8],
+        directory: &std::path::Path,
+    ) {
         let manifest = youarel_release::manifest::Manifest {
             version: Version::parse("1.0.0").unwrap(),
             assets: std::collections::BTreeMap::new(),
         };
         let encoded = youarel_release::manifest::encode(&manifest).unwrap();
         let (classical, post_quantum) =
-            super::signatures(encoded.as_bytes(), &secret, &ml_dsa).unwrap();
+            super::signatures(encoded.as_bytes(), secret, ml_dsa).unwrap();
         let public = fs::read_to_string(&directory.join(super::MINISIGN_PUBLIC_KEY)).unwrap();
         let ml_dsa_public = fs::read(&directory.join(super::ML_DSA_PUBLIC_KEY_BYTES)).unwrap();
         assert_eq!(
@@ -1177,24 +1210,16 @@ mod tests {
             .unwrap(),
             manifest
         );
+    }
+
+    #[cfg(not(unix))]
+    #[test]
+    fn key_generation_refuses_hosts_without_private_directory_support() {
+        let workspace = tempfile::tempdir().unwrap();
+        let directory = workspace.path().join("keys");
         let refusal = super::keygen(&directory).unwrap_err();
-        assert!(format!("{refusal:#}").contains("already exists"));
-        assert_eq!(
-            fs::read(&directory.join(super::KEY_INPUTS)).unwrap(),
-            original
-        );
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt as _;
-            assert_eq!(
-                fs::entry_metadata(&directory.join(super::KEY_INPUTS))
-                    .unwrap()
-                    .permissions()
-                    .mode()
-                    & 0o777,
-                0o600
-            );
-        }
+        assert!(format!("{refusal:#}").contains("Unix"));
+        assert_eq!(fs::kind(&directory).unwrap(), None);
     }
 
     #[test]

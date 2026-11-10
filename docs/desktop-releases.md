@@ -34,9 +34,15 @@ Inspect an existing writer's destination before retrying setup.
 Preserve unrelated workplace identities.
 
 Match the product's minisign and `ML-DSA-65` keys to `crates/youarel-release/src/trust.rs` before enabling signing.
-Generate both manifest key pairs with `cargo xtask release keygen PRIVATE_DIRECTORY` outside the checkout.
-The command refuses an existing directory and creates encrypted minisign inputs, an `ML-DSA-65` signing key, and matching public keys.
-Import the owner-readable `manifest-secrets.json` with `doppler secrets upload PRIVATE_DIRECTORY/manifest-secrets.json --silent --project youarel --config manifest`.
+On a Unix host, prepare an owner-only parent outside the checkout with `install -d -m 700 PRIVATE_PARENT`.
+Generate both manifest key pairs with `cargo xtask release keygen PRIVATE_PARENT/manifest`.
+The command requires an existing private parent, refuses an existing destination, and atomically creates an owner-only directory.
+Earlier versions accepted existing destinations.
+Use a fresh destination with the current command.
+Key generation refuses Windows hosts before creating output because inherited permissions can expose private inputs.
+On macOS, the command also refuses granting access control entries on the parent and its ancestors.
+The output contains encrypted minisign inputs, an `ML-DSA-65` signing key, and matching public keys.
+Import the owner-readable `manifest-secrets.json` with `doppler secrets upload PRIVATE_PARENT/manifest/manifest-secrets.json --silent --project youarel --config manifest`.
 Keep the private directory as an offline recovery copy.
 Use `minisign.public` and the raw `ml-dsa-public-key.bin` as the compiled public trust anchors.
 Commit the public trust anchors through a reviewed pull request before building a distributable candidate.

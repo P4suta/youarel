@@ -34,10 +34,11 @@ Inspect an existing writer's destination before retrying setup.
 Preserve unrelated workplace identities.
 
 Match the product's minisign and `ML-DSA-65` keys to `crates/youarel-release/src/trust.rs` before enabling signing.
-Open the prepared manifest input fields with `doppler open --project youarel --config manifest`.
-Generate the `ML-DSA-65` key with `cargo xtask release keygen PRIVATE_DIRECTORY`.
-Create an encrypted minisign key pair with `minisign -G` and a unique password.
-Store private keys in Doppler and keep an offline recovery copy.
+Generate both manifest key pairs with `cargo xtask release keygen PRIVATE_DIRECTORY` outside the checkout.
+The command refuses an existing directory and creates encrypted minisign inputs, an `ML-DSA-65` signing key, and matching public keys.
+Import the owner-readable `manifest-secrets.json` with `doppler secrets upload PRIVATE_DIRECTORY/manifest-secrets.json --silent --project youarel --config manifest`.
+Keep the private directory as an offline recovery copy.
+Use `minisign.public` and the raw `ml-dsa-public-key.bin` as the compiled public trust anchors.
 Commit the public trust anchors through a reviewed pull request before building a distributable candidate.
 Set `WINDOWS_SIGNING_IDENTITY_SHA256` to the intended certificate's public SHA-256 fingerprint.
 Set `MACOS_APPLICATION_IDENTITY_SHA1` and `MACOS_INSTALLER_IDENTITY_SHA1` to the intended Apple certificates' public SHA-1 fingerprints.

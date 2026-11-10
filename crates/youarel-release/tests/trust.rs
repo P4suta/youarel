@@ -1,4 +1,4 @@
-//! A manifest is trusted only with both signatures under one trusted key, and anything else is refused with its reason.
+//! Verification trusts a manifest only when both signatures match one trusted key and reports every refusal.
 
 use anyhow::{Context, Result};
 use std::collections::BTreeMap;
@@ -161,15 +161,6 @@ fn a_build_without_keys_or_with_a_bad_key_trusts_nothing() {
         check(bytes.as_bytes(), &minisig, &ml_dsa, &[]),
         Err(TrustError::NoKey)
     ));
-    assert!(matches!(
-        check(
-            bytes.as_bytes(),
-            &minisig,
-            &ml_dsa,
-            youarel_release::trust::RELEASE_KEYS
-        ),
-        Err(TrustError::NoKey)
-    ));
     let short = ReleaseKey {
         minisign: &signer.minisign_public,
         ml_dsa: &signer.ml_dsa_public[1..],
@@ -185,6 +176,23 @@ fn a_build_without_keys_or_with_a_bad_key_trusts_nothing() {
     assert!(matches!(
         check(bytes.as_bytes(), &minisig, &ml_dsa, &[garbled]),
         Err(TrustError::MalformedKey)
+    ));
+}
+
+#[test]
+fn configured_release_keys_are_well_formed_and_refuse_unrelated_signatures() {
+    let keys = youarel_release::trust::RELEASE_KEYS;
+    assert!(!keys.is_empty());
+    for key in keys {
+        minisign::PublicKey::from_base64(key.minisign).unwrap();
+        assert_eq!(key.ml_dsa.len(), youarel_release::trust::ML_DSA_KEY_BYTES);
+    }
+    let stranger = Signer::new(1).unwrap();
+    let bytes = written().unwrap();
+    let (minisig, ml_dsa) = stranger.sign(bytes.as_bytes()).unwrap();
+    assert!(matches!(
+        check(bytes.as_bytes(), &minisig, &ml_dsa, keys),
+        Err(TrustError::Unsigned)
     ));
 }
 

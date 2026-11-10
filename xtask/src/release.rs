@@ -34,7 +34,7 @@ pub fn check_proposal(root: &Path) -> Result<()> {
     proposal::check(root)
 }
 
-/// Writes the application payload for the macOS installer.
+/// Writes the app payload for the macOS installer.
 ///
 /// # Errors
 ///
@@ -45,7 +45,7 @@ pub(crate) fn write_application(base: &Path, entries: &[Entry]) -> Result<()> {
 
 /// The directory a release assembles its artifacts in.
 pub const DIST: &str = "dist";
-/// The variable that enables releasing, which stays unset while releases are prohibited.
+/// The variable that enables releasing, which stays unset during the release hold.
 pub const ENABLED: &str = "RELEASES_ENABLED";
 pub(super) const MACOS_APPLICATION_IDENTITY: &str = "MACOS_APPLICATION_IDENTITY_SHA1";
 pub(super) const MACOS_INSTALLER_IDENTITY: &str = "MACOS_INSTALLER_IDENTITY_SHA1";
@@ -61,12 +61,18 @@ const MAINTAINER: &str = "P4suta <noreply@github.com>";
 const HOMEPAGE: &str = "https://github.com/P4suta/youarel";
 /// The machine-readable format of a Debian package's copyright file.
 const COPYRIGHT_FORMAT: &str = "https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/";
-/// What the Debian package says it is.
+/// Debian package metadata.
 const SUMMARY: &str = "Save, organize, find, and open web bookmarks";
 /// Where the release keeps the receipts of its notarization submissions.
 const NOTARIZATION: &str = "notarization";
 /// The trusted comment of a manifest's minisign signature.
 const TRUSTED_COMMENT: &str = "youarel release manifest";
+const KEY_RANDOMNESS_BYTES: usize = 32;
+const KEY_INPUTS: &str = "manifest-secrets.json";
+const MINISIGN_PUBLIC_KEY: &str = "minisign.public";
+const ML_DSA_SECRET_KEY: &str = "ml-dsa.secret";
+const ML_DSA_PUBLIC_KEY: &str = "ml-dsa.public";
+const ML_DSA_PUBLIC_KEY_BYTES: &str = "ml-dsa-public-key.bin";
 const SIGNATURE_PATH: &str = "YOUAREL_SIGNATURE_PROGRAM";
 const WINDOWS_PROGRAM_COUNT: usize = 2;
 const WINDOWS_SDK_QUERY: &str = r"$ErrorActionPreference = 'Stop'; $root = Get-ItemPropertyValue -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Windows Kits\Installed Roots' -Name KitsRoot10; $tool = Get-ChildItem -LiteralPath (Join-Path $root 'bin') -Directory | Where-Object Name -Match '^\d+\.\d+\.\d+\.\d+$' | Sort-Object { [version]$_.Name } -Descending | ForEach-Object { Join-Path $_.FullName 'x64\signtool.exe' } | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1; if (!$tool) { throw 'The Windows SDK SignTool verifier is missing.' }; $signature = Get-AuthenticodeSignature -LiteralPath $tool; if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notlike '*O=Microsoft Corporation*') { throw 'The Windows SDK verifier is not trusted Microsoft code.' }; $tool";
@@ -130,7 +136,7 @@ pub fn run(root: &Path, words: &[&str]) -> Result<()> {
     }
 }
 
-/// A variable's value, or `None` when it is unset or empty.
+/// A variable's nonempty value, or `None`.
 fn variable(name: &str) -> Result<Option<String>> {
     match std::env::var(name) {
         Ok(value) if value.is_empty() => Ok(None),
@@ -186,7 +192,7 @@ fn version(root: &Path) -> Result<Version> {
     Ok(version)
 }
 
-/// The file name of the program on a target.
+/// The filename of the program on a target.
 fn program_name(target: &str) -> String {
     if target.contains("windows") {
         format!("{PROGRAM}.exe")
@@ -247,7 +253,7 @@ fn debian_architecture(target: &str) -> Option<&'static str> {
     }
 }
 
-/// What a target's bundle holds: every file name and its bytes, apart from the macOS package.
+/// What a target's bundle holds: every filename and its bytes, apart from the macOS package.
 fn bundle_files(
     root: &Path,
     target: &str,
@@ -437,7 +443,7 @@ fn write_manifest(root: &Path) -> Result<()> {
     fs::write(&root.join(DIST).join("manifest.json"), text.as_bytes())
 }
 
-/// The two signatures of the manifest: minisign under the secret key the variables hold, and ML-DSA-65 under its signing key.
+/// The two signatures of the manifest: minisign under the secret key the variables hold, and `ML-DSA-65` under its signing key.
 fn signatures(
     bytes: &[u8],
     minisign_key: &minisign::SecretKey,
@@ -549,7 +555,7 @@ fn with_keychain(root: &Path, work: impl FnOnce(&apple::Keychain) -> Result<()>)
     result
 }
 
-/// Signs a macOS target's built program with the Developer ID Application identity, before it is bundled.
+/// Signs a macOS target's built program with the Developer ID Application identity before bundling.
 fn sign_macos_program(root: &Path, target: &str) -> Result<()> {
     ensure_enabled()?;
     desktop::supported(target)?;
@@ -604,7 +610,7 @@ struct Receipt {
     sha256: String,
 }
 
-/// Runs `work` with the notary key the variables hold, written to a private file that is gone afterward.
+/// Runs `work` with the configured notary key in a private temporary file and removes the file afterward.
 fn with_notary_key(work: impl FnOnce(&apple::NotaryKey<'_>) -> Result<()>) -> Result<()> {
     let directory = tempfile::tempdir().context("create the notary key directory")?;
     let file = directory.path().join("notary.p8");
@@ -898,23 +904,42 @@ fn unhex(text: &str) -> Option<Vec<u8>> {
         .collect()
 }
 
-/// Makes a release ML-DSA-65 key pair in `directory`: the signing key, which only its owner may read, for the release environment's secret, and the verification key for the keys the program trusts.
-///
-/// The minisign half comes from `minisign -G`, which protects its secret key with a password.
+/// Creates both manifest keys in a fresh directory with private Doppler inputs and matching public trust anchors.
 fn keygen(directory: &Path) -> Result<()> {
-    let mut seed = [0_u8; 32];
+    ensure!(
+        fs::kind(directory)?.is_none(),
+        "the release key directory already exists"
+    );
+    let mut seed = [0_u8; KEY_RANDOMNESS_BYTES];
     getrandom::fill(&mut seed).map_err(|error| anyhow::anyhow!("draw a release key: {error}"))?;
     let (secret, public) = trust::ml_dsa_key_pair(seed);
+    let mut password_bytes = [0_u8; KEY_RANDOMNESS_BYTES];
+    getrandom::fill(&mut password_bytes)
+        .map_err(|error| anyhow::anyhow!("draw a minisign password: {error}"))?;
+    let password = crate::hex(&password_bytes);
+    let minisign = minisign::KeyPair::generate_encrypted_keypair(Some(password.clone()))
+        .context("create an encrypted minisign key")?;
+    let inputs = serde_json::json!({
+        "RELEASE_MINISIGN_KEY": minisign.sk.to_box(None)?.into_string(),
+        "RELEASE_MINISIGN_PASSWORD": password,
+        "RELEASE_ML_DSA_KEY": crate::hex(&secret),
+    });
     fs::create_dir_all(directory)?;
-    let secret_path = directory.join("ml-dsa.secret");
+    fs::write_private(&directory.join(KEY_INPUTS), &serde_json::to_vec(&inputs)?)?;
+    let secret_path = directory.join(ML_DSA_SECRET_KEY);
     fs::write_private(&secret_path, crate::hex(&secret).as_bytes())?;
     fs::write(
-        &directory.join("ml-dsa.public"),
+        &directory.join(ML_DSA_PUBLIC_KEY),
         crate::hex(&public).as_bytes(),
     )?;
+    fs::write(&directory.join(ML_DSA_PUBLIC_KEY_BYTES), &public)?;
+    fs::write(
+        &directory.join(MINISIGN_PUBLIC_KEY),
+        minisign.pk.to_base64().as_bytes(),
+    )?;
     println!(
-        "wrote {} for the RELEASE_ML_DSA_KEY secret and ml-dsa.public for trust::RELEASE_KEYS; make the minisign half with `minisign -G`",
-        secret_path.display()
+        "Created private manifest inputs in {} and matching public trust anchors without signing or publication.",
+        directory.display()
     );
     Ok(())
 }
@@ -1028,7 +1053,7 @@ fn check_bundle(root: &Path, target: &str, version: Version, program: &[u8]) -> 
     }
     if target.contains("apple") {
         // A `._` entry holds the extended attributes of its file, which the installer applies to the file instead of installing it.
-        // A workstation marks every file its sessions write with an attribute that no tool removes, and a hosted runner does not.
+        // A workstation marks every file its sessions write with an attribute that no tool removes, and a hosted runner doesn't.
         let files = apple::payload_files(root, &dist.join(format!("{folder}-unsigned.pkg")))?;
         let installed: Vec<&str> = files
             .iter()
@@ -1087,6 +1112,90 @@ fn check_program(root: &Path, target: &str, dist: &Path) -> Result<()> {
 mod tests {
     use super::{DOCUMENTS, SIGNATURE_PATH, bundle_files, fs, package, windows_signature};
     use youarel_core::update_rules::Version;
+
+    #[test]
+    fn generated_keys_prepare_matching_manifest_inputs_without_overwriting_an_identity() {
+        let workspace = tempfile::tempdir().unwrap();
+        let directory = workspace.path().join("keys");
+        super::keygen(&directory).unwrap();
+        let original = fs::read(&directory.join(super::KEY_INPUTS)).unwrap();
+        let inputs: serde_json::Value = serde_json::from_slice(&original).unwrap();
+        let password = inputs["RELEASE_MINISIGN_PASSWORD"].as_str().unwrap();
+        assert_eq!(
+            password.len(),
+            super::KEY_RANDOMNESS_BYTES.saturating_mul(2)
+        );
+        let secret =
+            minisign::SecretKeyBox::from_string(inputs["RELEASE_MINISIGN_KEY"].as_str().unwrap())
+                .unwrap();
+        secret
+            .clone()
+            .into_secret_key(Some(String::new()))
+            .unwrap_err();
+        let secret = secret.into_secret_key(Some(password.to_owned())).unwrap();
+        assert_eq!(
+            minisign::PublicKey::from_secret_key(&secret)
+                .unwrap()
+                .to_base64(),
+            fs::read_to_string(&directory.join(super::MINISIGN_PUBLIC_KEY)).unwrap()
+        );
+        let ml_dsa = super::unhex(inputs["RELEASE_ML_DSA_KEY"].as_str().unwrap()).unwrap();
+        assert_eq!(
+            ml_dsa.len(),
+            youarel_release::trust::ML_DSA_SIGNING_KEY_BYTES
+        );
+        assert_eq!(
+            fs::read_to_string(&directory.join(super::ML_DSA_SECRET_KEY)).unwrap(),
+            inputs["RELEASE_ML_DSA_KEY"].as_str().unwrap()
+        );
+        assert_eq!(
+            super::unhex(&fs::read_to_string(&directory.join(super::ML_DSA_PUBLIC_KEY)).unwrap())
+                .unwrap(),
+            fs::read(&directory.join(super::ML_DSA_PUBLIC_KEY_BYTES)).unwrap()
+        );
+        let manifest = youarel_release::manifest::Manifest {
+            version: Version::parse("1.0.0").unwrap(),
+            assets: std::collections::BTreeMap::new(),
+        };
+        let encoded = youarel_release::manifest::encode(&manifest).unwrap();
+        let (classical, post_quantum) =
+            super::signatures(encoded.as_bytes(), &secret, &ml_dsa).unwrap();
+        let public = fs::read_to_string(&directory.join(super::MINISIGN_PUBLIC_KEY)).unwrap();
+        let ml_dsa_public = fs::read(&directory.join(super::ML_DSA_PUBLIC_KEY_BYTES)).unwrap();
+        assert_eq!(
+            youarel_release::trust::verify(
+                encoded.as_bytes(),
+                &youarel_release::trust::Signatures {
+                    minisign: &classical,
+                    ml_dsa: &post_quantum,
+                },
+                &[youarel_release::trust::ReleaseKey {
+                    minisign: &public,
+                    ml_dsa: &ml_dsa_public,
+                }],
+            )
+            .unwrap(),
+            manifest
+        );
+        let refusal = super::keygen(&directory).unwrap_err();
+        assert!(format!("{refusal:#}").contains("already exists"));
+        assert_eq!(
+            fs::read(&directory.join(super::KEY_INPUTS)).unwrap(),
+            original
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            assert_eq!(
+                fs::entry_metadata(&directory.join(super::KEY_INPUTS))
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+        }
+    }
 
     #[test]
     fn windows_signature_paths_remain_literal_data_outside_the_powershell_program() {

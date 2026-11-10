@@ -3472,7 +3472,7 @@ checksum = "3ad82d2a33cdc9674dc7465672f271e096168fcdbe0f799d9e6db8c5892679dc"
 
 [[package]]
 name = "xtask"
-version = "0.0.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "base64 0.23.1",
@@ -3522,7 +3522,7 @@ dependencies = [
 
 [[package]]
 name = "youarel-cli"
-version = "0.0.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -3548,22 +3548,22 @@ dependencies = [
 
 [[package]]
 name = "youarel-core"
-version = "0.0.0"
+version = "1.0.0"
 
 [[package]]
 name = "youarel-html"
-version = "0.0.0"
+version = "1.0.0"
 
 [[package]]
 name = "youarel-icon"
-version = "0.0.0"
+version = "1.0.0"
 dependencies = [
  "image",
 ]
 
 [[package]]
 name = "youarel-link"
-version = "0.0.0"
+version = "1.0.0"
 dependencies = [
  "url",
  "youarel-core",
@@ -3571,7 +3571,7 @@ dependencies = [
 
 [[package]]
 name = "youarel-release"
-version = "0.0.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "libcrux-ml-dsa",
@@ -3585,7 +3585,7 @@ dependencies = [
 
 [[package]]
 name = "youarel-store"
-version = "0.0.0"
+version = "1.0.0"
 dependencies = [
  "getrandom 0.4.3",
  "redb",

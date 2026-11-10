@@ -1294,7 +1294,7 @@ dependencies = [
 
 [[package]]
 name = "youarel-core"
-version = "0.0.0"
+version = "1.0.0"
 
 [[package]]
 name = "youarel-fuzz"
@@ -1312,18 +1312,18 @@ dependencies = [
 
 [[package]]
 name = "youarel-html"
-version = "0.0.0"
+version = "1.0.0"
 
 [[package]]
 name = "youarel-icon"
-version = "0.0.0"
+version = "1.0.0"
 dependencies = [
  "image",
 ]
 
 [[package]]
 name = "youarel-link"
-version = "0.0.0"
+version = "1.0.0"
 dependencies = [
  "url",
  "youarel-core",
@@ -1331,7 +1331,7 @@ dependencies = [
 
 [[package]]
 name = "youarel-release"
-version = "0.0.0"
+version = "1.0.0"
 dependencies = [
  "libcrux-ml-dsa",
  "minisign-verify",
@@ -1343,7 +1343,7 @@ dependencies = [
 
 [[package]]
 name = "youarel-store"
-version = "0.0.0"
+version = "1.0.0"
 dependencies = [
  "getrandom",
  "redb",

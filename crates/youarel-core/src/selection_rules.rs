@@ -334,7 +334,7 @@ impl<Id: Ord + Copy> Selection<Id> {
 mod proofs {
     #[cfg(kani)]
     #[kani::proof]
-    #[kani::unwind(17)]
+    #[kani::unwind(4)]
     fn pinned_identifiers_survive_a_change_of_generation_or_order() {
         let before = super::Version {
             listing: Listing(kani::any()),
@@ -344,29 +344,17 @@ mod proofs {
             listing: Listing(kani::any()),
             generation: kani::any(),
         };
-        let ids: [u8; 3] = kani::any();
+        let ids: [u8; ROWS] = kani::any();
         let length: usize = kani::any();
         kani::assume(length <= ids.len());
-        let pinned = super::Pinned::new(before, ids.iter().copied().take(length));
-        kani::assert(
-            pinned.keeps(current) == (before == current),
-            "a snapshot keeps places only in its original version",
-        );
-        let selected = pinned.into_selection();
         let id: u8 = kani::any();
-        let listed = Shown {
-            listing: current.listing,
-            total: 1,
-        };
-        let expected = ids.iter().take(length).any(|saved| *saved == id);
-        kani::assert(
-            selected.contains(listed, 0, id) == expected,
-            "later rows select exactly the saved identifiers",
-        );
-        kani::assert(
-            selected.span() == Span::None,
-            "the snapshot no longer selects by old places",
-        );
+        match length {
+            0 => verify_pinned::<0>(before, current, &ids, id),
+            1 => verify_pinned::<1>(before, current, &ids, id),
+            2 => verify_pinned::<2>(before, current, &ids, id),
+            3 => verify_pinned::<3>(before, current, &ids, id),
+            _ => kani::assert(false, "every admitted identifier prefix has a proof"),
+        }
         kani::cover!(
             before.generation != current.generation,
             "another store generation"
@@ -375,6 +363,38 @@ mod proofs {
         kani::cover!(
             length == 0 && before == current,
             "an empty selection in the same version"
+        );
+        kani::cover!(length == 1, "one pinned identifier");
+        kani::cover!(length == 2, "two pinned identifiers");
+        kani::cover!(length == 3, "three pinned identifiers");
+    }
+
+    #[cfg(kani)]
+    fn verify_pinned<const LENGTH: usize>(
+        before: super::Version,
+        current: super::Version,
+        ids: &[u8; ROWS],
+        id: u8,
+    ) {
+        let prefix = &ids[..LENGTH];
+        let pinned = super::Pinned::new(before, prefix.iter().copied());
+        kani::assert(
+            pinned.keeps(current) == (before == current),
+            "a snapshot keeps places only in its original version",
+        );
+        let selected = pinned.into_selection();
+        let listed = Shown {
+            listing: current.listing,
+            total: 1,
+        };
+        let expected = prefix.iter().any(|saved| *saved == id);
+        kani::assert(
+            selected.contains(listed, 0, id) == expected,
+            "later rows select exactly the saved identifiers",
+        );
+        kani::assert(
+            selected.span() == Span::None,
+            "the snapshot no longer selects by old places",
         );
     }
 

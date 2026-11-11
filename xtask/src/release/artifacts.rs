@@ -1,10 +1,10 @@
+use super::runs::MAX_ATTEMPTS;
 use super::{DIST, candidate, delivery, desktop, required, variable};
 use crate::fs;
 use crate::tool::{self, Tool};
 use anyhow::{Context, Result, ensure};
 use std::path::Path;
 
-const MAX_ATTEMPTS: u32 = 100;
 const WINDOWS_STEP: &str = "Sign and timestamp the Windows programs together";
 const NOTARY_STEP: &str = "Submit each original signed package once";
 

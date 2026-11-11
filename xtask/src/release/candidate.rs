@@ -2,19 +2,20 @@ use super::{DIST, built_program, desktop, proposal, required, source_date, varia
 use crate::fs;
 use crate::package::{self, EXECUTABLE, Entry, REGULAR};
 use crate::tool::{self, Tool};
-use anyhow::{Context, Result, ensure};
+use anyhow::{Context, Result, bail, ensure};
 use std::collections::BTreeSet;
 use std::path::Path;
 use youarel_release::manifest::Digest;
 
 pub(super) const DIRECTORY: &str = "release-candidate";
+pub(super) const BUILDER: &str = "P4suta/youarel/.github/workflows/release.yml@refs/heads/main";
 const RECORD: &str = "candidate.json";
 const PAYLOAD: &str = "payload.tar.gz";
 const SOURCE_LENGTH: usize = 40;
 const CLI_BOM: &str = "crates/youarel-cli/youarel_bin.cdx.json";
 const APP_BOM: &str = "app/youarel-launcher_bin.cdx.json";
 
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Candidate {
     pub source: String,
@@ -91,6 +92,22 @@ fn identity(root: &Path, target: &str) -> Result<Candidate> {
         target: target.to_owned(),
         payload_sha256: String::new(),
     })
+}
+
+fn restore_identity(root: &Path, target: &str) -> Result<Candidate> {
+    let mut expected = identity(root, target)?;
+    if let Some(run) = variable("RELEASE_CANDIDATE_RUN")?.filter(|run| !run.is_empty()) {
+        let original = super::runs::verify(
+            root,
+            &run,
+            &expected.source,
+            super::runs::Purpose::Candidate,
+        )?;
+        expected.run = original.run;
+        expected.attempt = original.attempt.to_string();
+        BUILDER.clone_into(&mut expected.builder);
+    }
+    Ok(expected)
 }
 
 fn sbom(root: &Path, target: &str) -> Result<Vec<Entry>> {
@@ -242,25 +259,25 @@ fn allowed_entry(path: &str, target: &str) -> bool {
             || (target.contains("apple") && path.starts_with("youarel.app/Contents/")))
 }
 
-pub(super) fn restore(root: &Path, target: &str) -> Result<()> {
-    let expected = identity(root, target)?;
-    let directory = root.join(DIRECTORY);
+struct Contents {
+    record: Candidate,
+    entries: Vec<Entry>,
+}
+
+fn read_payload(root: &Path, directory: &Path, expected: &Candidate) -> Result<Contents> {
+    let target = expected.target.as_str();
     let record: Candidate = serde_json::from_slice(&fs::read(&directory.join(RECORD))?)?;
     let payload = fs::read(&directory.join(PAYLOAD))?;
-    validate(&record, &expected, &payload)?;
-    if variable("GITHUB_RUN_ID")?.is_some() {
+    validate(&record, expected, &payload)?;
+    if record.builder == BUILDER {
         verify_build_provenance(
             root,
+            directory,
             &directory.join("build-provenance.jsonl"),
             &expected.source,
         )?;
-        fs::create_dir_all(&root.join(DIST))?;
-        fs::write(
-            &root
-                .join(DIST)
-                .join(format!("build-provenance-{target}.jsonl")),
-            &fs::read(&directory.join("build-provenance.jsonl"))?,
-        )?;
+    } else {
+        ensure!(record.builder == "local", "unknown candidate builder");
     }
     let entries = package::read_tar_gz(&payload)?;
     let mut names = BTreeSet::new();
@@ -290,6 +307,22 @@ pub(super) fn restore(root: &Path, target: &str) -> Result<()> {
             names.contains(required.as_str()),
             "candidate lacks {required}"
         );
+    }
+    Ok(Contents { record, entries })
+}
+
+pub(super) fn restore(root: &Path, target: &str) -> Result<()> {
+    let expected = restore_identity(root, target)?;
+    let directory = root.join(DIRECTORY);
+    let Contents { record, entries } = read_payload(root, &directory, &expected)?;
+    if record.builder == BUILDER {
+        fs::create_dir_all(&root.join(DIST))?;
+        fs::write(
+            &root
+                .join(DIST)
+                .join(format!("build-provenance-{target}.jsonl")),
+            &fs::read(&directory.join("build-provenance.jsonl"))?,
+        )?;
     }
     for entry in entries {
         let base = if entry.path == super::program_name(target) {
@@ -322,13 +355,18 @@ pub(super) fn restore(root: &Path, target: &str) -> Result<()> {
     Ok(())
 }
 
-fn verify_build_provenance(root: &Path, bundle: &Path, source: &str) -> Result<()> {
+fn verify_build_provenance(
+    root: &Path,
+    directory: &Path,
+    bundle: &Path,
+    source: &str,
+) -> Result<()> {
     for artifact in [PAYLOAD, RECORD] {
         tool::succeed(
             Tool::Gh
                 .command(root)
                 .args(["attestation", "verify"])
-                .arg(root.join(DIRECTORY).join(artifact))
+                .arg(directory.join(artifact))
                 .arg("--bundle")
                 .arg(bundle)
                 .args([
@@ -350,7 +388,7 @@ fn verify_build_provenance(root: &Path, bundle: &Path, source: &str) -> Result<(
 
 pub(super) fn attach_provenance(root: &Path, target: &str, bundle: &Path) -> Result<()> {
     let expected = identity(root, target)?;
-    verify_build_provenance(root, bundle, &expected.source)?;
+    verify_build_provenance(root, &root.join(DIRECTORY), bundle, &expected.source)?;
     let bytes = fs::read(bundle)?;
     fs::write(&root.join(DIRECTORY).join("build-provenance.jsonl"), &bytes)?;
     fs::write(
@@ -361,65 +399,146 @@ pub(super) fn attach_provenance(root: &Path, target: &str, bundle: &Path) -> Res
     )
 }
 
-pub(super) fn plan(root: &Path, operation: &str) -> Result<()> {
+pub(super) fn inspect(root: &Path) -> Result<()> {
+    required("RELEASE_CANDIDATE_RUN")?;
+    let first = desktop::TARGETS.first().context("no release targets")?;
+    let original = restore_identity(root, first)?;
+    let temporary = tempfile::tempdir()?;
+    for target in desktop::TARGETS {
+        let directory = temporary.path().join(target);
+        tool::succeed(
+            Tool::Gh
+                .command(root)
+                .args([
+                    "run",
+                    "download",
+                    &original.run,
+                    "--repo",
+                    "P4suta/youarel",
+                    "--name",
+                    &format!("candidate-{target}"),
+                    "--dir",
+                ])
+                .arg(&directory),
+            "download the selected native candidate",
+        )?;
+        let expected = Candidate {
+            target: target.to_owned(),
+            ..original.clone()
+        };
+        let contents = read_payload(root, &directory, &expected)?;
+        println!(
+            "Verified {target} from run {}: {} payload entries",
+            contents.record.run,
+            contents.entries.len()
+        );
+    }
+    Ok(())
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Operation {
+    Candidate,
+    Sign,
+}
+
+impl Operation {
+    fn named(value: &str) -> Result<Self> {
+        match value {
+            "candidate" => Ok(Self::Candidate),
+            "sign" => Ok(Self::Sign),
+            _ => bail!("unknown release operation"),
+        }
+    }
+}
+
+fn require_signing_inputs(identity: &Candidate) -> Result<()> {
+    super::ensure_enabled()?;
     ensure!(
-        ["candidate", "sign"].contains(&operation),
-        "unknown release operation"
+        identity.version != "0.0.0",
+        "reserve a product version before signing"
     );
+    ensure!(
+        !youarel_release::trust::RELEASE_KEYS.is_empty(),
+        "configure trusted product release keys before signing"
+    );
+    ensure!(
+        Digest::parse(&required("WINDOWS_SIGNING_IDENTITY_SHA256")?.to_ascii_lowercase()).is_some(),
+        "configure the Windows publisher fingerprint before signing"
+    );
+    for name in [
+        super::MACOS_APPLICATION_IDENTITY,
+        super::MACOS_INSTALLER_IDENTITY,
+    ] {
+        ensure!(
+            crate::apple::valid_selector(&required(name)?),
+            "configure {name} with the intended certificate fingerprint before signing"
+        );
+    }
+    Ok(())
+}
+
+fn require_checked_tree(tree: &str, acknowledged: Option<&str>) -> Result<()> {
+    ensure!(
+        valid_source(tree) && acknowledged == Some(tree),
+        "confirm successful local release-check for the current source tree with RELEASE_CHECKED_TREE"
+    );
+    Ok(())
+}
+
+pub(super) fn plan(root: &Path, operation: &str) -> Result<()> {
+    let selected = Operation::named(operation)?;
     let identity = identity(
         root,
         desktop::TARGETS.first().context("no release targets")?,
     )?;
+    let candidate = match selected {
+        Operation::Candidate => {
+            ensure!(
+                variable("RELEASE_CANDIDATE_RUN")?.is_none_or(|run| run.is_empty()),
+                "candidate preparation does not consume another run"
+            );
+            require_checked_tree(
+                &super::source_tree(root)?,
+                variable("RELEASE_CHECKED_TREE")?.as_deref(),
+            )?;
+            identity.run.clone()
+        }
+        Operation::Sign => {
+            require_signing_inputs(&identity)?;
+            super::runs::verify(
+                root,
+                &required("RELEASE_CANDIDATE_RUN")?,
+                &identity.source,
+                super::runs::Purpose::Candidate,
+            )?
+            .run
+        }
+    };
     println!(
-        "Source: {}\nVersion: {}\nBuild run: {}\nOperation: {operation}",
+        "Source: {}\nVersion: {}\nController run: {}\nCandidate run: {candidate}\nOperation: {operation}",
         identity.source, identity.version, identity.run
     );
     println!(
-        "Required checks: product versions, lint, tests, platform checks, proofs, native candidate execution, SBOMs, package contents"
+        "Required checks: product versions, lint, tests, native behavior, SBOMs, package contents, original artifact provenance"
     );
     println!("Targets: {}", desktop::TARGETS.join(", "));
     println!(
         "External effects: {}",
-        match operation {
-            "candidate" => "read dependencies; upload unsigned workflow artifacts",
-            "sign" =>
+        match selected {
+            Operation::Candidate => "read dependencies; upload unsigned workflow artifacts",
+            Operation::Sign =>
                 "sign with Developer ID and SSL.com; submit notarization; upload signed workflow artifacts",
-            _ => "none",
         }
     );
-    if operation != "candidate" {
-        ensure!(
-            variable(super::ENABLED)?.as_deref() == Some("true"),
-            "releases are disabled: {} is not `true`",
-            super::ENABLED
-        );
-        ensure!(
-            identity.version != "0.0.0",
-            "reserve a product version before signing or publication"
-        );
-        ensure!(
-            !youarel_release::trust::RELEASE_KEYS.is_empty(),
-            "configure trusted product release keys before signing"
-        );
-        ensure!(
-            Digest::parse(&required("WINDOWS_SIGNING_IDENTITY_SHA256")?.to_ascii_lowercase())
-                .is_some(),
-            "configure the Windows publisher fingerprint before signing"
-        );
-        for name in [
-            super::MACOS_APPLICATION_IDENTITY,
-            super::MACOS_INSTALLER_IDENTITY,
-        ] {
-            ensure!(
-                crate::apple::valid_selector(&required(name)?),
-                "configure {name} with the intended certificate fingerprint before signing"
-            );
-        }
-    }
     if let Some(output) = variable("GITHUB_OUTPUT")? {
         fs::append(
             Path::new(&output),
-            format!("version={}\nsource={}\n", identity.version, identity.source).as_bytes(),
+            format!(
+                "version={}\nsource={}\ncandidate_run={candidate}\n",
+                identity.version, identity.source
+            )
+            .as_bytes(),
         )?;
     }
     Ok(())
@@ -427,54 +546,13 @@ pub(super) fn plan(root: &Path, operation: &str) -> Result<()> {
 
 pub(super) fn verify_run(root: &Path) -> Result<()> {
     let run = required("RELEASE_BUILD_RUN")?;
-    ensure!(
-        !run.is_empty() && run.bytes().all(|byte| byte.is_ascii_digit()),
-        "build run is not numeric"
-    );
     let source = required("RELEASE_SOURCE_SHA")?;
-    ensure!(valid_source(&source), "source is not a full commit SHA");
-    let reply = tool::capture(
-        Tool::Gh.command(root).args([
-            "run",
-            "view",
-            &run,
-            "--repo",
-            "P4suta/youarel",
-            "--json",
-            "headSha,event,conclusion,status,workflowDatabaseId",
-        ]),
-        "inspect the original release build",
-    )?;
-    let value: serde_json::Value = serde_json::from_str(&reply)?;
-    ensure!(
-        value.get("headSha").and_then(serde_json::Value::as_str) == Some(source.as_str()),
-        "build run source mismatch"
-    );
-    ensure!(
-        value.get("event").and_then(serde_json::Value::as_str) == Some("workflow_dispatch"),
-        "the build is not a dispatched release"
-    );
-    ensure!(
-        value.get("conclusion").and_then(serde_json::Value::as_str) == Some("success"),
-        "the original release build did not succeed"
-    );
-    let workflow = tool::capture(
-        Tool::Gh
-            .command(root)
-            .args(["api", "repos/P4suta/youarel/actions/workflows/release.yml"]),
-        "inspect the release workflow identity",
-    )?;
-    let expected: serde_json::Value = serde_json::from_str(&workflow)?;
-    ensure!(
-        value.get("workflowDatabaseId") == expected.get("id"),
-        "the build came from another workflow"
-    );
-    Ok(())
+    super::runs::verify(root, &run, &source, super::runs::Purpose::Distribution).map(drop)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Candidate, allowed_entry, valid_source, validate};
+    use super::{Candidate, allowed_entry, require_checked_tree, valid_source, validate};
     use youarel_release::manifest::Digest;
 
     fn fixture() -> Candidate {
@@ -486,6 +564,20 @@ mod tests {
             builder: "P4suta/youarel/.github/workflows/release.yml@refs/heads/main".to_owned(),
             target: "x86_64-pc-windows-msvc".to_owned(),
             payload_sha256: Digest::of(b"payload").hex(),
+        }
+    }
+
+    #[test]
+    fn candidate_preparation_requires_confirmation_for_the_current_source_tree() {
+        let tree = "a".repeat(40);
+        require_checked_tree(&tree, Some(&tree)).unwrap();
+        for confirmation in [
+            None,
+            Some(""),
+            Some("main"),
+            Some("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
+        ] {
+            require_checked_tree(&tree, confirmation).unwrap_err();
         }
     }
 

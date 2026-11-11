@@ -1,7 +1,7 @@
 //! The hosted entry points, which run the same checks as the local commands.
 
 use crate::ci_plan::job_name;
-use crate::{check, ci_plan, fs, proofs, tool};
+use crate::{check, ci_plan, fs, tool};
 use anyhow::{Context, Result, bail, ensure};
 use std::fmt::Write as _;
 use std::path::Path;
@@ -12,25 +12,13 @@ pub const NEEDS_VARIABLE: &str = "NEEDS_JSON";
 const PLAN_VARIABLE: &str = "CI_PLAN";
 const BASE_VARIABLE: &str = "CI_BASE";
 const FULL_VARIABLE: &str = "CI_FULL";
-const WORKFLOW_JOBS: [&str; 6] = ["plan", "check", "proofs", "app", "macos", "windows"];
+const WORKFLOW_JOBS: [&str; 5] = ["plan", "check", "app", "macos", "windows"];
 
-const fn workflow_job(job: Job, campaign: bool) -> &'static str {
+const fn workflow_job(job: Job, full: bool) -> &'static str {
     match job {
-        Job::App if !campaign => "check",
-        Job::Kani | Job::Quint | Job::Miri | Job::Fuzz | Job::Mutants => "proofs",
+        Job::App if !full => "check",
         Job::Check | Job::App | Job::Macos | Job::Windows => job_name(job),
     }
-}
-
-fn proof_jobs(plan: &ci_plan::Plan) -> Vec<proofs::Step> {
-    proofs::Step::ALL
-        .into_iter()
-        .filter(|step| {
-            Job::ALL
-                .into_iter()
-                .any(|job| job_name(job) == step.name() && plan.jobs().includes(job))
-        })
-        .collect()
 }
 
 fn full(value: &str) -> Result<bool> {
@@ -62,7 +50,6 @@ fn plan(root: &Path, base: Option<&str>) -> Result<()> {
     println!("{}", serde_json::to_string_pretty(&plan)?);
     if let Some(output) = std::env::var_os("GITHUB_OUTPUT") {
         let mut lines = format!("plan={}\n", serde_json::to_string(&plan)?);
-        writeln!(lines, "proofs={}", !proof_jobs(&plan).is_empty())?;
         for job in Job::ALL {
             writeln!(lines, "{}={}", job_name(job), plan.jobs().includes(job))?;
         }
@@ -123,7 +110,7 @@ pub fn require_selected(needs: &str, plan: &ci_plan::Plan) -> Result<()> {
     );
     for job in Job::ALL {
         let result = jobs
-            .get(workflow_job(job, plan.campaign))
+            .get(workflow_job(job, plan.full))
             .and_then(|job| job.get("result"))
             .and_then(serde_json::Value::as_str)
             .context("a known job reports no result")?;
@@ -137,16 +124,6 @@ pub fn require_selected(needs: &str, plan: &ci_plan::Plan) -> Result<()> {
 }
 
 fn run_selected(root: &Path, name: &str) -> Result<()> {
-    if name == "proofs" {
-        let plan = selected(root)?;
-        let steps = proof_jobs(&plan);
-        ensure!(!steps.is_empty(), "the plan selected no proof work");
-        let mut report = crate::report::Report::default();
-        for step in steps {
-            report.stage(step.name(), || proofs::scoped(root, step, &plan.proofs));
-        }
-        return report.finish("selected proofs");
-    }
     let job = Job::ALL
         .into_iter()
         .find(|job| job_name(*job) == name)
@@ -156,7 +133,7 @@ fn run_selected(root: &Path, name: &str) -> Result<()> {
     match job {
         Job::Check => {
             check::run(root, check::Scope::Hosted)?;
-            if !plan.campaign && plan.jobs().includes(Job::App) {
+            if !plan.full && plan.jobs().includes(Job::App) {
                 crate::app::linux(root)?;
             }
             Ok(())
@@ -173,10 +150,6 @@ fn run_selected(root: &Path, name: &str) -> Result<()> {
                 "the {name} check requires a native {expected} runner"
             );
             check::run(root, check::Scope::Platform)
-        }
-        Job::Kani | Job::Quint | Job::Miri | Job::Fuzz | Job::Mutants => {
-            let step = proofs::Step::named(name).context("the proof job names a verifier")?;
-            proofs::scoped(root, step, &plan.proofs)
         }
     }
 }
@@ -232,19 +205,6 @@ pub fn run(root: &Path, words: &[&str]) -> Result<()> {
         ["plan", base] => plan(root, Some(base)),
         ["cache", "app"] => crate::app::prepare_cache(root),
         ["run", job] => run_selected(root, job),
-        ["assurance"] => {
-            check::run(root, check::Scope::Hosted)?;
-            crate::app::linux(root)?;
-            proofs::run(
-                root,
-                proofs::Options {
-                    ci: false,
-                    only: None,
-                    without: None,
-                    inside: false,
-                },
-            )
-        }
         ["check"] => check::run(root, check::Scope::Hosted),
         ["test"] => tool::succeed(
             tool::Tool::Cargo.command(root).args([
@@ -257,20 +217,9 @@ pub fn run(root: &Path, words: &[&str]) -> Result<()> {
             ]),
             "cargo nextest",
         ),
-        ["proofs"] => proofs::run(
-            root,
-            proofs::Options {
-                ci: true,
-                only: None,
-                without: None,
-                inside: false,
-            },
-        ),
         ["gate", name] => gate(root, name),
         _ => {
-            bail!(
-                "usage: cargo xtask ci plan [BASE]|cache app|run JOB|check|test|proofs|assurance|gate NAME"
-            )
+            bail!("usage: cargo xtask ci plan [BASE]|cache app|run JOB|check|test|gate NAME")
         }
     }
 }
@@ -297,8 +246,8 @@ mod tests {
 
     fn gate_fixture() -> (ci_plan::Plan, serde_json::Value) {
         let plan = ci_plan::Plan {
-            schema: 1,
-            campaign: false,
+            schema: ci_plan::SCHEMA,
+            full: false,
             source: ci_plan::Source {
                 requested_base: "base".to_owned(),
                 base: Some("base".to_owned()),
@@ -307,7 +256,6 @@ mod tests {
             },
             reason: ci_plan::Reason::Affected,
             changed: vec!["README.md".to_owned()],
-            proofs: proofs::Scope::default(),
             app: false,
             platforms: false,
         };
@@ -349,15 +297,16 @@ mod tests {
     }
 
     #[test]
-    fn a_selected_proof_campaign_cannot_skip() {
+    fn selected_native_platforms_cannot_skip() {
         let (mut plan, mut needs) = gate_fixture();
-        plan.campaign = true;
-        plan.proofs.kani.push("rules.rs".to_owned());
+        plan.full = true;
+        plan.platforms = true;
         needs["plan"]["outputs"]["plan"] = serde_json::json!(serde_json::to_string(&plan).unwrap());
         require_selected(&needs.to_string(), &plan).unwrap_err();
-        needs["proofs"]["result"] = serde_json::json!("success");
+        needs["macos"]["result"] = serde_json::json!("success");
+        needs["windows"]["result"] = serde_json::json!("success");
         require_selected(&needs.to_string(), &plan).unwrap();
-        needs["proofs"]["result"] = serde_json::json!("cancelled");
+        needs["windows"]["result"] = serde_json::json!("cancelled");
         require_selected(&needs.to_string(), &plan).unwrap_err();
     }
 
@@ -365,10 +314,8 @@ mod tests {
     fn the_linux_fast_gate_covers_the_affected_window_without_a_heavy_job() {
         let (mut plan, mut needs) = gate_fixture();
         plan.app = true;
-        plan.proofs.kani.push("rules.rs".to_owned());
         needs["plan"]["outputs"]["plan"] = serde_json::json!(serde_json::to_string(&plan).unwrap());
         require_selected(&needs.to_string(), &plan).unwrap();
-        assert_eq!(proof_jobs(&plan), []);
         needs["check"]["result"] = serde_json::json!("skipped");
         require_selected(&needs.to_string(), &plan).unwrap_err();
     }

@@ -141,12 +141,12 @@ impl Record {
                 .stamps()
                 .into_iter()
                 .filter(|stamp| stamp.device == device)
-                .max(),
+                .max_by_key(|stamp| (stamp.wall, stamp.counter)),
             Self::Shortcut(_, shortcut) => shortcut
                 .stamps()
                 .into_iter()
                 .filter(|stamp| stamp.device == device)
-                .max(),
+                .max_by_key(|stamp| (stamp.wall, stamp.counter)),
         }
     }
 }
@@ -868,7 +868,7 @@ mod proofs {
                 "framing is the four counts, magic, version, and dictionary",
             ),
             Err(error) => kani::assert(
-                error == super::WireError::Length && expected > usize::MAX as u128,
+                error == WireError::Length && expected > usize::MAX as u128,
                 "only framing beyond memory refuses",
             ),
         }
@@ -879,17 +879,14 @@ mod proofs {
         );
     }
 
-    #[kani::proof]
-    #[kani::unwind(33)]
-    fn every_record_reports_its_latest_stamp_of_the_requested_device() {
+    fn verify_latest_stamp<const FOLDER: bool>() -> Option<Stamp> {
         let stamps: [Stamp; 7] = core::array::from_fn(|_| any_stamp());
         let device = DeviceId(kani::any());
-        let folder: bool = kani::any();
         let Some(position) = Key::parse("a1") else {
             kani::assert(false, "the fixed position is admitted");
-            return;
+            return None;
         };
-        let record = if folder {
+        let record = if FOLDER {
             super::Record::Folder(
                 ItemId([1; ID]),
                 super::Folder {
@@ -897,7 +894,7 @@ mod proofs {
                     mark: register(String::new(), stamps[1]),
                     parent: register(None, stamps[2]),
                     position: register(position, stamps[3]),
-                    presence: register(super::Presence::Live, stamps[4]),
+                    presence: register(Presence::Live, stamps[4]),
                 },
             )
         } else {
@@ -909,34 +906,58 @@ mod proofs {
                     alias: register(String::new(), stamps[2]),
                     folder: register(None, stamps[3]),
                     position: register(position, stamps[4]),
-                    presence: register(super::Presence::Live, stamps[5]),
+                    presence: register(Presence::Live, stamps[5]),
                     note: register(String::new(), stamps[6]),
                 },
             )
         };
-        let fields = if folder { &stamps[..5] } else { &stamps[..] };
+        let fields = if FOLDER { &stamps[..5] } else { &stamps[..] };
+        let field: u8 = kani::any();
+        kani::assume(usize::from(field) < fields.len());
+        let selected = fields[usize::from(field)];
         let latest = record.latest_of(device);
         if let Some(latest) = latest {
             kani::assert(
-                latest.device == device && fields.contains(&latest),
-                "the latest stamp is a field of this device",
+                u128::from_le_bytes(latest.device.0) == u128::from_le_bytes(device.0),
+                "the latest stamp belongs to this device",
             );
+            if u128::from_le_bytes(selected.device.0) == u128::from_le_bytes(device.0) {
+                kani::assert(
+                    (selected.wall, selected.counter) <= (latest.wall, latest.counter),
+                    "no field of this device follows the result",
+                );
+            }
             kani::assert(
-                fields
-                    .iter()
-                    .filter(|stamp| stamp.device == device)
-                    .all(|stamp| *stamp <= latest),
-                "no field of this device follows the result",
+                fields.iter().any(|stamp| {
+                    u128::from_le_bytes(stamp.device.0) == u128::from_le_bytes(device.0)
+                        && stamp.wall == latest.wall
+                        && stamp.counter == latest.counter
+                }),
+                "the latest stamp is a field of this device",
             );
         } else {
             kani::assert(
-                fields.iter().all(|stamp| stamp.device != device),
+                u128::from_le_bytes(selected.device.0) != u128::from_le_bytes(device.0),
                 "none means this device wrote no field",
             );
         }
-        kani::cover!(latest.is_some() && folder, "a folder holds an own write");
-        kani::cover!(latest.is_some() && !folder, "a shortcut holds an own write");
-        kani::cover!(latest.is_none(), "this device wrote no field");
+        latest
+    }
+
+    #[kani::proof]
+    #[kani::unwind(17)]
+    fn folder_records_report_the_latest_stamp_of_the_requested_device() {
+        let latest = verify_latest_stamp::<true>();
+        kani::cover!(latest.is_some(), "a folder holds an own write");
+        kani::cover!(latest.is_none(), "this device wrote no folder field");
+    }
+
+    #[kani::proof]
+    #[kani::unwind(17)]
+    fn shortcut_records_report_the_latest_stamp_of_the_requested_device() {
+        let latest = verify_latest_stamp::<false>();
+        kani::cover!(latest.is_some(), "a shortcut holds an own write");
+        kani::cover!(latest.is_none(), "this device wrote no shortcut field");
     }
 
     /// Every stamp beside every base takes the one mode its relation to the base names, and a stamp of its own reads back from its zigzag difference, its counter, and its device, while the base and the stamp no device wrote never read as a stamp of their own.
@@ -1153,6 +1174,53 @@ mod tests {
             parent: register(Some(ItemId([3; 16])), base),
             position: register(key("V"), NEVER),
             presence: register(Presence::Purged, at(0, 0, SECOND)),
+        }
+    }
+
+    #[test]
+    fn record_latest_stamps_filter_by_writer_for_every_record_kind() {
+        let name = register(String::from("Desktop"), at(BASE, 2, FIRST));
+        let named = super::Record::Device(crate::device_rules::MemberId([7; 32]), name);
+        assert_eq!(named.latest_of(FIRST), Some(at(BASE, 2, FIRST)));
+        assert_eq!(named.latest_of(SECOND), None);
+        let shortcut = super::Record::Shortcut(ID, full());
+        assert_eq!(shortcut.latest_of(FIRST), Some(at(BASE, 2, FIRST)));
+        assert_eq!(
+            shortcut.latest_of(SECOND),
+            Some(at(u64::MAX, u32::MAX, SECOND))
+        );
+        assert_eq!(shortcut.latest_of(DeviceId([9; 16])), None);
+        let folder = super::Record::Folder(ID, marked());
+        assert_eq!(folder.latest_of(FIRST), Some(at(BASE + 1, 1, FIRST)));
+        assert_eq!(folder.latest_of(SECOND), Some(at(BASE, 0, SECOND)));
+        assert_eq!(folder.latest_of(DeviceId([9; 16])), None);
+    }
+
+    #[test]
+    fn record_latest_stamps_order_equal_times_by_counter() {
+        const EARLIER_COUNTER: u32 = 1;
+        const LATER_COUNTER: u32 = 2;
+        let earlier = at(BASE, EARLIER_COUNTER, FIRST);
+        let later = at(BASE, LATER_COUNTER, FIRST);
+        let other = at(u64::MAX, u32::MAX, SECOND);
+        for (first, last) in [(earlier, later), (later, earlier)] {
+            let mut shortcut = plain(other);
+            shortcut.link.stamp = first;
+            shortcut.note.stamp = last;
+            assert_eq!(
+                super::Record::Shortcut(ID, shortcut).latest_of(FIRST),
+                Some(later)
+            );
+            let mut folder = marked();
+            folder.name.stamp = first;
+            folder.mark.stamp = other;
+            folder.parent.stamp = other;
+            folder.position.stamp = other;
+            folder.presence.stamp = last;
+            assert_eq!(
+                super::Record::Folder(ID, folder).latest_of(FIRST),
+                Some(later)
+            );
         }
     }
 

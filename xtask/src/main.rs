@@ -5,7 +5,7 @@ use std::process::ExitCode;
 
 const USAGE_EXIT_CODE: u8 = 2;
 
-const USAGE: &str = "usage: cargo xtask check [--staged | --platform] | push-check | structure | bench [--shortcuts N] [--folders F] [--seed S] [--dry-run] | commit-msg FILE | proofs [--ci] [--only STEP] [--without STEP] [--inside], where STEP is kani|quint|miri|fuzz|mutants | proof-source SOURCE | fuzz TARGET RUNS | interface | app-linux | contain TASK... | gen [--check | --model NAME --native-quint PATH] | ci plan [BASE]|cache app|run JOB|check|test|proofs|assurance|gate NAME | release STEP...";
+const USAGE: &str = "usage: cargo xtask check [--staged | --platform | --desktop] | release-check [--plan] | structure | bench [--shortcuts N] [--folders F] [--seed S] [--dry-run] | commit-msg FILE | proofs [--fail-fast] [--only STEP] [--without STEP] [--inside], where STEP is kani|quint|miri|fuzz|mutants | proof-source SOURCE [--harness NAME] | fuzz TARGET RUNS | interface | app-linux | contain TASK... | gen [--check | --model NAME --native-quint PATH] | ci plan [BASE]|cache app|run JOB|check|test|gate NAME | release STEP...";
 
 fn report(task: &str, result: anyhow::Result<()>) -> ExitCode {
     match result {
@@ -36,7 +36,14 @@ fn dispatch(root: &Path, words: &[&str]) -> ExitCode {
             "check",
             xtask::check::run(root, xtask::check::Scope::Platform),
         ),
-        ["push-check"] => report("push-check", xtask::check::push_check(root)),
+        ["check", "--desktop"] => report(
+            "check",
+            xtask::check::run(root, xtask::check::Scope::Desktop),
+        ),
+        ["release-check"] => report("release-check", xtask::check::release_check(root)),
+        ["release-check", "--plan"] => {
+            report("release-check --plan", xtask::check::release_plan(root))
+        }
         ["structure"] => report("structure", xtask::structure::check(root)),
         ["app-linux"] => report("app-linux", xtask::app::linux(root)),
         ["interface"] => report("interface", xtask::app::interface(root)),
@@ -58,6 +65,10 @@ fn dispatch(root: &Path, words: &[&str]) -> ExitCode {
                     ..xtask::proofs::Scope::default()
                 },
             ),
+        ),
+        ["proof-source", source, "--harness", name] => report(
+            "proof-source",
+            xtask::proofs::kani_harness(root, source, name),
         ),
         ["fuzz", target, runs] => report("fuzz", xtask::proofs::fuzz(root, target, runs)),
         ["contain", rest @ ..] if !rest.is_empty() => {

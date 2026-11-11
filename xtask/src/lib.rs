@@ -22,6 +22,7 @@ pub mod release;
 pub mod report;
 pub mod structure;
 pub mod tool;
+pub mod workflows;
 
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};

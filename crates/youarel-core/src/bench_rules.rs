@@ -64,18 +64,16 @@ impl Workload {
     }
     #[must_use]
     pub const fn imported(self) -> u64 {
-        if self.shortcuts.get() > MOST_IMPORTED {
-            MOST_IMPORTED
-        } else {
-            self.shortcuts.get()
+        match self.shortcuts.get() {
+            count @ ..=MOST_IMPORTED => count,
+            _ => MOST_IMPORTED,
         }
     }
     #[must_use]
     pub const fn removed(self) -> u64 {
-        if self.shortcuts.get() > MOST_REMOVED {
-            MOST_REMOVED
-        } else {
-            self.shortcuts.get()
+        match self.shortcuts.get() {
+            count @ ..=MOST_REMOVED => count,
+            _ => MOST_REMOVED,
         }
     }
 }
@@ -271,6 +269,25 @@ mod proofs {
 #[cfg(test)]
 mod tests {
     use super::{Namespace, Permission, Resources, Workload};
+    #[test]
+    fn campaign_limits_use_binary_storage_units_and_milliseconds() {
+        assert_eq!(super::MOST_BYTES, 42_949_672_960);
+        assert_eq!(super::LEAST_FREE, 32_212_254_720);
+        assert_eq!(super::WRITE_RESERVE, 9_663_676_416);
+        assert_eq!(super::MOST_MILLIS, 43_200_000);
+    }
+
+    #[test]
+    fn admitted_counts_are_preserved_and_subworkloads_are_capped() {
+        for shortcuts in [1, 1000, 1001, 100_000, 100_001, 10_000_000] {
+            let workload = Workload::new(shortcuts, 37, 19).unwrap();
+            assert_eq!(workload.shortcuts(), shortcuts);
+            assert_eq!(workload.folders(), 37);
+            assert_eq!(workload.imported(), shortcuts.min(100_000));
+            assert_eq!(workload.removed(), shortcuts.min(1000));
+        }
+    }
+
     #[test]
     fn a_smoke_workload_scales_its_import_and_removal_and_keeps_its_seed() {
         let workload = Workload::new(128, 4, 17).unwrap();

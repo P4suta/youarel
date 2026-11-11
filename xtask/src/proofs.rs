@@ -153,32 +153,38 @@ impl Scope {
     }
 }
 
-/// Which verifiers run.
+/// Whether a failed verifier stops the campaign.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FailureMode {
+    Collect,
+    Stop,
+}
+
+/// The selected verification and failure behavior.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Options {
-    /// The explicit proof-only inventory, without mutation testing.
-    pub ci: bool,
     pub only: Option<Step>,
     /// A verifier to leave out.
     pub without: Option<Step>,
     /// Whether to leave out the steps that start their own containers, which the host runs outside the proof container.
     pub inside: bool,
+    pub failure: FailureMode,
 }
 
 impl Options {
-    /// Reads `--ci`, `--only STEP`, `--without STEP`, and `--inside`, refusing anything else.
+    /// Reads verifier selection, container scope, and `--fail-fast`.
     #[must_use]
     pub fn from_words(words: &[&str]) -> Option<Self> {
         let mut options = Self {
-            ci: false,
             only: None,
             without: None,
             inside: false,
+            failure: FailureMode::Collect,
         };
         let mut words = words.iter();
         while let Some(word) = words.next() {
             match *word {
-                "--ci" => options.ci = true,
+                "--fail-fast" => options.failure = FailureMode::Stop,
                 "--only" => options.only = Some(Step::named(words.next()?)?),
                 "--without" => options.without = Some(Step::named(words.next()?)?),
                 "--inside" => options.inside = true,
@@ -190,15 +196,9 @@ impl Options {
 
     #[must_use]
     pub fn selected(self) -> Vec<Step> {
-        let chosen: Vec<Step> = self.only.map_or_else(
-            || {
-                Step::ALL
-                    .into_iter()
-                    .filter(|step| !(self.ci && *step == Step::Mutants))
-                    .collect()
-            },
-            |step| vec![step],
-        );
+        let chosen: Vec<Step> = self
+            .only
+            .map_or_else(|| Step::ALL.to_vec(), |step| vec![step]);
         chosen
             .into_iter()
             .filter(|step| Some(*step) != self.without && !(self.inside && step.contained()))
@@ -375,7 +375,6 @@ fn kani_command(root: &Path, manifest: Option<&Path>, target: &Path, report: &Pa
     command
         .args([
             "--exact",
-            "--output-format=terse",
             "-Z",
             "unstable-options",
             &format!("--harness-timeout={HARNESS_TIMEOUT}"),
@@ -481,7 +480,7 @@ fn run_probe(root: &Path, scratch: &Path, manifest: Option<&Path>, probe: &Probe
     let target = scratch.join(format!("probe-{}", probe.harness));
     let report = scratch.join(format!("probe-{}.json", probe.harness));
     let mut command = kani_command(root, manifest, &target, &report);
-    command.args(["--harness", &probe.harness]);
+    command.args(["--output-format=terse", "--harness", &probe.harness]);
     let passed = tool::status(&mut command, "cargo kani")?;
     ensure!(
         !passed,
@@ -528,6 +527,47 @@ fn kani_manifest(root: &Path, selected: &[String]) -> Result<Manifest> {
 
 fn verify_kani(root: &Path, selected: &[String]) -> Result<()> {
     let manifest = kani_manifest(root, selected)?;
+    verify_kani_manifest(root, selected, &manifest, false)
+}
+
+fn select_harness(manifest: &mut Manifest, source: &str, name: &str) -> Result<()> {
+    for obligation in &mut manifest.obligation {
+        if let Obligation::Kani {
+            source: found,
+            harnesses,
+            ..
+        } = obligation
+            && found == source
+        {
+            ensure!(
+                harnesses.iter().any(|harness| harness.name == name),
+                "the source declares no harness {name}"
+            );
+            harnesses.retain(|harness| harness.name == name);
+            return Ok(());
+        }
+    }
+    bail!("the manifest declares no Kani source {source}")
+}
+
+/// Checks one declared Kani harness and its module's negative controls.
+///
+/// # Errors
+///
+/// Rejects an unknown selection, missing coverage, or an inconclusive verifier result.
+pub fn kani_harness(root: &Path, source: &str, name: &str) -> Result<()> {
+    let selected = [source.to_owned()];
+    let mut manifest = kani_manifest(root, &selected)?;
+    select_harness(&mut manifest, source, name)?;
+    verify_kani_manifest(root, &selected, &manifest, true)
+}
+
+fn verify_kani_manifest(
+    root: &Path,
+    selected: &[String],
+    manifest: &Manifest,
+    diagnostic: bool,
+) -> Result<()> {
     tool::require_version(
         Tool::Cargo.command(root).arg("kani"),
         "cargo-kani",
@@ -557,6 +597,12 @@ fn verify_kani(root: &Path, selected: &[String]) -> Result<()> {
     let harnesses: Vec<&Harness> = qualified.iter().collect();
     let report = scratch.path().join("proofs.json");
     let mut command = kani_command(root, None, &scratch.path().join("proofs"), &report);
+    command.arg("--fail-fast");
+    if diagnostic {
+        command.args(["--output-format=regular", "--verbose"]);
+    } else {
+        command.arg("--output-format=terse");
+    }
     for harness in &harnesses {
         command.args(["--harness", &harness.name]);
     }
@@ -745,6 +791,10 @@ pub struct Outcomes {
     pub caught: u64,
     pub timeout: u64,
     pub unviable: u64,
+    #[serde(default)]
+    end_time: Option<String>,
+    #[serde(default)]
+    cargo_mutants_version: String,
     /// Every run of the campaign, including the baseline, under the key cargo-mutants writes.
     #[serde(default, rename = "outcomes")]
     pub runs: Vec<Run>,
@@ -771,6 +821,9 @@ pub struct Mutant {
 
 const TIMEOUT_SUMMARY: &str = "Timeout";
 const MISSED_SUMMARY: &str = "MissedMutant";
+const MUTANTS_SUCCESS_EXIT: i32 = 0;
+const MUTANTS_MISSED_EXIT: i32 = 2;
+const MUTANTS_TIMEOUT_EXIT: i32 = 3;
 
 impl Outcomes {
     /// A campaign that found nothing to mutate, which writes no outcomes.
@@ -780,6 +833,8 @@ impl Outcomes {
         caught: 0,
         timeout: 0,
         unviable: 0,
+        end_time: None,
+        cargo_mutants_version: String::new(),
         runs: Vec::new(),
     };
 
@@ -795,6 +850,43 @@ impl Outcomes {
             })
             .collect()
     }
+}
+
+fn check_campaign(code: Option<i32>, inventory: usize, outcomes: &Outcomes) -> Result<()> {
+    ensure!(
+        outcomes.cargo_mutants_version == MUTANTS_VERSION
+            && outcomes
+                .end_time
+                .as_ref()
+                .is_some_and(|end| !end.is_empty()),
+        "the mutation campaign needs a completed report from cargo-mutants {MUTANTS_VERSION}"
+    );
+    let inventory = u64::try_from(inventory).context("count the mutation inventory")?;
+    ensure!(
+        inventory > 0 && outcomes.total_mutants == inventory,
+        "the mutation campaign completed {} of {inventory} generated mutants",
+        outcomes.total_mutants
+    );
+    let classified = u128::from(outcomes.missed)
+        .saturating_add(u128::from(outcomes.caught))
+        .saturating_add(u128::from(outcomes.timeout))
+        .saturating_add(u128::from(outcomes.unviable));
+    ensure!(
+        classified == u128::from(outcomes.total_mutants),
+        "the mutation counts do not account for every generated mutant"
+    );
+    let expected = if outcomes.timeout > 0 {
+        MUTANTS_TIMEOUT_EXIT
+    } else if outcomes.missed > 0 {
+        MUTANTS_MISSED_EXIT
+    } else {
+        MUTANTS_SUCCESS_EXIT
+    };
+    ensure!(
+        code == Some(expected),
+        "cargo-mutants exited with {code:?}, but its completed report requires {expected}"
+    );
+    Ok(())
 }
 
 fn campaign(
@@ -816,13 +908,21 @@ fn campaign(
         command.args(["--package", package, "--test-package", package]);
     }
     command.arg("--output").arg(output);
-    tool::status(&mut command, "cargo mutants")?;
+    let status = tool::exit_status(&mut command, "cargo mutants")?;
     let path = output.join("mutants.out/outcomes.json");
-    if !fs::is_file(&path)? {
-        return Ok(Outcomes::NONE);
-    }
-    let bytes = fs::read(&path)?;
-    serde_json::from_slice(&bytes).with_context(|| format!("parse {}", path.display()))
+    let bytes = fs::read(&path).with_context(|| {
+        format!("read the mutation report after cargo-mutants ended with {status}")
+    })?;
+    let outcomes =
+        serde_json::from_slice(&bytes).with_context(|| format!("parse {}", path.display()))?;
+    let inventory = output.join("mutants.out/mutants.json");
+    let inventory_bytes = fs::read(&inventory).with_context(|| {
+        format!("read the mutation inventory after cargo-mutants ended with {status}")
+    })?;
+    let mutants: Vec<serde::de::IgnoredAny> = serde_json::from_slice(&inventory_bytes)
+        .with_context(|| format!("parse {}", inventory.display()))?;
+    check_campaign(status.code(), mutants.len(), &outcomes)?;
+    Ok(outcomes)
 }
 
 /// Whether a count stays within its ceiling.
@@ -1040,9 +1140,23 @@ fn verify(root: &Path, step: Step, scope: &Scope) -> Result<()> {
 /// Returns an error naming each failed verifier.
 pub fn run(root: &Path, options: Options) -> Result<()> {
     let scope = Scope::full(root)?;
+    verify_steps(&options.selected(), options.failure, |step| {
+        verify(root, step, &scope)
+    })
+}
+
+fn verify_steps(
+    steps: &[Step],
+    failure: FailureMode,
+    mut run: impl FnMut(Step) -> Result<()>,
+) -> Result<()> {
+    ensure!(!steps.is_empty(), "the campaign selects no verifiers");
     let mut report = Report::default();
-    for step in options.selected() {
-        report.stage(step.name(), || verify(root, step, &scope));
+    for step in steps {
+        report.stage(step.name(), || run(*step));
+        if failure == FailureMode::Stop && !report.failures().is_empty() {
+            break;
+        }
     }
     report.finish("proofs")
 }
@@ -1095,9 +1209,9 @@ pub fn scratch(root: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::{
-        Harness, Harnesses, KaniReport, MISSED_SUMMARY, Manifest, Options, Outcomes, Step,
-        TIMEOUT_SUMMARY, check_negative, check_positive, inventory_findings, package_findings,
-        qualify,
+        FailureMode, Harness, Harnesses, KaniReport, MISSED_SUMMARY, Manifest, Obligation, Options,
+        Outcomes, Probe, Step, TIMEOUT_SUMMARY, check_campaign, check_negative, check_positive,
+        inventory_findings, package_findings, qualify, select_harness, verify_steps,
     };
 
     #[test]
@@ -1133,6 +1247,71 @@ mod tests {
         );
     }
 
+    #[test]
+    fn mutation_reports_require_completion_inventory_and_the_expected_process_result() {
+        let complete = Outcomes {
+            total_mutants: 2,
+            caught: 1,
+            unviable: 1,
+            end_time: Some("2026-11-10T19:00:00Z".to_owned()),
+            cargo_mutants_version: super::MUTANTS_VERSION.to_owned(),
+            ..Outcomes::NONE
+        };
+        check_campaign(Some(0), 2, &complete).unwrap();
+        for code in [None, Some(1), Some(2), Some(3), Some(70), Some(137)] {
+            check_campaign(code, 2, &complete).unwrap_err();
+        }
+        for inventory in [0, 1, 3] {
+            check_campaign(Some(0), inventory, &complete).unwrap_err();
+        }
+        for end_time in [None, Some(String::new())] {
+            let report = Outcomes {
+                end_time,
+                ..complete.clone()
+            };
+            check_campaign(Some(0), 2, &report).unwrap_err();
+        }
+        let stale = Outcomes {
+            cargo_mutants_version: "unsupported".to_owned(),
+            ..complete.clone()
+        };
+        check_campaign(Some(0), 2, &stale).unwrap_err();
+        let inconsistent = Outcomes {
+            caught: 0,
+            ..complete.clone()
+        };
+        check_campaign(Some(0), 2, &inconsistent).unwrap_err();
+        let overflowing = Outcomes {
+            total_mutants: u64::MAX,
+            caught: u64::MAX,
+            ..complete.clone()
+        };
+        check_campaign(Some(0), usize::MAX, &overflowing).unwrap_err();
+        let missed = Outcomes {
+            caught: 0,
+            missed: 1,
+            ..complete.clone()
+        };
+        check_campaign(Some(2), 2, &missed).unwrap();
+        check_campaign(Some(0), 2, &missed).unwrap_err();
+        check_campaign(Some(70), 2, &missed).unwrap_err();
+        let timed_out = Outcomes {
+            caught: 0,
+            timeout: 1,
+            ..complete
+        };
+        check_campaign(Some(3), 2, &timed_out).unwrap();
+        check_campaign(Some(0), 2, &timed_out).unwrap_err();
+        check_campaign(Some(2), 2, &timed_out).unwrap_err();
+        let mixed = Outcomes {
+            missed: 1,
+            unviable: 0,
+            ..timed_out
+        };
+        check_campaign(Some(3), 2, &mixed).unwrap();
+        check_campaign(Some(2), 2, &mixed).unwrap_err();
+    }
+
     fn harness(name: &str) -> Harness {
         Harness {
             name: name.to_owned(),
@@ -1140,6 +1319,38 @@ mod tests {
             contract: "fixture".to_owned(),
             input_domain: "fixture".to_owned(),
             bound: "fixture".to_owned(),
+        }
+    }
+
+    #[test]
+    fn a_diagnostic_harness_keeps_negative_controls_and_refuses_unknown_names() {
+        let fixture = || Manifest {
+            obligation: vec![Obligation::Kani {
+                source: "rules.rs".to_owned(),
+                harnesses: vec![harness("first"), harness("second")],
+                probes: vec![Probe {
+                    harness: "rejects_bad".to_owned(),
+                    assertion: "NEGATIVE_CONTROL".to_owned(),
+                }],
+            }],
+        };
+        let mut manifest = fixture();
+        select_harness(&mut manifest, "rules.rs", "second").unwrap();
+        let Obligation::Kani {
+            harnesses, probes, ..
+        } = manifest.obligation.first().unwrap()
+        else {
+            panic!("the diagnostic changed the verifier");
+        };
+        assert_eq!(harnesses.len(), 1);
+        assert_eq!(harnesses.first().unwrap().name, "second");
+        assert_eq!(probes.first().unwrap().harness, "rejects_bad");
+        for (source, name) in [
+            ("rules.rs", "unknown"),
+            ("unknown.rs", "second"),
+            ("rules.rs", ""),
+        ] {
+            select_harness(&mut fixture(), source, name).unwrap_err();
         }
     }
 
@@ -1151,40 +1362,37 @@ mod tests {
         serde_json::from_str(r#"{"metadata":{"kani_version":"0.68.0"},"property_details":[{"harness_id":"rejects_x","property_details":{"failed":1,"undetermined":0,"solver_error":0,"satisfied":0,"unsatisfiable":0}}],"verification_results":{"summary":{"total_harnesses":1,"executed":1,"status":"completed","successful":0,"failed":1},"results":[{"harness_id":"rejects_x","status":"Failure","checks":[{"status":"Failure","description":"NEGATIVE_X_CONTROL","category":"assertion"}]}]}}"#).unwrap()
     }
 
-    const fn options(ci: bool, only: Option<Step>, without: Option<Step>) -> Options {
+    const fn options(only: Option<Step>, without: Option<Step>) -> Options {
         Options {
-            ci,
             only,
             without,
             inside: false,
+            failure: FailureMode::Collect,
         }
     }
 
     #[test]
-    fn options_read_ci_only_and_without() {
-        assert_eq!(Options::from_words(&[]), Some(options(false, None, None)));
+    fn options_read_selection_and_failure_behavior() {
+        assert_eq!(Options::from_words(&[]), Some(options(None, None)));
         assert_eq!(
-            Options::from_words(&["--ci", "--only", "miri"]),
-            Some(options(true, Some(Step::Miri), None))
+            Options::from_words(&["--only", "miri"]),
+            Some(options(Some(Step::Miri), None))
         );
         assert_eq!(
             Options::from_words(&["--without", "quint"]),
-            Some(options(false, None, Some(Step::Quint)))
+            Some(options(None, Some(Step::Quint)))
         );
         assert_eq!(Options::from_words(&["--only"]), None);
         assert_eq!(Options::from_words(&["--only", "lean"]), None);
         assert_eq!(Options::from_words(&["--verbose"]), None);
+        assert_eq!(Options::from_words(&["--ci"]), None);
+        assert_eq!(options(None, None).selected(), Step::ALL);
         assert_eq!(
-            options(true, None, None).selected(),
-            [Step::Kani, Step::Quint, Step::Miri, Step::Fuzz]
-        );
-        assert_eq!(options(false, None, None).selected(), Step::ALL);
-        assert_eq!(
-            options(true, Some(Step::Mutants), None).selected(),
+            options(Some(Step::Mutants), None).selected(),
             [Step::Mutants]
         );
         assert_eq!(
-            options(false, None, Some(Step::Quint)).selected(),
+            options(None, Some(Step::Quint)).selected(),
             [Step::Kani, Step::Miri, Step::Fuzz, Step::Mutants]
         );
         let inside = Options::from_words(&["--inside"]).unwrap();
@@ -1192,10 +1400,31 @@ mod tests {
             inside.selected(),
             [Step::Kani, Step::Miri, Step::Fuzz, Step::Mutants]
         );
+        assert_eq!(options(Some(Step::Quint), Some(Step::Quint)).selected(), []);
         assert_eq!(
-            options(false, Some(Step::Quint), Some(Step::Quint)).selected(),
-            []
+            Options::from_words(&["--fail-fast"]).unwrap().failure,
+            FailureMode::Stop
         );
+    }
+
+    #[test]
+    fn release_campaigns_stop_before_expensive_work_after_a_failure() {
+        let mut ran = Vec::new();
+        verify_steps(
+            &[Step::Kani, Step::Miri, Step::Mutants],
+            FailureMode::Stop,
+            |step| {
+                ran.push(step);
+                anyhow::bail!("the verifier failed")
+            },
+        )
+        .unwrap_err();
+        assert_eq!(ran, [Step::Kani]);
+    }
+
+    #[test]
+    fn an_empty_campaign_never_claims_success() {
+        verify_steps(&[], FailureMode::Stop, |_step| Ok(())).unwrap_err();
     }
 
     #[test]

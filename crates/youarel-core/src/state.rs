@@ -954,6 +954,78 @@ mod tests {
     }
 
     #[test]
+    fn every_edit_identifies_the_entry_it_reads_or_creates() {
+        let shortcut = Entry::Shortcut(id(1));
+        let folder = Entry::Folder(id(2));
+        for edit in [
+            Edit::AddShortcut {
+                id: id(1),
+                link: String::new(),
+                title: String::new(),
+                folder: None,
+            },
+            Edit::Retitle {
+                id: id(1),
+                title: String::new(),
+            },
+            Edit::Realias {
+                id: id(1),
+                alias: String::new(),
+            },
+            Edit::SetNote {
+                id: id(1),
+                note: String::new(),
+            },
+        ] {
+            assert_eq!(edit.entry(), Some(shortcut));
+        }
+        for edit in [
+            Edit::AddFolder {
+                id: id(2),
+                name: String::new(),
+                parent: None,
+            },
+            Edit::RenameFolder {
+                id: id(2),
+                name: String::new(),
+            },
+            Edit::MarkFolder {
+                id: id(2),
+                mark: String::new(),
+            },
+        ] {
+            assert_eq!(edit.entry(), Some(folder));
+        }
+        for entry in [shortcut, folder] {
+            for edit in [
+                Edit::Move {
+                    entry,
+                    folder: None,
+                    slot: Slot::End,
+                },
+                Edit::RestorePlace {
+                    entry,
+                    folder: None,
+                    position: crate::position_rules::Key::parse("a1").unwrap(),
+                },
+                Edit::Trash { entry },
+                Edit::PutBack { entry },
+                Edit::Remove { entry },
+            ] {
+                assert_eq!(edit.entry(), Some(entry));
+            }
+        }
+        assert_eq!(
+            Edit::NameDevice {
+                id: crate::device_rules::MemberId([3; 32]),
+                name: String::new()
+            }
+            .entry(),
+            None
+        );
+    }
+
+    #[test]
     fn a_version_7_identifier_carries_the_time_and_its_marks() {
         let ItemId(bytes) = ItemId::v7(0x0123_4567_89ab, [0xff; 10]);
         assert_eq!(

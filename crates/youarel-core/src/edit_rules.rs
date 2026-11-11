@@ -494,7 +494,7 @@ mod proofs {
     ) -> bool {
         let asked = chooser.asked.get();
         match (expected(edit, facts), answer) {
-            (Err(wanted), Err(found)) => wanted == *found && asked.is_none(),
+            (Err(wanted), Err(found)) => same_error(wanted, *found) && asked.is_none(),
             (Ok(None), Ok(write)) => asked.is_none() && unplaced(edit, write),
             (Ok(Some(bounds)), Ok(write)) => {
                 asked == Some(bounds)
@@ -583,6 +583,35 @@ mod proofs {
         added(edit, write) || changed(edit, write)
     }
 
+    const fn id_value(id: ItemId) -> u128 {
+        u128::from_le_bytes(id.0)
+    }
+
+    fn same_folder(left: Option<ItemId>, right: Option<ItemId>) -> bool {
+        left.map(id_value) == right.map(id_value)
+    }
+
+    const fn same_entry(left: Entry, right: Entry) -> bool {
+        match (left, right) {
+            (Entry::Shortcut(left), Entry::Shortcut(right))
+            | (Entry::Folder(left), Entry::Folder(right)) => id_value(left) == id_value(right),
+            _ => false,
+        }
+    }
+
+    const fn same_error(left: EditError, right: EditError) -> bool {
+        match (left, right) {
+            (EditError::DeviceName, EditError::DeviceName)
+            | (EditError::Position(Unordered), EditError::Position(Unordered)) => true,
+            (EditError::Unknown(left), EditError::Unknown(right))
+            | (EditError::Exists(left), EditError::Exists(right)) => same_entry(left, right),
+            (EditError::IntoItself(left), EditError::IntoItself(right)) => {
+                id_value(left) == id_value(right)
+            }
+            _ => false,
+        }
+    }
+
     fn added(edit: &Edit, write: &Write) -> bool {
         match (edit, write) {
             (
@@ -599,7 +628,12 @@ mod proofs {
                     folder: filed,
                     ..
                 },
-            ) => id == written && link == linked && title == titled && folder == filed,
+            ) => {
+                id_value(*id) == id_value(*written)
+                    && link == linked
+                    && title == titled
+                    && same_folder(*folder, *filed)
+            }
             (
                 Edit::AddFolder { id, name, parent },
                 Write::AddFolder {
@@ -608,7 +642,11 @@ mod proofs {
                     parent: placed,
                     ..
                 },
-            ) => id == written && name == named && parent == placed,
+            ) => {
+                id_value(*id) == id_value(*written)
+                    && name == named
+                    && same_folder(*parent, *placed)
+            }
             _ => false,
         }
     }
@@ -628,35 +666,35 @@ mod proofs {
                     id: written,
                     title: titled,
                 },
-            ) => id == written && title == titled,
+            ) => id_value(*id) == id_value(*written) && title == titled,
             (
                 Edit::Realias { id, alias },
                 Write::Alias {
                     id: written,
                     alias: saved,
                 },
-            ) => id == written && alias == saved,
+            ) => id_value(*id) == id_value(*written) && alias == saved,
             (
                 Edit::RenameFolder { id, name },
                 Write::Name {
                     id: written,
                     name: saved,
                 },
-            ) => id == written && name == saved,
+            ) => id_value(*id) == id_value(*written) && name == saved,
             (
                 Edit::SetNote { id, note },
                 Write::Note {
                     id: written,
                     note: noted,
                 },
-            ) => id == written && note == noted,
+            ) => id_value(*id) == id_value(*written) && note == noted,
             (
                 Edit::MarkFolder { id, mark },
                 Write::Mark {
                     id: written,
                     mark: marked,
                 },
-            ) => id == written && mark == marked,
+            ) => id_value(*id) == id_value(*written) && mark == marked,
             (
                 Edit::Move { entry, folder, .. },
                 Write::Place {
@@ -664,7 +702,7 @@ mod proofs {
                     folder: filed,
                     ..
                 },
-            ) => entry == written && folder == filed,
+            ) => same_entry(*entry, *written) && same_folder(*folder, *filed),
             (
                 Edit::RestorePlace {
                     entry,
@@ -676,7 +714,7 @@ mod proofs {
                     folder: filed,
                     position: saved,
                 },
-            ) => entry == written && folder == filed && position == saved,
+            ) => same_entry(*entry, *written) && same_folder(*folder, *filed) && position == saved,
             (Edit::Remove { entry }, Write::Remove { entry: written })
             | (
                 Edit::Trash { entry },
@@ -691,7 +729,7 @@ mod proofs {
                     entry: written,
                     presence: Presence::Live,
                 },
-            ) => entry == written,
+            ) => same_entry(*entry, *written),
             _ => false,
         }
     }
@@ -711,7 +749,7 @@ mod proofs {
     /// Every kind of edit, every slot, the top or a folder, every presence or none, every liveness and containment, and neighbors drawn from three positions, with a choice of positions in place of `between`, whose own proofs cover it.
     #[cfg(kani)]
     #[kani::proof]
-    #[kani::unwind(17)]
+    #[kani::unwind(4)]
     fn an_edit_is_refused_as_the_reference_refuses_it_and_lands_between_its_neighbors() {
         let keys = POSITIONS.map(|text| Key::parse(text).unwrap());
         let target = match kani::any::<u8>() {
@@ -735,9 +773,10 @@ mod proofs {
         let slot: u8 = kani::any();
         kani::assume(kind < KINDS && slot < SLOTS);
         let folder = if kani::any() { Some(FOLDER) } else { None };
+        let input = edit(kind, slot, folder, Key::parse(CHOSEN).unwrap());
         let edit = edit(kind, slot, folder, Key::parse(CHOSEN).unwrap());
         let chooser = Chooser::new(Key::parse(CHOSEN).unwrap());
-        let answer = chooser.decide(edit.clone(), &facts);
+        let answer = chooser.decide(input, &facts);
         kani::assert(
             decided(&edit, &facts, &answer, &chooser),
             "an edit is refused as the reference refuses it and lands between its neighbors",
@@ -810,6 +849,35 @@ mod tests {
             destination: true,
             into_itself: false,
             neighbors,
+        }
+    }
+
+    #[test]
+    fn device_name_edits_preserve_admitted_names_and_refuse_invalid_names() {
+        let id = crate::device_rules::MemberId([7; 32]);
+        let facts = live(Neighbors::default());
+        for name in ["", "Desktop", "仕事"] {
+            let name = String::from(name);
+            assert_eq!(
+                apply(
+                    Edit::NameDevice {
+                        id,
+                        name: name.clone()
+                    },
+                    &facts
+                ),
+                Ok(Write::DeviceName { id, name })
+            );
+        }
+        for name in [
+            String::from(" padded"),
+            String::from("a\nb"),
+            "x".repeat(129),
+        ] {
+            assert_eq!(
+                apply(Edit::NameDevice { id, name }, &facts),
+                Err(EditError::DeviceName)
+            );
         }
     }
 

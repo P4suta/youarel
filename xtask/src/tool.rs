@@ -3,7 +3,7 @@
 use anyhow::{Context, Result, ensure};
 use std::ffi::OsStr;
 use std::path::Path;
-use std::process::{Command, Output, Stdio};
+use std::process::{Command, ExitStatus, Output, Stdio};
 
 /// The nightly toolchain that Kani 0.68.0 pins, which Miri and cargo-fuzz share.
 pub const NIGHTLY: &str = "nightly-2026-08-21";
@@ -88,6 +88,8 @@ pub enum Tool {
     Pkgutil,
     Xcrun,
     Spctl,
+    /// A virtual display with automatic server selection and cleanup.
+    XvfbRun,
 }
 
 impl Tool {
@@ -124,6 +126,7 @@ impl Tool {
             Self::Pkgutil => PKGUTIL,
             Self::Xcrun => XCRUN,
             Self::Spctl => SPCTL,
+            Self::XvfbRun => "xvfb-run",
         }
     }
 
@@ -195,8 +198,16 @@ pub fn succeed(command: &mut Command, what: &str) -> Result<()> {
 ///
 /// Returns an error naming `what` when the command cannot start.
 pub fn status(command: &mut Command, what: &str) -> Result<bool> {
-    let status = command.status().with_context(|| format!("start {what}"))?;
-    Ok(status.success())
+    exit_status(command, what).map(|status| status.success())
+}
+
+/// Runs a command with inherited streams and preserves its exit status.
+///
+/// # Errors
+///
+/// Returns an error naming `what` when the command cannot start.
+pub fn exit_status(command: &mut Command, what: &str) -> Result<ExitStatus> {
+    command.status().with_context(|| format!("start {what}"))
 }
 
 /// Runs a command with captured streams.

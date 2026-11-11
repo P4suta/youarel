@@ -521,6 +521,50 @@ mod tests {
     }
 
     #[test]
+    fn bounded_listing_accepts_the_limit_and_refuses_one_more_entry() {
+        let directory = tempfile::tempdir().unwrap();
+        assert_eq!(
+            super::list_bounded(directory.path(), 0).unwrap(),
+            Vec::<String>::new()
+        );
+        replace(&directory.path().join("b"), b"").unwrap();
+        replace(&directory.path().join("a"), b"").unwrap();
+        assert_eq!(
+            super::list_bounded(directory.path(), 2).unwrap(),
+            ["a", "b"]
+        );
+        assert_eq!(
+            super::list_bounded(directory.path(), 3).unwrap(),
+            ["a", "b"]
+        );
+        for limit in [0, 1] {
+            assert_eq!(
+                super::list_bounded(directory.path(), limit)
+                    .unwrap_err()
+                    .source
+                    .kind(),
+                std::io::ErrorKind::InvalidData
+            );
+        }
+    }
+
+    #[test]
+    fn directory_inspection_distinguishes_absence_files_and_invalid_paths() {
+        let directory = tempfile::tempdir().unwrap();
+        assert!(super::is_directory(directory.path()).unwrap());
+        let path = directory.path().join("file");
+        assert!(!super::is_directory(&path).unwrap());
+        replace(&path, b"").unwrap();
+        assert!(!super::is_directory(&path).unwrap());
+        assert_eq!(
+            super::is_directory(&directory.path().join("\0"))
+                .unwrap_err()
+                .action,
+            "inspect"
+        );
+    }
+
+    #[test]
     fn a_program_is_replaced_whole_and_runnable() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("youarel");

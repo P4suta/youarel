@@ -4,51 +4,26 @@
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Job {
     Check,
-    Kani,
-    Quint,
-    Miri,
-    Fuzz,
-    Mutants,
     App,
     Macos,
     Windows,
 }
 
-const CHECK_BIT: u16 = 1 << 0;
-const KANI_BIT: u16 = 1 << 1;
-const QUINT_BIT: u16 = 1 << 2;
-const MIRI_BIT: u16 = 1 << 3;
-const FUZZ_BIT: u16 = 1 << 4;
-const MUTANTS_BIT: u16 = 1 << 5;
-const APP_BIT: u16 = 1 << 6;
-const MACOS_BIT: u16 = 1 << 7;
-const WINDOWS_BIT: u16 = 1 << 8;
+const CHECK_BIT: u16 = 1;
+const APP_BIT: u16 = 1 << 1;
+const MACOS_BIT: u16 = 1 << 2;
+const WINDOWS_BIT: u16 = 1 << 3;
 
 impl Job {
     const fn bit(self) -> u16 {
         match self {
             Self::Check => CHECK_BIT,
-            Self::Kani => KANI_BIT,
-            Self::Quint => QUINT_BIT,
-            Self::Miri => MIRI_BIT,
-            Self::Fuzz => FUZZ_BIT,
-            Self::Mutants => MUTANTS_BIT,
             Self::App => APP_BIT,
             Self::Macos => MACOS_BIT,
             Self::Windows => WINDOWS_BIT,
         }
     }
-    pub const ALL: [Self; 9] = [
-        Self::Check,
-        Self::Kani,
-        Self::Quint,
-        Self::Miri,
-        Self::Fuzz,
-        Self::Mutants,
-        Self::App,
-        Self::Macos,
-        Self::Windows,
-    ];
+    pub const ALL: [Self; 4] = [Self::Check, Self::App, Self::Macos, Self::Windows];
 }
 
 const ALL_JOBS: u16 = (1 << Job::ALL.len()) - 1;
@@ -81,14 +56,14 @@ pub enum Confidence {
     Conservative,
 }
 
-/// Heavy assurance applies to a candidate or an explicit experiment.
+/// Native platform checks run together only when requested.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Stage {
     Development,
-    Candidate,
+    Platforms,
 }
 
-const FAST_JOBS: u16 = Job::Check.bit() | Job::App.bit();
+const FAST_JOBS: u16 = Selection(0).with(Job::Check).with(Job::App).0;
 
 /// A selected job must finish successfully; a safety stop provides no verdict.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -108,7 +83,7 @@ pub const fn select(affected: Selection, confidence: Confidence, stage: Stage) -
     };
     match stage {
         Stage::Development => Selection(selected.0 & FAST_JOBS),
-        Stage::Candidate => selected,
+        Stage::Platforms => selected,
     }
 }
 
@@ -151,11 +126,11 @@ mod proofs {
     fn selection_preserves_affected_jobs_and_requires_a_check() {
         let bits: u16 = kani::any();
         let affected = Selection(bits & ALL_JOBS);
-        let selected = select(affected, Confidence::Scoped, Stage::Candidate);
+        let selected = select(affected, Confidence::Scoped, Stage::Platforms);
         assert_eq!(selected.0 & affected.0, affected.0);
         assert!(selected.includes(Job::Check));
         assert_eq!(
-            select(affected, Confidence::Conservative, Stage::Candidate),
+            select(affected, Confidence::Conservative, Stage::Platforms),
             Selection::all()
         );
         kani::cover!(affected == Selection::default());
@@ -207,6 +182,37 @@ mod tests {
     use super::*;
 
     #[test]
+    fn each_job_can_be_selected_independently_and_repeatedly() {
+        for selected in Job::ALL {
+            let once = Selection::default().with(selected);
+            assert_eq!(once.with(selected), once);
+            for job in Job::ALL {
+                assert_eq!(once.includes(job), job == selected);
+                assert!(Selection::all().includes(job));
+            }
+        }
+    }
+
+    #[test]
+    fn unselected_jobs_accept_success_or_skipping_and_refuse_other_outcomes() {
+        for job in Job::ALL {
+            let selected = Selection::default();
+            assert!(accepts(selected, job, Outcome::Success));
+            assert!(accepts(selected, job, Outcome::Skipped));
+            for outcome in [Outcome::Failure, Outcome::Cancelled, Outcome::Incomplete] {
+                assert!(!accepts(selected, job, outcome));
+            }
+        }
+    }
+
+    #[test]
+    fn cache_fields_refuse_only_line_breaks_and_quotes() {
+        for byte in u8::MIN..=u8::MAX {
+            assert_eq!(cache_field_byte(byte), !b"\r\n\"".contains(&byte));
+        }
+    }
+
+    #[test]
     fn frontend_work_does_not_require_unrelated_proofs() {
         let selected = select(
             Selection::default().with(Job::App),
@@ -215,7 +221,8 @@ mod tests {
         );
         assert!(selected.includes(Job::Check));
         assert!(selected.includes(Job::App));
-        assert!(!selected.includes(Job::Mutants));
+        assert!(!selected.includes(Job::Macos));
+        assert!(!selected.includes(Job::Windows));
     }
 
     #[test]
@@ -224,7 +231,7 @@ mod tests {
             select(
                 Selection::default(),
                 Confidence::Conservative,
-                Stage::Candidate
+                Stage::Platforms
             ),
             Selection::all()
         );
@@ -236,15 +243,7 @@ mod tests {
             let selected = select(Selection::all(), confidence, Stage::Development);
             assert!(selected.includes(Job::Check));
             assert!(selected.includes(Job::App));
-            for job in [
-                Job::Kani,
-                Job::Quint,
-                Job::Miri,
-                Job::Fuzz,
-                Job::Mutants,
-                Job::Macos,
-                Job::Windows,
-            ] {
+            for job in [Job::Macos, Job::Windows] {
                 assert!(!selected.includes(job));
             }
         }

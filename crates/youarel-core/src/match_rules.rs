@@ -213,8 +213,9 @@ mod tests {
         assert_eq!(score("b", "ab"), Some(MATCHED));
     }
 
-    #[test]
-    fn the_specification_agrees_over_every_short_pair() {
+    const QUERIES_PER_TEST: usize = 8;
+
+    fn texts() -> Vec<Vec<char>> {
         let alphabet = ['a', 'A', 'b', '/', 'é'];
         let mut texts: Vec<Vec<char>> = alloc::vec![Vec::new()];
         for _ in 0..TEXT_BOUND {
@@ -232,7 +233,12 @@ mod tests {
             texts.sort();
             texts.dedup();
         }
-        for query in &texts {
+        texts
+    }
+
+    fn assert_short_pairs(partition: usize) {
+        let texts = texts();
+        for query in texts.chunks(QUERIES_PER_TEST).nth(partition).unwrap() {
             for text in &texts {
                 assert!(spec(query, text), "{query:?} {text:?}");
                 assert_eq!(
@@ -242,5 +248,42 @@ mod tests {
                 );
             }
         }
+    }
+
+    macro_rules! short_pair_tests {
+        ($($name:ident: $partition:literal),+ $(,)?) => {
+            $(#[test] fn $name() { assert_short_pairs($partition); })+
+
+            #[test]
+            fn every_short_query_partition_is_scheduled() {
+                let partitions = [$($partition),+];
+                let expected: Vec<usize> = (0..partitions.len()).collect();
+                assert_eq!(partitions.as_slice(), expected.as_slice());
+                assert_eq!(texts().len().div_ceil(QUERIES_PER_TEST), partitions.len());
+            }
+        };
+    }
+
+    short_pair_tests! {
+        short_pairs_000_to_007: 0,
+        short_pairs_008_to_015: 1,
+        short_pairs_016_to_023: 2,
+        short_pairs_024_to_031: 3,
+        short_pairs_032_to_039: 4,
+        short_pairs_040_to_047: 5,
+        short_pairs_048_to_055: 6,
+        short_pairs_056_to_063: 7,
+        short_pairs_064_to_071: 8,
+        short_pairs_072_to_079: 9,
+        short_pairs_080_to_087: 10,
+        short_pairs_088_to_095: 11,
+        short_pairs_096_to_103: 12,
+        short_pairs_104_to_111: 13,
+        short_pairs_112_to_119: 14,
+        short_pairs_120_to_127: 15,
+        short_pairs_128_to_135: 16,
+        short_pairs_136_to_143: 17,
+        short_pairs_144_to_151: 18,
+        short_pairs_152_to_155: 19,
     }
 }

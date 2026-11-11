@@ -59,17 +59,48 @@ The manifest check validates the minisign trust anchor and `ML-DSA-65` key encod
 A signed rehearsal verifies that the `ML-DSA-65` secret matches its public key.
 The verification workflow never signs, submits, tags, or publishes.
 
+## Command migration
+
+Use `just check` before ordinary pushes.
+Replace `just push-check` and `cargo xtask push-check` with `just release-check` for the full gate on a clean committed checkout.
+Use `just proofs` in place of `just proofs-native`, `just proofs-ci`, and `cargo xtask proofs --ci`.
+The replacement runs the full campaign in bounded containers, including mutation testing that `--ci` omitted.
+Update local scripts to use the replacement commands.
+
+`cargo xtask ci plan BASE` now emits schema 3 instead of schema 2.
+Read `full` instead of `campaign`, and stop expecting the `proofs` inventory in JSON.
+The plan selects from `check`, `app`, `macos`, and `windows`.
+Use `cargo xtask release-check --plan` for the complete local verifier inventory.
+These repository development interfaces change before the initial 1.0.0 release.
+
+Candidate dispatch now requires `checked_tree` from successful local release checks.
+Signing dispatch now requires `candidate_run` from a successful unsigned candidate.
+Prepare another unsigned candidate when the source tree changes.
+
 ## Candidate verification
 
-Dispatch `Desktop release candidate` on main with `operation=candidate`, the exact main commit SHA, and the product version.
-The controller rejects source or version drift and checks the complete release inventory before native builds.
-The normal PR gate stays fast.
-Proofs and the full native release matrix run at the release gate.
+Run `just release-check` locally on a clean committed checkout before preparing a release candidate.
+Preview the inventory and container limits with `just release-check --plan`.
+The command checks the host, the Linux window, and the full Kani, Quint, Miri, corpus replay, and mutation inventory in bounded containers.
+A failed campaign stops later campaigns.
+The command reports a Git tree identifier only after all checks pass and the source remains unchanged.
+The identifier binds committed files and permits a squash merge with identical files.
+It confirms the operator's local verification and supplies no independent proof of execution.
+
+Dispatch `Desktop release candidate` on main with `operation=candidate`, the exact main commit SHA, the product version, and `checked_tree` from the successful local command.
+Leave `candidate_run` empty.
+The controller rejects a missing confirmation or a different source tree, source commit, or version.
+Hosted CI checks portable shipping behavior once and runs native checks and builds on six targets in parallel.
+Linux native checks include Rust app tests and a real window under a virtual display.
+Compiler caches reduce repeated compilation without supplying a check verdict.
+Hosted CI runs no proof, Miri, fuzz, or mutation campaign.
 Build jobs receive no environment secrets.
 Both programs report their exact version before packaging, and version reporting creates no library files.
 CycloneDX inventories describe each executable's resolved dependencies for its target.
 Candidate payloads bind source, version, target, workflow, run, attempt, and SHA-256.
 Original build provenance accompanies the candidate and survives later signing.
+After all native builds succeed, set `RELEASE_SOURCE_SHA`, `RELEASE_VERSION`, and `RELEASE_CANDIDATE_RUN` for the selected checkout and run `cargo xtask release inspect-candidate`.
+The read-only command checks every target's downloaded payload, metadata, hashes, and original provenance without executing candidate programs.
 
 `cargo xtask release candidate` performs an unsigned host rehearsal with temporary manifest keys.
 The rehearsal validates its packages and rejects its temporary keys through the compiled CLI trust boundary.
@@ -77,7 +108,9 @@ The rehearsal grants no release authority.
 
 ## Signing
 
-After the owner lifts the release hold and credential checks pass, dispatch the same workflow with `operation=sign`.
+After the owner lifts the release hold and credential checks pass, dispatch the same workflow with `operation=sign`, the same source and version, and `candidate_run` naming the successful unsigned run.
+Signing verifies the original workflow and every successful native build before consuming the preserved candidates.
+Signing neither repeats the campaigns nor rebuilds the candidates.
 Protected jobs compile the reviewed controller before restoring verified candidate bytes and obtaining credentials.
 Candidate executables and build hooks never run in credential-bearing jobs.
 Apple signing seals the nested CLI and launcher before the app and installer.
@@ -91,6 +124,7 @@ Notarization persists package hashes and submission identifiers before waiting.
 Unknown submission outcomes stop before another submission.
 Stapling and native assessment precede final checksums and the signed asset inventory.
 Final provenance covers the transformed distribution and retains original build bundles.
+The signed inventory includes `distribution.json`, which binds the original unsigned run to the signed distribution run.
 The successful run produces `release-RUN_ID` for later publication without rebuilding or signing again.
 
 ## Publication

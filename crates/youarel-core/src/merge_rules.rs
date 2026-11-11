@@ -345,8 +345,7 @@ mod tests {
         assert_eq!(merge_sorted(&[], &[(1, 1)], larger), [(1, 1)]);
     }
 
-    #[test]
-    fn the_laws_hold_over_a_drawn_domain() {
+    fn assert_register_laws(first_value: u8) {
         let registers: Vec<Register<u8>> = [0, 1]
             .iter()
             .flat_map(|value| {
@@ -355,28 +354,75 @@ mod tests {
                     .flat_map(move |wall| [0, 1].map(|device| register(*value, *wall, device)))
             })
             .collect();
-        for first in &registers {
+        for first in registers
+            .iter()
+            .filter(|register| register.value == first_value)
+        {
             for second in &registers {
                 for third in &registers {
                     assert!(register_laws(first, second, third));
                 }
             }
         }
+    }
+
+    #[test]
+    fn register_laws_hold_when_the_first_value_is_zero() {
+        assert_register_laws(0);
+    }
+
+    #[test]
+    fn register_laws_hold_when_the_first_value_is_one() {
+        assert_register_laws(1);
+    }
+
+    fn assert_list_laws(partition: usize) {
         let drawn = lists(&[1, 2, 3]);
-        assert!(
-            drawn
-                .iter()
-                .all(|list| list.len() <= LIST_BOUND && ascending(list))
-        );
-        for first in &drawn {
-            for second in &drawn {
-                for third in &drawn {
-                    assert!(
-                        list_laws(first, second, third),
-                        "{first:?} {second:?} {third:?}"
-                    );
-                }
+        let first = drawn.get(partition).unwrap();
+        for second in &drawn {
+            for third in &drawn {
+                assert!(
+                    list_laws(first, second, third),
+                    "{first:?} {second:?} {third:?}"
+                );
             }
         }
+    }
+
+    macro_rules! list_law_tests {
+        ($($name:ident: $partition:literal),+ $(,)?) => {
+            $(#[test] fn $name() { assert_list_laws($partition); })+
+
+            #[test]
+            fn every_drawn_list_partition_is_scheduled() {
+                let drawn = lists(&[1, 2, 3]);
+                assert!(drawn.iter().all(|list| list.len() <= LIST_BOUND && ascending(list)));
+                let partitions = [$($partition),+];
+                let expected: Vec<usize> = (0..drawn.len()).collect();
+                assert_eq!(partitions.as_slice(), expected.as_slice());
+            }
+        };
+    }
+
+    list_law_tests! {
+        list_laws_first_00: 0,
+        list_laws_first_01: 1,
+        list_laws_first_02: 2,
+        list_laws_first_03: 3,
+        list_laws_first_04: 4,
+        list_laws_first_05: 5,
+        list_laws_first_06: 6,
+        list_laws_first_07: 7,
+        list_laws_first_08: 8,
+        list_laws_first_09: 9,
+        list_laws_first_10: 10,
+        list_laws_first_11: 11,
+        list_laws_first_12: 12,
+        list_laws_first_13: 13,
+        list_laws_first_14: 14,
+        list_laws_first_15: 15,
+        list_laws_first_16: 16,
+        list_laws_first_17: 17,
+        list_laws_first_18: 18,
     }
 }

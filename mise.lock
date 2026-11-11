@@ -328,6 +328,63 @@ url = "https://github.com/cli/cli/releases/download/v2.103.3/gh_2.103.3_windows_
 url_api = "https://api.github.com/repos/cli/cli/releases/assets/679195750"
 provenance = "github-attestations"
 
+[[tools."github:tauri-apps/tauri"]]
+version = "2.12.4"
+backend = "github:tauri-apps/tauri"
+specifiers = ["2.12.4"]
+
+[tools."github:tauri-apps/tauri".options]
+matching = "cargo-tauri"
+version_prefix = "tauri-cli-v"
+
+[tools."github:tauri-apps/tauri"."platforms.linux-arm64"]
+checksum = "sha256:4f601b9f462c3d3d10ce67b6ae963f099f6a5a3253920dae95a253abd558d723"
+checksum_source = "mise-versions"
+url = "https://github.com/tauri-apps/tauri/releases/download/tauri-cli-v2.12.4/cargo-tauri-aarch64-unknown-linux-gnu.tgz"
+url_api = "https://api.github.com/repos/tauri-apps/tauri/releases/assets/662381762"
+
+[tools."github:tauri-apps/tauri"."platforms.linux-arm64-musl"]
+checksum = "sha256:673fe9f41ba9ad42e9820c97fe92af0cddd01e34611f5006f33591237390ac51"
+checksum_source = "mise-versions"
+url = "https://github.com/tauri-apps/tauri/releases/download/tauri-cli-v2.12.4/cargo-tauri-aarch64-unknown-linux-musl.tgz"
+url_api = "https://api.github.com/repos/tauri-apps/tauri/releases/assets/662381770"
+
+[tools."github:tauri-apps/tauri"."platforms.linux-x64"]
+checksum = "sha256:820ae3c7580ca637cad15f65638960ee2a96e5a491e224691c86d6f25e6c9e8a"
+checksum_source = "mise-versions"
+url = "https://github.com/tauri-apps/tauri/releases/download/tauri-cli-v2.12.4/cargo-tauri-x86_64-unknown-linux-gnu.tgz"
+url_api = "https://api.github.com/repos/tauri-apps/tauri/releases/assets/662381754"
+
+[tools."github:tauri-apps/tauri"."platforms.linux-x64-musl"]
+checksum = "sha256:820ae3c7580ca637cad15f65638960ee2a96e5a491e224691c86d6f25e6c9e8a"
+checksum_source = "mise-versions"
+url = "https://github.com/tauri-apps/tauri/releases/download/tauri-cli-v2.12.4/cargo-tauri-x86_64-unknown-linux-gnu.tgz"
+url_api = "https://api.github.com/repos/tauri-apps/tauri/releases/assets/662381754"
+
+[tools."github:tauri-apps/tauri"."platforms.macos-arm64"]
+checksum = "sha256:f71a34ada728ca2d1a51c28d6d21639e1e080898ec69ec8d49c5da3b7e8bc1be"
+checksum_source = "mise-versions"
+url = "https://github.com/tauri-apps/tauri/releases/download/tauri-cli-v2.12.4/cargo-tauri-aarch64-apple-darwin.zip"
+url_api = "https://api.github.com/repos/tauri-apps/tauri/releases/assets/662381757"
+
+[tools."github:tauri-apps/tauri"."platforms.macos-x64"]
+checksum = "sha256:164d184c0e50800dcae7bb31f0815066ebd27efc3e3bb73117974bcd2e982192"
+checksum_source = "mise-versions"
+url = "https://github.com/tauri-apps/tauri/releases/download/tauri-cli-v2.12.4/cargo-tauri-x86_64-apple-darwin.zip"
+url_api = "https://api.github.com/repos/tauri-apps/tauri/releases/assets/662381755"
+
+[tools."github:tauri-apps/tauri"."platforms.windows-arm64"]
+checksum = "sha256:92aa6a90be3126ed7b6ede964ca12124535359b47d8363dc29189b4f776303e7"
+checksum_source = "mise-versions"
+url = "https://github.com/tauri-apps/tauri/releases/download/tauri-cli-v2.12.4/cargo-tauri-aarch64-pc-windows-msvc.zip"
+url_api = "https://api.github.com/repos/tauri-apps/tauri/releases/assets/662381756"
+
+[tools."github:tauri-apps/tauri"."platforms.windows-x64"]
+checksum = "sha256:3e8687fb184bd7f10ebd8642f7715f79f4a605c0694c142a21507e8a24dc0f8b"
+checksum_source = "mise-versions"
+url = "https://github.com/tauri-apps/tauri/releases/download/tauri-cli-v2.12.4/cargo-tauri-x86_64-pc-windows-msvc.zip"
+url_api = "https://api.github.com/repos/tauri-apps/tauri/releases/assets/662381763"
+
 [[tools.just]]
 version = "1.59.0"
 backend = "aqua:casey/just"
@@ -470,12 +527,6 @@ url = "https://nodejs.org/dist/v26.13.0/node-v26.13.0-win-arm64.zip"
 [tools.node."platforms.windows-x64"]
 checksum = "sha256:dcc60d59a0746999f99064a01c020445d54d84228c691cdbf25b49ac3b59150a"
 url = "https://nodejs.org/dist/v26.13.0/node-v26.13.0-win-x64.zip"
-
-[[tools."npm:@tauri-apps/cli"]]
-version = "2.12.4"
-aube = { path = ".mise/locks/npm-tauri-apps-cli/2.12.4", digest = "sha256:46621deddd319661d878332adea952cd3b4ff431918412c8576364c12d651eb6" }
-backend = "npm:@tauri-apps/cli"
-specifiers = ["2.12.4"]
 
 [[tools."npm:typescript"]]
 version = "7.0.2"

@@ -27,7 +27,6 @@ pub const INSTALLER: &str = "/usr/sbin/installer";
 /// The TypeScript compiler as npm installs it: a script that Windows runs only by its `.cmd` name.
 const TSC: &str = if cfg!(windows) { "tsc.cmd" } else { "tsc" };
 const NPM: &str = if cfg!(windows) { "npm.cmd" } else { "npm" };
-const TAURI: &str = if cfg!(windows) { "tauri.cmd" } else { "tauri" };
 
 mod raw {
     #![expect(
@@ -95,7 +94,7 @@ pub enum Tool {
 impl Tool {
     const fn program(self) -> &'static str {
         match self {
-            Self::Cargo | Self::CargoNightly => "cargo",
+            Self::Cargo | Self::CargoNightly | Self::Tauri => "cargo",
             Self::Rustfmt => "rustfmt",
             Self::Taplo => "taplo",
             Self::Typos => "typos",
@@ -112,7 +111,6 @@ impl Tool {
             Self::Npm => NPM,
             Self::Node => "node",
             Self::Java => "java",
-            Self::Tauri => TAURI,
             Self::Curl => "curl",
             Self::Doppler => "doppler",
             Self::Sudo => "sudo",
@@ -137,6 +135,9 @@ impl Tool {
         command.current_dir(root);
         if self == Self::CargoNightly {
             command.arg(format!("+{NIGHTLY}"));
+        }
+        if self == Self::Tauri {
+            command.arg("tauri");
         }
         command
     }
@@ -267,6 +268,32 @@ where
 mod tests {
     use super::*;
     use std::collections::BTreeSet;
+
+    #[test]
+    fn tauri_runs_when_node_startup_is_rejected() {
+        const REJECT_NODE_STARTUP: &str = "--youarel-reject-node-startup";
+        let root = tempfile::tempdir().unwrap();
+        let rejected = output(
+            Tool::Node
+                .command(root.path())
+                .arg("--version")
+                .env("NODE_OPTIONS", REJECT_NODE_STARTUP),
+            "reject the Node startup fixture",
+        )
+        .unwrap();
+        assert!(!rejected.status.success(), "the Node fixture must fail");
+        assert!(String::from_utf8_lossy(&rejected.stderr).contains("NODE_OPTIONS"));
+        let tauri = output(
+            Tool::Tauri
+                .command(root.path())
+                .arg("--version")
+                .env("NODE_OPTIONS", REJECT_NODE_STARTUP),
+            "run the standalone Tauri CLI",
+        )
+        .unwrap();
+        assert!(tauri.status.success(), "{tauri:?}");
+        assert!(String::from_utf8_lossy(&tauri.stdout).starts_with("tauri-cli "));
+    }
 
     #[test]
     fn locked_tool_downloads_have_checksums_on_every_declared_platform() {

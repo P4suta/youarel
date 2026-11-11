@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted
 date: 2026-11-11
 amends: verification-follows-affected-contracts.md
 ---

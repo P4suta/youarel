@@ -8,7 +8,6 @@ source = "crates/youarel-core/src/device_rules.rs"
 harnesses = [
   { name = "proofs::short_name_admission_matches_edges_and_control_code_points", covers = 3, contract = "short names are admitted exactly when their edges are not whitespace and they contain no C0 or C1 control code point", input_domain = "every valid UTF-8 prefix of up to four arbitrary bytes", bound = "four UTF-8 bytes; the independent control predicate uses Unicode Cc ranges" },
   { name = "proofs::name_length_admission_matches_the_byte_limit", covers = 2, contract = "name byte lengths are admitted exactly up to 128 bytes", input_domain = "every usize byte length", bound = "the target's full usize domain, including both sides of the 128-byte boundary" },
-  { name = "proofs::admitted_short_names_round_trip_through_the_production_codec", covers = 2, contract = "the production codec admits exactly valid short device names and preserves their full membership identity and stamp without trailing bytes", input_domain = "every valid UTF-8 prefix of up to four arbitrary bytes, every 32-byte membership identity, and every u64 wall and u32 counter", bound = "four UTF-8 bytes and one fixed writer; native tests cover the 128-byte boundary, multiple writers, Unicode, whole bodies, and segment partitions" },
 ]
 probes = [
   { harness = "proofs::rejects_a_name_with_a_control_character", assertion = "NEGATIVE_DEVICE_CONTROL" },

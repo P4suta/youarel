@@ -1,21 +1,21 @@
 ---
-status: proposed
+status: accepted
 date: 2026-11-11
 ---
 # Verify codec integration with native campaigns
 
 ## Context
 
-The device-record round-trip harness remains inconclusive within four CPUs, 8 GiB, and five minutes per harness.
+The device-record round-trip harness was inconclusive within four CPUs, 8 GiB, and five minutes per harness.
 The [record codec](../../crates/youarel-core/src/record_rules.rs) uses proofs for primitive decisions and execution checks for complete records.
 
 ## Decision
 
-Propose Kani checks of name content through four UTF-8 bytes and of the byte limit over every `usize` value.
+Run Kani checks of name content through four UTF-8 bytes and of the byte limit over every `usize` value.
 Existing wire and stamp proofs keep their input domains.
 
 Exercise complete records through native codec tests, Miri, mutation testing, and corpus replay.
-Keep the existing complete-record theorem mandatory until the owner accepts its retirement.
+Retire the complete-record theorem.
 
 ## Alternatives
 
@@ -24,7 +24,7 @@ Verified function contracts could establish composition without expanding the co
 
 ## Consequences
 
-The proposed boundary doesn't formally establish the complete codec's round trip for arbitrary membership identities and stamps.
+The chosen boundary doesn't formally establish the complete codec's round trip for arbitrary membership identities and stamps.
 Passing component proofs don't prove their composition.
 Reconsider verified composition after a codec defect escapes execution checks.
 

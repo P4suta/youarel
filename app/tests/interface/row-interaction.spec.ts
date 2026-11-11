@@ -76,7 +76,8 @@ for (const selector of [".bookmark-row", ".folder-row"]) {
 		const row = page.locator(selector);
 		const target = row.locator(".row-open");
 		await target.focus();
-		await target.evaluate((element): void => {
+		const original = await target.evaluateHandle((element): Element => element);
+		await original.evaluate((element): void => {
 			element.addEventListener("blur", (): void => {
 				element.setAttribute("data-focus-lost", "true");
 			});
@@ -84,7 +85,15 @@ for (const selector of [".bookmark-row", ".folder-row"]) {
 		await target.click();
 		await expect(row).toHaveAttribute("data-selected", "true");
 		await expect(target).toBeFocused();
-		await expect(target).not.toHaveAttribute("data-focus-lost", "true");
+		expect(
+			await original.evaluate((element): boolean => element.isConnected),
+		).toBe(true);
+		expect(
+			await original.evaluate((element): string | null =>
+				element.getAttribute("data-focus-lost"),
+			),
+		).toBeNull();
+		await original.dispose();
 	});
 }
 

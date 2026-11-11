@@ -22,7 +22,7 @@ zizmor = "1.32.0"
 gh = "2.103.3"
 node = "26.13.0"
 "npm:typescript" = "7.0.2"
-"npm:@tauri-apps/cli" = "2.12.4"
+"github:tauri-apps/tauri" = { version = "2.12.4", version_prefix = "tauri-cli-v", matching = "cargo-tauri" }
 "cargo:cargo-cyclonedx" = "0.5.10"
 
 [settings]

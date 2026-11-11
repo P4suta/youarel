@@ -117,7 +117,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev patchelf xvfb xauth xdotool dbus-x11 at-spi2-core
       - uses: jdx/mise-action@f5be966e4a917d54244728e6a5fdcd1d93a35e6c # v5.2.6
         with:
-          install_args: rust node npm:typescript npm:@tauri-apps/cli cargo:cargo-cyclonedx gh aqua:nextest-rs/nextest/cargo-nextest
+          install_args: rust node npm:typescript github:tauri-apps/tauri cargo:cargo-cyclonedx gh aqua:nextest-rs/nextest/cargo-nextest
           cache: false
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:

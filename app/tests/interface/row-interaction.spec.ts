@@ -68,6 +68,26 @@ for (const entry of [
 	});
 }
 
+for (const selector of [".bookmark-row", ".folder-row"]) {
+	test(`${selector} keeps focus throughout selection updates`, async ({
+		page,
+	}): Promise<void> => {
+		await library(page);
+		const row = page.locator(selector);
+		const target = row.locator(".row-open");
+		await target.focus();
+		await target.evaluate((element): void => {
+			element.addEventListener("blur", (): void => {
+				element.setAttribute("data-focus-lost", "true");
+			});
+		});
+		await target.click();
+		await expect(row).toHaveAttribute("data-selected", "true");
+		await expect(target).toBeFocused();
+		await expect(target).not.toHaveAttribute("data-focus-lost", "true");
+	});
+}
+
 test("repeated plain clicks retain the selection and modifiers never open a link", async ({
 	page,
 }): Promise<void> => {

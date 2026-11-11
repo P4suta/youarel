@@ -912,12 +912,20 @@ export function list(
 					);
 					return heading;
 				});
-				body.replaceChildren(
+				const children = [
 					...(system === null ? [] : [system]),
 					before,
 					...shown,
 					after,
-				);
+				];
+				const retained = new Set<Element>(children);
+				for (const child of Array.from(body.children)) {
+					if (!retained.has(child)) child.remove();
+				}
+				for (const [place, child] of children.entries()) {
+					const existing = body.children.item(place);
+					if (existing !== child) body.insertBefore(child, existing);
+				}
 				for (const [id, cached] of cache)
 					if (!cached.element.isConnected) cache.delete(id);
 				if (focused !== null && focused !== undefined)

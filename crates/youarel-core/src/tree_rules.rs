@@ -304,7 +304,30 @@ mod proofs {
 mod tests {
     use super::proofs::{FOLDER_BOUND, hiding_holds, reaches_top, spec};
     use super::{Declared, hidden, resolve};
+    use alloc::collections::BTreeSet;
     use alloc::vec::Vec;
+
+    const NATIVE_FOLDER_BOUND: usize = 3;
+    const PARENTS: [Option<usize>; 5] = [None, Some(0), Some(1), Some(2), Some(9)];
+
+    fn assert_domain<T: Eq>(choices: &[T], lists: &[Vec<T>], counts: &[usize]) {
+        for (length, expected) in counts.iter().copied().enumerate() {
+            assert_eq!(
+                lists.iter().filter(|list| list.len() == length).count(),
+                expected
+            );
+        }
+        assert_eq!(lists.len(), counts.iter().sum::<usize>());
+        let unique: BTreeSet<Vec<usize>> = lists
+            .iter()
+            .map(|list| {
+                list.iter()
+                    .map(|row| choices.iter().position(|choice| choice == row).unwrap())
+                    .collect()
+            })
+            .collect();
+        assert_eq!(unique.len(), lists.len());
+    }
 
     #[test]
     fn a_folder_in_the_trash_hides_every_folder_inside_it() {
@@ -332,23 +355,35 @@ mod tests {
         );
     }
 
-    #[test]
-    fn the_hiding_specification_agrees_over_every_small_tree() {
-        let choices = [None, Some(0), Some(1), Some(2), Some(9)];
+    fn trees() -> Vec<Vec<Option<usize>>> {
         let mut trees: Vec<Vec<Option<usize>>> = alloc::vec![Vec::new()];
-        for _ in 0..3 {
-            let longer: Vec<Vec<Option<usize>>> = trees
+        let mut start = 0;
+        for _ in 0..NATIVE_FOLDER_BOUND {
+            let longer: Vec<Vec<Option<usize>>> = trees[start..]
                 .iter()
                 .flat_map(|tree| {
-                    choices.iter().map(move |parent| {
+                    PARENTS.iter().map(move |parent| {
                         let mut next = tree.clone();
                         next.push(*parent);
                         next
                     })
                 })
                 .collect();
+            start = trees.len();
             trees.extend(longer);
         }
+        trees
+    }
+
+    #[test]
+    fn parent_lists_cover_each_bounded_tuple_once() {
+        const COUNTS: &[usize] = &[1, 5, 25, 125];
+        assert_domain(&PARENTS, &trees(), COUNTS);
+    }
+
+    #[test]
+    fn the_hiding_specification_agrees_over_every_small_tree() {
+        let trees = trees();
         let mut acyclic = 0_usize;
         for parents in &trees {
             if !(0..parents.len()).all(|start| reaches_top(parents, start)) {
@@ -405,25 +440,43 @@ mod tests {
         );
     }
 
-    #[test]
-    fn the_specification_agrees_over_every_small_declaration() {
-        let parents = [None, Some(0), Some(1), Some(2), Some(9)];
+    fn declaration_choices() -> Vec<Declared<u8>> {
+        PARENTS
+            .into_iter()
+            .flat_map(|parent| [0, 1].map(|recency| folder(parent, recency)))
+            .collect()
+    }
+
+    fn declarations() -> Vec<Vec<Declared<u8>>> {
+        let choices = declaration_choices();
         let mut lists: Vec<Vec<Declared<u8>>> = alloc::vec![Vec::new()];
-        for _ in 0..3 {
-            let longer: Vec<Vec<Declared<u8>>> = lists
+        let mut start = 0;
+        for _ in 0..NATIVE_FOLDER_BOUND {
+            let longer: Vec<Vec<Declared<u8>>> = lists[start..]
                 .iter()
                 .flat_map(|list| {
-                    parents.iter().flat_map(move |parent| {
-                        [0, 1].map(|recency| {
-                            let mut next = list.clone();
-                            next.push(folder(*parent, recency));
-                            next
-                        })
+                    choices.iter().map(move |choice| {
+                        let mut next = list.clone();
+                        next.push(*choice);
+                        next
                     })
                 })
                 .collect();
+            start = lists.len();
             lists.extend(longer);
         }
+        lists
+    }
+
+    #[test]
+    fn declaration_lists_cover_each_bounded_tuple_once() {
+        const COUNTS: &[usize] = &[1, 10, 100, 1000];
+        assert_domain(&declaration_choices(), &declarations(), COUNTS);
+    }
+
+    #[test]
+    fn the_specification_agrees_over_every_small_declaration() {
+        let lists = declarations();
         assert!(lists.iter().all(|list| list.len() <= FOLDER_BOUND));
         for list in &lists {
             assert!(spec(list), "{list:?}");

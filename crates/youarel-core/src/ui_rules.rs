@@ -712,6 +712,7 @@ mod tests {
     use super::proofs::{ROW_BOUND, spec};
     use super::{Effect, Event, Field, Key, Mode, Row, Ui, step};
     use crate::state::{Entry, ItemId};
+    use alloc::collections::BTreeSet;
     use alloc::string::String;
     use alloc::vec::Vec;
 
@@ -945,17 +946,21 @@ mod tests {
         );
     }
 
-    #[test]
-    fn the_specification_agrees_over_a_drawn_domain() {
-        let row_choices = [
+    fn row_choices() -> Vec<Row> {
+        alloc::vec![
             Row::Parent(None),
             Row::Entry(Entry::Folder(FOLDER)),
             Row::Entry(Entry::Shortcut(SHORTCUT)),
             Row::Add(String::from("l")),
-        ];
+        ]
+    }
+
+    fn row_lists() -> Vec<Vec<Row>> {
+        let row_choices = row_choices();
         let mut lists: Vec<Vec<Row>> = alloc::vec![Vec::new()];
+        let mut start = 0;
         for _ in 0..ROW_BOUND {
-            let longer: Vec<Vec<Row>> = lists
+            let longer: Vec<Vec<Row>> = lists[start..]
                 .iter()
                 .flat_map(|list| {
                     row_choices.iter().map(move |row| {
@@ -965,19 +970,37 @@ mod tests {
                     })
                 })
                 .collect();
+            start = lists.len();
             lists.extend(longer);
         }
-        let modes = [
-            Mode::Browse,
-            Mode::Typing {
-                target: Some(Entry::Shortcut(SHORTCUT)),
-                field: Field::Alias,
-                text: String::from("a"),
-            },
-            Mode::Confirm {
-                target: Entry::Shortcut(SHORTCUT),
-            },
-        ];
+        lists
+    }
+
+    #[test]
+    fn row_lists_cover_each_bounded_tuple_once() {
+        const COUNTS: &[usize] = &[1, 4, 16, 64];
+        let choices = row_choices();
+        let lists = row_lists();
+        for (length, expected) in COUNTS.iter().copied().enumerate() {
+            assert_eq!(
+                lists.iter().filter(|list| list.len() == length).count(),
+                expected
+            );
+        }
+        assert_eq!(lists.len(), COUNTS.iter().sum::<usize>());
+        let unique: BTreeSet<Vec<usize>> = lists
+            .iter()
+            .map(|list| {
+                list.iter()
+                    .map(|row| choices.iter().position(|choice| choice == row).unwrap())
+                    .collect()
+            })
+            .collect();
+        assert_eq!(unique.len(), lists.len());
+    }
+
+    fn assert_specification(mode: &Mode) {
+        let lists = row_lists();
         let keys = [
             Key::Char('y'),
             Key::Control('c'),
@@ -994,24 +1017,43 @@ mod tests {
             Key::ShiftDown,
         ];
         for rows in &lists {
-            for mode in &modes {
-                for selected in 0..rows.len().max(1) {
-                    for query in ["", "q"] {
-                        let ui = Ui {
-                            query: String::from(query),
-                            folder: Some(FOLDER),
-                            selected,
-                            mode: mode.clone(),
-                            carried: Some(Entry::Shortcut(OTHER)),
-                        };
-                        assert!(spec(&ui, rows, &Event::Refresh));
-                        assert!(spec(&ui, rows, &Event::Paste(String::from("p"))));
-                        for key in keys {
-                            assert!(spec(&ui, rows, &Event::Key(key)), "{ui:?} {rows:?} {key:?}");
-                        }
+            for selected in 0..rows.len().max(1) {
+                for query in ["", "q"] {
+                    let ui = Ui {
+                        query: String::from(query),
+                        folder: Some(FOLDER),
+                        selected,
+                        mode: mode.clone(),
+                        carried: Some(Entry::Shortcut(OTHER)),
+                    };
+                    assert!(spec(&ui, rows, &Event::Refresh));
+                    assert!(spec(&ui, rows, &Event::Paste(String::from("p"))));
+                    for key in keys {
+                        assert!(spec(&ui, rows, &Event::Key(key)), "{ui:?} {rows:?} {key:?}");
                     }
                 }
             }
         }
+    }
+
+    #[test]
+    fn the_specification_agrees_while_browsing() {
+        assert_specification(&Mode::Browse);
+    }
+
+    #[test]
+    fn the_specification_agrees_while_typing_an_alias() {
+        assert_specification(&Mode::Typing {
+            target: Some(Entry::Shortcut(SHORTCUT)),
+            field: Field::Alias,
+            text: String::from("a"),
+        });
+    }
+
+    #[test]
+    fn the_specification_agrees_while_confirming_removal() {
+        assert_specification(&Mode::Confirm {
+            target: Entry::Shortcut(SHORTCUT),
+        });
     }
 }

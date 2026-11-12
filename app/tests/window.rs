@@ -367,8 +367,7 @@ fn trash_through_the_keys() {
             .trim()
             == POINTER_ROOT
     }));
-    press("End");
-    press("Delete");
+    input(&["key", "--clearmodifiers", "End", "Delete"]);
     assert!(
         eventually(|| held(home.path()) == SEEDED - 1),
         "the last row never went to the trash"

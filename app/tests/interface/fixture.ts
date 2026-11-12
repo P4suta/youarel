@@ -102,8 +102,13 @@ interface CommandArgs {
 }
 
 export interface FixtureOptions {
+	readonly observe?: (call: Call, view: View) => void;
 	readonly refuse?: string;
 	readonly refuseIntent?: Intent["kind"];
+	readonly pendingIntent?: {
+		readonly kind: Intent["kind"];
+		readonly ready: Promise<void>;
+	};
 	readonly errorView?: boolean;
 	readonly notice?: View["notice"];
 	readonly view?: View;
@@ -150,6 +155,7 @@ export async function library(
 		"youarelTestInvoke",
 		async (command: string, args: CommandArgs): Promise<unknown> => {
 			calls.push({ command, args });
+			options.observe?.({ command, args }, view);
 			if (command === options.refuse) {
 				if (options.errorView === true)
 					return {
@@ -215,6 +221,9 @@ export async function library(
 				intent !== null &&
 				"kind" in intent
 			) {
+				const pending = options.pendingIntent;
+				if (pending !== undefined && intent.kind === pending.kind)
+					await pending.ready;
 				if (intent.kind === options.refuseIntent) {
 					if (options.errorView === true)
 						return {

@@ -1,5 +1,140 @@
 import { expect, type Page, test } from "@playwright/test";
-import { BOOKMARK, INITIAL, library, newBookmark, rowMenu } from "./fixture.js";
+import type { Intent } from "../../ui/types.js";
+import {
+	BOOKMARK,
+	type Call,
+	INITIAL,
+	library,
+	newBookmark,
+	rowMenu,
+} from "./fixture.js";
+
+function intents(
+	calls: readonly Call[],
+	kind: Intent["kind"],
+): readonly Call[] {
+	return calls.filter(
+		(call) =>
+			call.command === "act" &&
+			typeof call.args.intent === "object" &&
+			call.args.intent !== null &&
+			"kind" in call.args.intent &&
+			call.args.intent.kind === kind,
+	);
+}
+
+for (const key of ["Delete", "ControlOrMeta+Backspace"]) {
+	test(`${key} waits for a pending selection before moving it to Trash`, async ({
+		page,
+	}): Promise<void> => {
+		let release!: () => void;
+		const ready = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const calls = await library(page, {
+			pendingIntent: { kind: "select", ready },
+		});
+		const bookmark = page.locator(".bookmark-row .row-open");
+		await bookmark.click();
+		await expect.poll(() => intents(calls, "select").length).toBe(1);
+		await expect(bookmark).toHaveAccessibleDescription("Bookmark Not selected");
+		await page.keyboard.press(key);
+		release();
+		await expect(bookmark).toHaveAccessibleDescription("Bookmark Selected");
+		await expect.poll(() => intents(calls, "trash").length).toBe(1);
+	});
+}
+
+test("Delete respects a pending selection cancellation", async ({
+	page,
+}): Promise<void> => {
+	let release!: () => void;
+	const ready = new Promise<void>((resolve) => {
+		release = resolve;
+	});
+	const calls = await library(page, {
+		pendingIntent: { kind: "cancel", ready },
+	});
+	const bookmark = page.locator(".bookmark-row .row-open");
+	await bookmark.click();
+	await expect(bookmark).toHaveAccessibleDescription("Bookmark Selected");
+	await page.keyboard.press("Escape");
+	await expect.poll(() => intents(calls, "cancel").length).toBe(1);
+	await page.keyboard.press("Delete");
+	release();
+	await page.keyboard.press("ControlOrMeta+z");
+	await expect.poll(() => intents(calls, "undo").length).toBe(1);
+	await expect(bookmark).toHaveAccessibleDescription("Bookmark Not selected");
+	expect(intents(calls, "trash")).toHaveLength(0);
+});
+
+test("permanent deletion confirms the selection after a pending change", async ({
+	page,
+}): Promise<void> => {
+	let release!: () => void;
+	const ready = new Promise<void>((resolve) => {
+		release = resolve;
+	});
+	const calls = await library(page, {
+		pendingIntent: { kind: "select", ready },
+	});
+	await page.locator(".bookmark-row .row-open").click();
+	await expect.poll(() => intents(calls, "select").length).toBe(1);
+	await page.keyboard.press("ControlOrMeta+Alt+Backspace");
+	release();
+	const confirmation = page.getByRole("dialog", {
+		name: "Delete this shortcut immediately?",
+		exact: true,
+	});
+	await expect(confirmation).toBeVisible();
+	expect(intents(calls, "remove")).toHaveLength(0);
+	await confirmation
+		.getByRole("button", { name: "Delete", exact: true })
+		.click();
+	await expect.poll(() => intents(calls, "remove").length).toBe(1);
+	expect(intents(calls, "trash")).toHaveLength(0);
+});
+
+for (const answer of ["Delete", "Cancel"]) {
+	test(`${answer} keeps a confirmation bound to its selection with a later change queued`, async ({
+		page,
+	}): Promise<void> => {
+		let release!: () => void;
+		const ready = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const resolved: string[][] = [];
+		const calls = await library(page, {
+			pendingIntent: { kind: "select", ready },
+			observe: (call, view): void => {
+				if (intents([call], "remove").length !== 0)
+					resolved.push(
+						view.listing.rows.flatMap((row) =>
+							row.kind === "gone" || !row.selected
+								? []
+								: [row.kind === "folder" ? row.folder.id : row.item.id],
+						),
+					);
+			},
+		});
+		await page.locator(".bookmark-row .row-open").click();
+		await expect.poll(() => intents(calls, "select").length).toBe(1);
+		await page.keyboard.press("ControlOrMeta+Alt+Backspace");
+		await page.locator(".folder-row .row-open").click();
+		release();
+		const confirmation = page.getByRole("dialog", {
+			name: "Delete this shortcut immediately?",
+			exact: true,
+		});
+		await confirmation
+			.getByRole("button", { name: answer, exact: true })
+			.click();
+		await expect(
+			page.locator(".folder-row .row-open"),
+		).toHaveAccessibleDescription("Folder Selected");
+		expect(resolved).toEqual(answer === "Delete" ? [[BOOKMARK.id]] : []);
+	});
+}
 
 async function bookmarkActions(page: Page): Promise<void> {
 	await rowMenu(page, BOOKMARK.title);

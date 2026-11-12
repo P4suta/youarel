@@ -102,6 +102,7 @@ interface CommandArgs {
 }
 
 export interface FixtureOptions {
+	readonly observe?: (call: Call, view: View) => void;
 	readonly refuse?: string;
 	readonly refuseIntent?: Intent["kind"];
 	readonly pendingIntent?: {
@@ -154,6 +155,7 @@ export async function library(
 		"youarelTestInvoke",
 		async (command: string, args: CommandArgs): Promise<unknown> => {
 			calls.push({ command, args });
+			options.observe?.({ command, args }, view);
 			if (command === options.refuse) {
 				if (options.errorView === true)
 					return {

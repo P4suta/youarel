@@ -95,6 +95,47 @@ test("permanent deletion confirms the selection after a pending change", async (
 	expect(intents(calls, "trash")).toHaveLength(0);
 });
 
+for (const answer of ["Delete", "Cancel"]) {
+	test(`${answer} keeps a confirmation bound to its selection with a later change queued`, async ({
+		page,
+	}): Promise<void> => {
+		let release!: () => void;
+		const ready = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const resolved: string[][] = [];
+		const calls = await library(page, {
+			pendingIntent: { kind: "select", ready },
+			observe: (call, view): void => {
+				if (intents([call], "remove").length !== 0)
+					resolved.push(
+						view.listing.rows.flatMap((row) =>
+							row.kind === "gone" || !row.selected
+								? []
+								: [row.kind === "folder" ? row.folder.id : row.item.id],
+						),
+					);
+			},
+		});
+		await page.locator(".bookmark-row .row-open").click();
+		await expect.poll(() => intents(calls, "select").length).toBe(1);
+		await page.keyboard.press("ControlOrMeta+Alt+Backspace");
+		await page.locator(".folder-row .row-open").click();
+		release();
+		const confirmation = page.getByRole("dialog", {
+			name: "Delete this shortcut immediately?",
+			exact: true,
+		});
+		await confirmation
+			.getByRole("button", { name: answer, exact: true })
+			.click();
+		await expect(
+			page.locator(".folder-row .row-open"),
+		).toHaveAccessibleDescription("Folder Selected");
+		expect(resolved).toEqual(answer === "Delete" ? [[BOOKMARK.id]] : []);
+	});
+}
+
 async function bookmarkActions(page: Page): Promise<void> {
 	await rowMenu(page, BOOKMARK.title);
 }

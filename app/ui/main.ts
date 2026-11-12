@@ -479,15 +479,17 @@ function fileCommands(): string[] {
 	return commands;
 }
 
+async function act(intent: Intent): Promise<void> {
+	try {
+		draw(await invoke<View>("act", { intent }));
+	} catch (error: unknown) {
+		failed(error);
+	}
+}
+
 /** Sends an intent after every earlier one, and draws the view it answers with. */
 function send(intent: Intent): void {
-	queue = queue.then(async () => {
-		try {
-			draw(await invoke<View>("act", { intent }));
-		} catch (error: unknown) {
-			failed(error);
-		}
-	});
+	queue = queue.then(() => act(intent));
 }
 
 function libraryCommand(command: "copy_selection" | "paste"): void {
@@ -593,12 +595,10 @@ function trashShown(): boolean {
 	return current !== null && inTrash(current);
 }
 
-/** Asks before deleting shortcuts and folders for good, naming how many, and deletes them once the person agrees. */
-async function confirmDeletion(
-	target: Target,
+async function deletionConfirmed(
 	total: number,
 	folderCount: number,
-): Promise<void> {
+): Promise<boolean> {
 	const answer = await ask.ask({
 		title:
 			total === 1 && folderCount === 0
@@ -611,9 +611,26 @@ async function confirmDeletion(
 		action: "Delete",
 		answer: null,
 	});
-	if (answer !== null) {
-		send({ kind: "remove", target });
-	}
+	return answer !== null;
+}
+
+function confirmDeletion(
+	target: Target,
+	total: number,
+	folderCount: number,
+): void {
+	queue = queue
+		.then(async () => {
+			const count =
+				target.kind === "selection" ? (current?.selection.count ?? 0) : total;
+			const folders =
+				target.kind === "selection"
+					? (current?.selection.folders ?? 0)
+					: folderCount;
+			if (count > 0 && (await deletionConfirmed(count, folders)))
+				await act({ kind: "remove", target });
+		})
+		.catch(failed);
 }
 
 /** Asks once before emptying the trash, and empties it once the person agrees. */
@@ -632,28 +649,26 @@ async function confirmEmptying(): Promise<void> {
 
 /** Moves what the selection takes to the trash, or, in the trash, asks before deleting it for good. */
 function deleteSelection(immediately: boolean): void {
-	queue = queue.then(async () => {
-		if (current === null || current.selection.count === 0) {
-			return;
-		}
-		if (immediately || trashShown()) {
-			void confirmDeletion(
-				{ kind: "selection" },
-				current.selection.count,
-				current.selection.folders,
-			);
-		} else {
-			try {
-				draw(
-					await invoke<View>("act", {
-						intent: { kind: "trash", target: { kind: "selection" } },
-					}),
-				);
-			} catch (error: unknown) {
-				failed(error);
+	queue = queue
+		.then(async () => {
+			if (current === null || current.selection.count === 0) {
+				return;
 			}
-		}
-	});
+			const removing = immediately || trashShown();
+			if (
+				removing &&
+				!(await deletionConfirmed(
+					current.selection.count,
+					current.selection.folders,
+				))
+			)
+				return;
+			await act({
+				kind: removing ? "remove" : "trash",
+				target: { kind: "selection" },
+			});
+		})
+		.catch(failed);
 }
 
 const adding = new AddSheet({

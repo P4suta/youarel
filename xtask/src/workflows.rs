@@ -69,7 +69,9 @@ fn check_text(name: &str, text: &str) -> Result<()> {
         for step in &job.steps {
             for line in step.run.lines() {
                 let words: Vec<&str> = line.split_whitespace().collect();
-                if let [_, "release", "credential-inputs", purpose] = words.as_slice() {
+                if let [_, "release", "credential-inputs", purpose]
+                | ["cargo", "xtask", "release", "credential-inputs", purpose] = words.as_slice()
+                {
                     for secret in crate::release::credential_names(purpose)? {
                         ensure!(
                             step.env.get(*secret) == Some(&format!("${{{{ secrets.{secret} }}}}")),
@@ -212,14 +214,28 @@ mod tests {
 
     #[test]
     fn release_steps_bind_every_declared_credential_input() {
-        check_text("release", RELEASE).unwrap();
+        assert_credential_bindings(RELEASE);
+    }
+
+    #[test]
+    fn cargo_credential_checks_require_the_same_secret_bindings() {
+        let fixture = RELEASE.replace(
+            "./target/debug/xtask release credential-inputs",
+            "cargo xtask release credential-inputs",
+        );
+        assert_ne!(fixture, RELEASE);
+        assert_credential_bindings(&fixture);
+    }
+
+    fn assert_credential_bindings(complete: &str) {
+        check_text("release", complete).unwrap();
         for name in [
             "APPLE_INSTALLER_IDENTITY",
             "APPLE_SIGNING_IDENTITY",
             "APPLE_CERTIFICATE_PASSWORD",
             "SSLDOTCOM_CREDENTIAL_ID",
         ] {
-            let broken = RELEASE.replace(
+            let broken = complete.replace(
                 &format!("{name}: ${{{{ secrets.{name} }}}}"),
                 &format!("{name}_MISSING: ${{{{ secrets.{name} }}}}"),
             );

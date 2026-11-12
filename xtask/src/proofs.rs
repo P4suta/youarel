@@ -889,17 +889,25 @@ fn check_campaign(code: Option<i32>, inventory: usize, outcomes: &Outcomes) -> R
     Ok(())
 }
 
-fn campaign(
+fn mutation_command(
     root: &Path,
     manifest: Option<&Path>,
     package: Option<&str>,
     output: &Path,
-) -> Result<Outcomes> {
-    fs::remove_dir_all(output)?;
-    fs::create_dir_all(output)?;
+) -> Command {
     let mut command = Tool::Cargo.command(root);
     command.env("RUST_TEST_THREADS", MUTANT_TEST_THREADS);
-    command.args(["mutants", "--no-shuffle", "--jobs", MUTANT_JOBS]);
+    command.args([
+        "mutants",
+        "--no-shuffle",
+        "--jobs",
+        MUTANT_JOBS,
+        "--test-tool=nextest",
+        "--cargo-test-arg=--fail-fast",
+    ]);
+    command.arg(format!(
+        "--cargo-test-arg=--test-threads={MUTANT_TEST_THREADS}"
+    ));
     if let Some(manifest) = manifest {
         command.arg("--manifest-path").arg(manifest);
     }
@@ -908,6 +916,18 @@ fn campaign(
         command.args(["--package", package, "--test-package", package]);
     }
     command.arg("--output").arg(output);
+    command
+}
+
+fn campaign(
+    root: &Path,
+    manifest: Option<&Path>,
+    package: Option<&str>,
+    output: &Path,
+) -> Result<Outcomes> {
+    fs::remove_dir_all(output)?;
+    fs::create_dir_all(output)?;
+    let mut command = mutation_command(root, manifest, package, output);
     let status = tool::exit_status(&mut command, "cargo mutants")?;
     let path = output.join("mutants.out/outcomes.json");
     let bytes = fs::read(&path).with_context(|| {
@@ -1209,10 +1229,34 @@ pub fn scratch(root: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::{
-        FailureMode, Harness, Harnesses, KaniReport, MISSED_SUMMARY, Manifest, Obligation, Options,
-        Outcomes, Probe, Step, TIMEOUT_SUMMARY, check_campaign, check_negative, check_positive,
-        inventory_findings, package_findings, qualify, select_harness, verify_steps,
+        FailureMode, Harness, Harnesses, KaniReport, MISSED_SUMMARY, MUTANTS_FIXTURE, Manifest,
+        Obligation, Options, Outcomes, Probe, Step, TIMEOUT_SUMMARY, check_campaign,
+        check_negative, check_positive, inventory_findings, mutation_command, package_findings,
+        qualify, select_harness, verify_steps,
     };
+
+    #[test]
+    fn mutation_tests_stop_at_the_first_failure_with_one_test_at_a_time() {
+        let root = std::path::Path::new(".");
+        let fixture = root.join(MUTANTS_FIXTURE).join("Cargo.toml");
+        let output = root.join("target/mutations");
+        for (manifest, package) in [
+            (None, Some("youarel-core")),
+            (Some(fixture.as_path()), None),
+        ] {
+            let command = mutation_command(root, manifest, package, &output);
+            let arguments: Vec<_> = command
+                .get_args()
+                .map(|argument| argument.to_str().unwrap())
+                .collect();
+            assert!(arguments.contains(&"--test-tool=nextest"));
+            let test_arguments: Vec<_> = arguments
+                .iter()
+                .filter_map(|argument| argument.strip_prefix("--cargo-test-arg="))
+                .collect();
+            assert_eq!(test_arguments, ["--fail-fast", "--test-threads=1"]);
+        }
+    }
 
     #[test]
     fn the_outcomes_name_the_mutants_behind_each_count() {

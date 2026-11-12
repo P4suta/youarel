@@ -2,7 +2,7 @@
 
 Release-please reserves the product version and changelog through a pull request.
 Merging a proposal creates no tag or GitHub Release.
-The release hold remains active until the owner explicitly lifts it and sets `RELEASES_ENABLED=true`.
+The release hold remains active until you explicitly lift it and set `RELEASES_ENABLED=true`.
 `RELEASE_PROPOSALS_ENABLED` controls automatic proposals independently.
 
 The proposal runtime and updater tests use the same locked release-please package.
@@ -108,13 +108,15 @@ The rehearsal grants no release authority.
 
 ## Signing
 
-After the owner lifts the release hold and credential checks pass, dispatch the same workflow with `operation=sign`, the same source and version, and `candidate_run` naming the successful unsigned run.
+After you lift the release hold and credential checks pass, dispatch the same workflow with `operation=sign`, the same source and version, and `candidate_run` naming the successful unsigned run.
 Signing verifies the original workflow and every successful native build before consuming the preserved candidates.
 Signing neither repeats the campaigns nor rebuilds the candidates.
 Protected jobs compile the reviewed controller before restoring verified candidate bytes and obtaining credentials.
 Candidate executables and build hooks never run in credential-bearing jobs.
 Apple signing seals the nested CLI and launcher before the app and installer.
 Windows batch signing covers both executables, and native verification requires the expected publisher and a timestamp.
+The controller requires a clean `scan_code` result for each exact input before `batch_sign`, following the [provider's batch signing procedure](https://www.ssl.com/guide/esigner-codesigntool-command-guide/).
+Each provider operation must confirm success even when the SDK exits successfully.
 The controller verifies the CodeSignTool archive hash and Java 17 or later before loading credentials.
 The pinned 1.3.2 archive reports `v1.3.0` from its version command, so the archive hash identifies the SDK release.
 The [Java argument file](https://docs.oracle.com/en/java/javase/25/docs/specs/man/java.html#java-command-line-argument-files) carries private options without exposing them in process arguments.
@@ -149,7 +151,7 @@ Keep the original run, source, version, candidate payload, final distributions, 
 Artifact retention is 30 days for build transfers and 90 days for final distributions and notarization submissions.
 Published provenance bundles outlive workflow artifact retention.
 Use the original notarization receipt and signed package with `cargo xtask release notarize finish` to resume waiting.
-The owner checks Apple history and supplies the confirmed receipt for an unknown submission.
+Check Apple history and supply the confirmed receipt for an unknown submission.
 Reruns reuse verified native candidates, completed Windows signatures, preserved notarization receipts, and complete final distributions.
 The controller checks prior provider steps before allowing a first signature or submission, and unresolved previous outcomes stop without another request.
 Reinspect provider state after any ambiguous write before retrying.

@@ -3,7 +3,7 @@ use crate::fs;
 use crate::package;
 use crate::tool::{self, Tool};
 use anyhow::{Context, Result, ensure};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use youarel_release::manifest::Digest;
 
@@ -30,6 +30,42 @@ const CREDENTIAL: &str = "SSLDOTCOM_CREDENTIAL_ID";
 const TOTP: &str = "SSLDOTCOM_TOTP_SECRET";
 const INPUTS: [&str; 4] = [USERNAME, PASSWORD, CREDENTIAL, TOTP];
 const JAVA_OPTIONS: [&str; 3] = ["JDK_JAVA_OPTIONS", "JAVA_TOOL_OPTIONS", "_JAVA_OPTIONS"];
+const CERTIFICATE_LABELS: [&str; 3] = ["- Subject DN:", "- Certificate Expiry:", "- Issuer DN:"];
+const CLEAN_SCAN: &str = "code object is not a malware. You can proceed signing this code object";
+const BATCH_SUCCESS: &str =
+    "Batch sign command executed successfully. Output directory for signed files: ";
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Operation {
+    Credentials,
+    Scan,
+    Batch,
+}
+
+impl Operation {
+    const fn command(self) -> &'static str {
+        match self {
+            Self::Credentials => "credential_info",
+            Self::Scan => "scan_code",
+            Self::Batch => "batch_sign",
+        }
+    }
+
+    fn confirmed(self, text: &str) -> bool {
+        if text.lines().any(|line| line.trim().starts_with("Error:")) {
+            return false;
+        }
+        match self {
+            Self::Credentials => CERTIFICATE_LABELS
+                .iter()
+                .all(|label| text.lines().any(|line| line.trim().starts_with(label))),
+            Self::Scan => text.trim() == CLEAN_SCAN,
+            Self::Batch => text.trim().strip_prefix(BATCH_SUCCESS).is_some_and(|path| {
+                !path.is_empty() && !path.contains('\n') && !path.contains('\r')
+            }),
+        }
+    }
+}
 
 fn arguments(words: &[String]) -> Result<Vec<u8>> {
     let mut output = String::new();
@@ -108,23 +144,29 @@ fn run(root: &Path, words: &[String]) -> Result<Output> {
     Ok(output)
 }
 
-fn private_result(output: Output) -> Result<Output> {
+fn private_result(output: Output, operation: Operation) -> Result<Output> {
     ensure!(
         output.status.success(),
-        "the signing tool exited with {}; provider output remains private",
+        "CodeSignTool {} exited with {}; provider output remains private",
+        operation.command(),
         output.status
     );
     ensure!(
-        !String::from_utf8_lossy(&output.stderr)
-            .lines()
-            .any(|line| line.starts_with("Unknown option:") || line.starts_with("Missing required")),
-        "the signing tool rejected its arguments; provider output remains private"
+        std::str::from_utf8(&output.stdout).is_ok_and(|text| operation.confirmed(text))
+            && !String::from_utf8_lossy(&output.stderr).lines().any(|line| {
+                let line = line.trim();
+                line.starts_with("Error:")
+                    || line.starts_with("Unknown option:")
+                    || line.starts_with("Missing required")
+            }),
+        "CodeSignTool {} did not confirm success; provider output remains private",
+        operation.command()
     );
     Ok(output)
 }
 
-fn execute(root: &Path, words: &[String]) -> Result<Output> {
-    private_result(run(root, words)?)
+fn execute(root: &Path, operation: Operation, words: &[String]) -> Result<Output> {
+    private_result(run(root, words)?, operation)
 }
 
 fn public_probe(root: &Path, words: &[String], name: &str) -> Result<Output> {
@@ -221,14 +263,14 @@ pub(super) fn prepare(root: &Path) -> Result<()> {
         String::from_utf8_lossy(&sdk_version.stdout).trim() == REPORTED_VERSION,
         "the signing SDK reports another version"
     );
-    probe_batch(root)?;
+    probe_signing_parsers(root)?;
     println!(
         "Verified CodeSignTool {VERSION}, its archive digest, Java, and private argument-file transport."
     );
     Ok(())
 }
 
-fn probe_batch(root: &Path) -> Result<()> {
+fn probe_signing_parsers(root: &Path) -> Result<()> {
     let fixture = tempfile::Builder::new()
         .prefix("youarel batch probe ")
         .tempdir_in(root.join(DIRECTORY))?;
@@ -236,19 +278,35 @@ fn probe_batch(root: &Path) -> Result<()> {
         &fixture.path().join("probe.fixture"),
         b"public parser fixture",
     )?;
-    let mut words = jar_arguments("batch_sign");
-    words.extend(batch_paths(fixture.path(), &fixture.path().join("output")));
-    words.extend([
+    let mut batch_words = jar_arguments(Operation::Batch.command());
+    batch_words.extend(batch_paths(fixture.path(), &fixture.path().join("output")));
+    batch_words.extend([
         "-username=public-probe".to_owned(),
         "-password=unused".to_owned(),
         "-credential_id=unused".to_owned(),
         "-totp_secret=unused".to_owned(),
     ]);
-    let parser = public_probe(root, &words, "batch signing argument parser")?;
+    let batch_parser = public_probe(root, &batch_words, "batch signing argument parser")?;
     ensure!(
-        String::from_utf8_lossy(&parser.stdout)
+        String::from_utf8_lossy(&batch_parser.stdout)
             .starts_with("Error: File extension not allowed: probe.fixture"),
         "the signing SDK did not read the public batch fixture before authentication"
+    );
+    let mut scan_words = jar_arguments(Operation::Scan.command());
+    scan_words.push(format!(
+        "-input_file_path={}",
+        fixture.path().join("probe.fixture").display()
+    ));
+    scan_words.extend([
+        "-username=public-probe".to_owned(),
+        "-password=unused".to_owned(),
+        "-credential_id=unused".to_owned(),
+    ]);
+    let scan_parser = public_probe(root, &scan_words, "malware scan argument parser")?;
+    ensure!(
+        String::from_utf8_lossy(&scan_parser.stdout)
+            .starts_with("Error: Unsupported file format for signing - fixture"),
+        "the signing SDK did not read the public scan fixture before authentication"
     );
     Ok(())
 }
@@ -274,19 +332,14 @@ fn batch_paths(input: &Path, output: &Path) -> Vec<String> {
 }
 
 pub(super) fn verify_credentials(root: &Path) -> Result<()> {
-    let result = execute(root, &authenticated("credential_info")?)?;
+    let operation = Operation::Credentials;
+    let result = execute(root, operation, &authenticated(operation.command())?)?;
     let text = String::from_utf8(result.stdout)?;
-    let labels = ["- Subject DN:", "- Certificate Expiry:", "- Issuer DN:"];
-    ensure!(
-        labels
+    for line in text.lines().filter(|line| {
+        CERTIFICATE_LABELS
             .iter()
-            .all(|label| text.lines().any(|line| line.trim().starts_with(label))),
-        "the provider did not confirm certificate metadata; inspect authentication without another signature request"
-    );
-    for line in text
-        .lines()
-        .filter(|line| labels.iter().any(|label| line.trim().starts_with(label)))
-    {
+            .any(|label| line.trim().starts_with(label))
+    }) {
         println!("{}", line.trim());
     }
     Ok(())
@@ -299,21 +352,28 @@ pub(super) fn sign(root: &Path, target: &str) -> Result<()> {
         target.contains("windows"),
         "Windows signing requires a Windows target"
     );
-    let mut words = authenticated("batch_sign")?;
-    words.push(format!("-totp_secret={}", required(TOTP)?));
     let source = tempfile::Builder::new()
         .prefix("youarel unsigned ")
         .tempdir()?;
     let output = root.join(SIGNING_INPUT);
+    let mut programs = Vec::new();
     for path in [
         super::built_program(root, target),
         desktop::launcher(root, target),
     ] {
         let name = path.file_name().context("program file has no name")?;
-        fs::write(&source.path().join(name), &fs::read(&output.join(name))?)?;
+        let input = source.path().join(name);
+        fs::write(&input, &fs::read(&output.join(name))?)?;
+        programs.push(input);
     }
-    words.extend(batch_paths(source.path(), &output));
-    let result = execute(root, &words);
+    let result = scan_and_sign(&programs, source.path(), &output, |operation, paths| {
+        let mut words = authenticated(operation.command())?;
+        if operation == Operation::Batch {
+            words.push(format!("-totp_secret={}", required(TOTP)?));
+        }
+        words.extend(paths);
+        run(root, &words)
+    });
     let cleanup = source.close();
     result?;
     cleanup.context("remove temporary unsigned signing inputs")?;
@@ -321,9 +381,161 @@ pub(super) fn sign(root: &Path, target: &str) -> Result<()> {
     Ok(())
 }
 
+fn scan_and_sign(
+    programs: &[PathBuf],
+    input: &Path,
+    output: &Path,
+    mut invoke: impl FnMut(Operation, Vec<String>) -> Result<Output>,
+) -> Result<()> {
+    ensure!(
+        programs.len() == super::WINDOWS_PROGRAM_COUNT,
+        "Windows signing requires both candidate programs"
+    );
+    for program in programs {
+        private_result(
+            invoke(
+                Operation::Scan,
+                vec![format!("-input_file_path={}", program.display())],
+            )?,
+            Operation::Scan,
+        )?;
+    }
+    private_result(
+        invoke(Operation::Batch, batch_paths(input, output))?,
+        Operation::Batch,
+    )?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn successful_output(stdout: &str) -> Output {
+        #[cfg(unix)]
+        use std::os::unix::process::ExitStatusExt as _;
+        #[cfg(windows)]
+        use std::os::windows::process::ExitStatusExt as _;
+        Output {
+            status: std::process::ExitStatus::from_raw(0),
+            stdout: stdout.as_bytes().to_vec(),
+            stderr: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn both_clean_scans_precede_batch_signing() {
+        let input = Path::new("unsigned files");
+        let output = Path::new("signed files");
+        let programs = [
+            input.join("youarel.exe"),
+            input.join("youarel-launcher.exe"),
+        ];
+        let mut calls = Vec::new();
+        scan_and_sign(&programs, input, output, |operation, paths| {
+            calls.push((operation, paths));
+            Ok(successful_output(match operation {
+                Operation::Scan => CLEAN_SCAN,
+                Operation::Batch => "Batch sign command executed successfully. Output directory for signed files: signed files",
+                Operation::Credentials => panic!("credential metadata is not a signing operation"),
+            }))
+        })
+        .unwrap();
+        assert_eq!(
+            calls,
+            [
+                (
+                    Operation::Scan,
+                    vec![format!("-input_file_path={}", programs[0].display())],
+                ),
+                (
+                    Operation::Scan,
+                    vec![format!("-input_file_path={}", programs[1].display())],
+                ),
+                (Operation::Batch, batch_paths(input, output)),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_rejected_scan_prevents_any_signature_request() {
+        let input = Path::new("unsigned files");
+        let output = Path::new("signed files");
+        let programs = [
+            input.join("youarel.exe"),
+            input.join("youarel-launcher.exe"),
+        ];
+        for rejected in 0..programs.len() {
+            for response in [
+                "code object is a malware. This code object cannot be signed using eSigner",
+                "Error: PRIVATE_PROVIDER_REJECTION",
+                "",
+                "unrecognized provider response",
+            ] {
+                let mut calls = Vec::new();
+                let result = scan_and_sign(&programs, input, output, |operation, _| {
+                    calls.push(operation);
+                    Ok(successful_output(if operation == Operation::Batch {
+                        "Batch sign command executed successfully. Output directory for signed files: signed files"
+                    } else if calls.len() - 1 == rejected {
+                        response
+                    } else {
+                        CLEAN_SCAN
+                    }))
+                });
+                let error = result.unwrap_err().to_string();
+                assert!(error.contains("provider output remains private"));
+                assert!(!error.contains("PRIVATE_PROVIDER"));
+                assert_eq!(calls, vec![Operation::Scan; rejected + 1]);
+            }
+        }
+    }
+
+    #[test]
+    fn provider_success_requires_the_requested_operations_confirmation() {
+        let certificate = "- Subject DN: public subject\n- Certificate Expiry: public date\n- Issuer DN: public issuer";
+        let batch = "Batch sign command executed successfully. Output directory for signed files: signed files";
+        for (operation, confirmation) in [
+            (Operation::Credentials, certificate),
+            (Operation::Scan, CLEAN_SCAN),
+            (Operation::Batch, batch),
+        ] {
+            private_result(successful_output(confirmation), operation).unwrap();
+            for response in ["", "unrecognized response", "Error: PRIVATE_PROVIDER_ERROR"] {
+                private_result(successful_output(response), operation).unwrap_err();
+            }
+            let conflicting = format!("{confirmation}\nError: PRIVATE_PROVIDER_ERROR");
+            let error = private_result(successful_output(&conflicting), operation)
+                .unwrap_err()
+                .to_string();
+            assert!(!error.contains("PRIVATE_PROVIDER"));
+            for other in [Operation::Credentials, Operation::Scan, Operation::Batch] {
+                if other != operation {
+                    private_result(successful_output(confirmation), other).unwrap_err();
+                }
+            }
+        }
+        let mut malformed = successful_output(batch);
+        malformed.stdout.push(u8::MAX);
+        private_result(malformed, Operation::Batch).unwrap_err();
+    }
+
+    #[test]
+    fn incomplete_or_extra_programs_prevent_provider_requests() {
+        let input = Path::new("unsigned files");
+        let output = Path::new("signed files");
+        let programs = [
+            input.join("youarel.exe"),
+            input.join("youarel-launcher.exe"),
+            input.join("unexpected.exe"),
+        ];
+        for count in [0, 1, programs.len()] {
+            scan_and_sign(&programs[..count], input, output, |_, _| {
+                panic!("an incomplete or extra candidate must not reach the provider")
+            })
+            .unwrap_err();
+        }
+    }
 
     #[test]
     fn batch_sign_names_distinct_input_and_output_without_single_file_options() {
@@ -392,7 +604,52 @@ mod tests {
                 stdout: stdout.as_bytes().to_vec(),
                 stderr: stderr.as_bytes().to_vec(),
             };
-            let error = private_result(output).unwrap_err().to_string();
+            let error = private_result(output, Operation::Credentials)
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("provider output remains private"));
+            assert!(!error.contains("PRIVATE_PROVIDER"));
+        }
+    }
+
+    #[test]
+    fn zero_exit_provider_errors_remain_private() {
+        #[cfg(unix)]
+        use std::os::unix::process::ExitStatusExt as _;
+        #[cfg(windows)]
+        use std::os::windows::process::ExitStatusExt as _;
+        for (stdout, stderr) in [
+            ("Error: PRIVATE_PROVIDER_REJECTION", ""),
+            (
+                "",
+                "java.lang.IllegalStateException: PRIVATE_PROVIDER_EXCEPTION",
+            ),
+        ] {
+            let output = Output {
+                status: std::process::ExitStatus::from_raw(0),
+                stdout: stdout.as_bytes().to_vec(),
+                stderr: stderr.as_bytes().to_vec(),
+            };
+            let error = private_result(output, Operation::Batch)
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("provider output remains private"));
+            assert!(!error.contains("PRIVATE_PROVIDER"));
+        }
+    }
+
+    #[test]
+    fn clean_scan_errors_on_stderr_remain_private() {
+        for stderr in [
+            " \tError: PRIVATE_PROVIDER_REJECTION\n",
+            " \tUnknown option: PRIVATE_PROVIDER_ARGUMENT\n",
+            " \tMissing required PRIVATE_PROVIDER_ARGUMENT\n",
+        ] {
+            let mut output = successful_output(CLEAN_SCAN);
+            output.stderr = stderr.as_bytes().to_vec();
+            let error = private_result(output, Operation::Scan)
+                .unwrap_err()
+                .to_string();
             assert!(error.contains("provider output remains private"));
             assert!(!error.contains("PRIVATE_PROVIDER"));
         }

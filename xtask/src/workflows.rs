@@ -30,6 +30,8 @@ struct Job {
 #[derive(Debug, Deserialize)]
 struct Step {
     #[serde(default)]
+    env: BTreeMap<String, String>,
+    #[serde(default)]
     run: String,
     #[serde(default, rename = "if")]
     condition: String,
@@ -65,6 +67,19 @@ fn check_text(name: &str, text: &str) -> Result<()> {
         serde_saphyr::from_str(text).context("parse hosted workflow policy")?;
     for job in workflow.jobs.values() {
         for step in &job.steps {
+            for line in step.run.lines() {
+                let words: Vec<&str> = line.split_whitespace().collect();
+                if let [_, "release", "credential-inputs", purpose]
+                | ["cargo", "xtask", "release", "credential-inputs", purpose] = words.as_slice()
+                {
+                    for secret in crate::release::credential_names(purpose)? {
+                        ensure!(
+                            step.env.get(*secret) == Some(&format!("${{{{ secrets.{secret} }}}}")),
+                            "the {purpose} credential check lacks its {secret} secret binding"
+                        );
+                    }
+                }
+            }
             for command in [
                 step.run.as_str(),
                 step.input("install_args").unwrap_or_default(),
@@ -196,6 +211,37 @@ mod tests {
 
     const CI: &str = include_str!("../../.github/workflows/ci.yml");
     const RELEASE: &str = include_str!("../../.github/workflows/release.yml");
+
+    #[test]
+    fn release_steps_bind_every_declared_credential_input() {
+        assert_credential_bindings(RELEASE);
+    }
+
+    #[test]
+    fn cargo_credential_checks_require_the_same_secret_bindings() {
+        let fixture = RELEASE.replace(
+            "./target/debug/xtask release credential-inputs",
+            "cargo xtask release credential-inputs",
+        );
+        assert_ne!(fixture, RELEASE);
+        assert_credential_bindings(&fixture);
+    }
+
+    fn assert_credential_bindings(complete: &str) {
+        check_text("release", complete).unwrap();
+        for name in [
+            "APPLE_INSTALLER_IDENTITY",
+            "APPLE_SIGNING_IDENTITY",
+            "APPLE_CERTIFICATE_PASSWORD",
+            "SSLDOTCOM_CREDENTIAL_ID",
+        ] {
+            let broken = complete.replace(
+                &format!("{name}: ${{{{ secrets.{name} }}}}"),
+                &format!("{name}_MISSING: ${{{{ secrets.{name} }}}}"),
+            );
+            check_text("release", &broken).unwrap_err();
+        }
+    }
 
     #[test]
     fn hosted_workflows_keep_campaigns_local_and_consume_one_candidate() {

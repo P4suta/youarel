@@ -27,6 +27,8 @@ mod install;
 mod proposal;
 mod runs;
 
+pub use credentials::names as credential_names;
+
 /// Checks product version synchronization and the pinned proposal updaters.
 ///
 /// # Errors

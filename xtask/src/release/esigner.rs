@@ -114,6 +114,12 @@ fn private_result(output: Output) -> Result<Output> {
         "the signing tool exited with {}; provider output remains private",
         output.status
     );
+    ensure!(
+        !String::from_utf8_lossy(&output.stderr)
+            .lines()
+            .any(|line| line.starts_with("Unknown option:") || line.starts_with("Missing required")),
+        "the signing tool rejected its arguments; provider output remains private"
+    );
     Ok(output)
 }
 
@@ -215,8 +221,34 @@ pub(super) fn prepare(root: &Path) -> Result<()> {
         String::from_utf8_lossy(&sdk_version.stdout).trim() == REPORTED_VERSION,
         "the signing SDK reports another version"
     );
+    probe_batch(root)?;
     println!(
         "Verified CodeSignTool {VERSION}, its archive digest, Java, and private argument-file transport."
+    );
+    Ok(())
+}
+
+fn probe_batch(root: &Path) -> Result<()> {
+    let fixture = tempfile::Builder::new()
+        .prefix("youarel batch probe ")
+        .tempdir_in(root.join(DIRECTORY))?;
+    fs::write(
+        &fixture.path().join("probe.fixture"),
+        b"public parser fixture",
+    )?;
+    let mut words = jar_arguments("batch_sign");
+    words.extend(batch_paths(fixture.path(), &fixture.path().join("output")));
+    words.extend([
+        "-username=public-probe".to_owned(),
+        "-password=unused".to_owned(),
+        "-credential_id=unused".to_owned(),
+        "-totp_secret=unused".to_owned(),
+    ]);
+    let parser = public_probe(root, &words, "batch signing argument parser")?;
+    ensure!(
+        String::from_utf8_lossy(&parser.stdout)
+            .starts_with("Error: File extension not allowed: probe.fixture"),
+        "the signing SDK did not read the public batch fixture before authentication"
     );
     Ok(())
 }
@@ -232,6 +264,13 @@ fn authenticated(operation: &str) -> Result<Vec<String>> {
         words.push(format!("-{option}={}", required(input)?));
     }
     Ok(words)
+}
+
+fn batch_paths(input: &Path, output: &Path) -> Vec<String> {
+    vec![
+        format!("-input_dir_path={}", input.display()),
+        format!("-output_dir_path={}", output.display()),
+    ]
 }
 
 pub(super) fn verify_credentials(root: &Path) -> Result<()> {
@@ -262,12 +301,22 @@ pub(super) fn sign(root: &Path, target: &str) -> Result<()> {
     );
     let mut words = authenticated("batch_sign")?;
     words.push(format!("-totp_secret={}", required(TOTP)?));
-    words.push(format!(
-        "-input_dir_path={}",
-        root.join(SIGNING_INPUT).display()
-    ));
-    words.push("-override=true".to_owned());
-    execute(root, &words)?;
+    let source = tempfile::Builder::new()
+        .prefix("youarel unsigned ")
+        .tempdir()?;
+    let output = root.join(SIGNING_INPUT);
+    for path in [
+        super::built_program(root, target),
+        desktop::launcher(root, target),
+    ] {
+        let name = path.file_name().context("program file has no name")?;
+        fs::write(&source.path().join(name), &fs::read(&output.join(name))?)?;
+    }
+    words.extend(batch_paths(source.path(), &output));
+    let result = execute(root, &words);
+    let cleanup = source.close();
+    result?;
+    cleanup.context("remove temporary unsigned signing inputs")?;
     println!("The provider operation finished; native publisher and timestamp checks follow.");
     Ok(())
 }
@@ -275,6 +324,17 @@ pub(super) fn sign(root: &Path, target: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn batch_sign_names_distinct_input_and_output_without_single_file_options() {
+        assert_eq!(
+            batch_paths(Path::new("unsigned files"), Path::new("signed files")),
+            [
+                "-input_dir_path=unsigned files",
+                "-output_dir_path=signed files",
+            ]
+        );
+    }
 
     #[test]
     fn java_receives_only_a_private_file_path_and_no_inherited_signing_options() {
@@ -319,13 +379,22 @@ mod tests {
         const FAILURE_STATUS: i32 = 256;
         #[cfg(windows)]
         const FAILURE_STATUS: u32 = 1;
-        let output = Output {
-            status: std::process::ExitStatus::from_raw(FAILURE_STATUS),
-            stdout: b"PRIVATE_PROVIDER_STDOUT".to_vec(),
-            stderr: b"PRIVATE_PROVIDER_STDERR".to_vec(),
-        };
-        let error = private_result(output).unwrap_err().to_string();
-        assert!(error.contains("provider output remains private"));
-        assert!(!error.contains("PRIVATE_PROVIDER"));
+        for (status, stdout, stderr) in [
+            (
+                FAILURE_STATUS,
+                "PRIVATE_PROVIDER_STDOUT",
+                "PRIVATE_PROVIDER_STDERR",
+            ),
+            (0, "", "Unknown option: PRIVATE_PROVIDER_ARGUMENT"),
+        ] {
+            let output = Output {
+                status: std::process::ExitStatus::from_raw(status),
+                stdout: stdout.as_bytes().to_vec(),
+                stderr: stderr.as_bytes().to_vec(),
+            };
+            let error = private_result(output).unwrap_err().to_string();
+            assert!(error.contains("provider output remains private"));
+            assert!(!error.contains("PRIVATE_PROVIDER"));
+        }
     }
 }

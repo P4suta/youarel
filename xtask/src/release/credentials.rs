@@ -37,16 +37,24 @@ fn resolved(value: &str) -> bool {
     !value.trim().is_empty() && !value.contains("${")
 }
 
-pub(super) fn inputs(purpose: &str) -> Result<()> {
-    let names: &[&str] = match purpose {
+/// Required secret names for one release operation.
+///
+/// # Errors
+///
+/// Rejects an unknown credential purpose.
+pub fn names(purpose: &str) -> Result<&'static [&'static str]> {
+    Ok(match purpose {
         "automation" => &AUTOMATION,
         "macos" => &MACOS,
         "windows" => &WINDOWS,
         "notarize" => &NOTARIZE,
         "manifest" => &MANIFEST,
         _ => bail!("unknown credential purpose"),
-    };
-    for name in names {
+    })
+}
+
+pub(super) fn inputs(purpose: &str) -> Result<()> {
+    for name in names(purpose)? {
         ensure!(
             resolved(&required(name)?),
             "{name} is empty or an unresolved secret reference"

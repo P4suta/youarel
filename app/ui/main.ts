@@ -632,18 +632,28 @@ async function confirmEmptying(): Promise<void> {
 
 /** Moves what the selection takes to the trash, or, in the trash, asks before deleting it for good. */
 function deleteSelection(immediately: boolean): void {
-	if (current === null || current.selection.count === 0) {
-		return;
-	}
-	if (immediately || trashShown()) {
-		void confirmDeletion(
-			{ kind: "selection" },
-			current.selection.count,
-			current.selection.folders,
-		);
-	} else {
-		send({ kind: "trash", target: { kind: "selection" } });
-	}
+	queue = queue.then(async () => {
+		if (current === null || current.selection.count === 0) {
+			return;
+		}
+		if (immediately || trashShown()) {
+			void confirmDeletion(
+				{ kind: "selection" },
+				current.selection.count,
+				current.selection.folders,
+			);
+		} else {
+			try {
+				draw(
+					await invoke<View>("act", {
+						intent: { kind: "trash", target: { kind: "selection" } },
+					}),
+				);
+			} catch (error: unknown) {
+				failed(error);
+			}
+		}
+	});
 }
 
 const adding = new AddSheet({
@@ -982,11 +992,7 @@ function selectionKey(event: KeyboardEvent): boolean {
 		send({ kind: "open", id: null });
 		return true;
 	}
-	if (
-		(event.key === "Backspace" || event.key === "Delete") &&
-		current !== null &&
-		current.selection.count > 0
-	) {
+	if (event.key === "Backspace" || event.key === "Delete") {
 		deleteSelection(false);
 		return true;
 	}

@@ -104,6 +104,10 @@ interface CommandArgs {
 export interface FixtureOptions {
 	readonly refuse?: string;
 	readonly refuseIntent?: Intent["kind"];
+	readonly pendingIntent?: {
+		readonly kind: Intent["kind"];
+		readonly ready: Promise<void>;
+	};
 	readonly errorView?: boolean;
 	readonly notice?: View["notice"];
 	readonly view?: View;
@@ -215,6 +219,9 @@ export async function library(
 				intent !== null &&
 				"kind" in intent
 			) {
+				const pending = options.pendingIntent;
+				if (pending !== undefined && intent.kind === pending.kind)
+					await pending.ready;
 				if (intent.kind === options.refuseIntent) {
 					if (options.errorView === true)
 						return {

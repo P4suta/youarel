@@ -35,6 +35,8 @@ const SINGLE_CLICK: &str = "1";
 const DOUBLE_CLICK: &str = "2";
 const DOUBLE_CLICK_DELAY: &str = "100";
 const NESTED_LINK: &str = "http://127.0.0.1:9/?inside-folder";
+const POINTER_ROOT: &str = "1";
+const SCREEN_ORIGIN: &str = "0";
 
 /// A command for a program the test runs on the display.
 #[expect(
@@ -74,6 +76,63 @@ fn pause(duration: Duration) {
 
 fn xdotool(arguments: &[&str]) -> Output {
     command("xdotool").args(arguments).output().unwrap()
+}
+
+fn checked_xdotool(arguments: &[&str]) -> Output {
+    let output = xdotool(arguments);
+    assert!(output.status.success(), "xdotool {arguments:?}: {output:?}");
+    output
+}
+
+fn window() -> String {
+    let found = checked_xdotool(&["search", "--onlyvisible", "--name", TITLE]);
+    String::from_utf8(found.stdout)
+        .unwrap()
+        .lines()
+        .next()
+        .unwrap()
+        .to_owned()
+}
+
+fn focused(window: &str, reply: &Output) -> bool {
+    reply.status.success()
+        && std::str::from_utf8(&reply.stdout).is_ok_and(|value| value.trim() == window)
+}
+
+fn input(arguments: &[&str]) {
+    let target = window();
+    checked_xdotool(&["windowfocus", &target]);
+    assert!(
+        eventually(|| focused(&target, &xdotool(&["getwindowfocus"]))),
+        "the library window never received keyboard focus"
+    );
+    checked_xdotool(arguments);
+}
+
+#[test]
+fn focus_receipts_require_success_and_the_requested_window() {
+    #[cfg(unix)]
+    use std::os::unix::process::ExitStatusExt as _;
+    #[cfg(windows)]
+    use std::os::windows::process::ExitStatusExt as _;
+    #[cfg(unix)]
+    const FAILURE: i32 = 256;
+    #[cfg(windows)]
+    const FAILURE: u32 = 1;
+    const TARGET: &str = "42";
+    for (status, stdout, expected) in [
+        (0, format!("{TARGET}\n").into_bytes(), true),
+        (0, b"other window".to_vec(), false),
+        (FAILURE, TARGET.as_bytes().to_vec(), false),
+        (0, vec![u8::MAX], false),
+    ] {
+        let reply = Output {
+            status: std::process::ExitStatus::from_raw(status),
+            stdout,
+            stderr: Vec::new(),
+        };
+        assert_eq!(focused(TARGET, &reply), expected);
+    }
 }
 
 /// Whether the launcher's window shows on the display.
@@ -127,10 +186,10 @@ fn add_a_link_and_toggle() {
     let _library = Running(launch(home.path()));
     assert!(eventually(visible), "the window never showed");
     pause(SETTLE);
-    xdotool(&["key", "--clearmodifiers", "ctrl+n"]);
+    input(&["key", "--clearmodifiers", "ctrl+n"]);
     pause(SHEET);
-    xdotool(&["type", "--delay", "50", TYPED_ADDRESS]);
-    xdotool(&["key", "Return"]);
+    input(&["type", "--delay", "50", TYPED_ADDRESS]);
+    input(&["key", "Return"]);
     assert!(
         eventually(|| holds_shortcut(home.path(), COMPLETED_ADDRESS)),
         "the add sheet never added the link"
@@ -150,7 +209,7 @@ fn add_through_the_context_menu() {
     pause(SETTLE);
     press("shift+F10");
     press("Return");
-    xdotool(&["type", "--delay", "50", LINK]);
+    input(&["type", "--delay", "50", LINK]);
     press("Return");
     assert!(
         eventually(|| holds_shortcut(home.path(), LINK)),
@@ -197,15 +256,12 @@ fn trashed(home: &Path) -> usize {
 
 /// Presses keys on the display, then waits for the window to answer them.
 fn press(keys: &str) {
-    xdotool(&["key", "--clearmodifiers", keys]);
+    input(&["key", "--clearmodifiers", keys]);
     pause(SHEET);
 }
 
 fn click_row(place: usize, count: &str) {
-    let found = xdotool(&["search", "--onlyvisible", "--name", TITLE]);
-    assert!(found.status.success(), "the listing needs a visible window");
-    let windows = String::from_utf8(found.stdout).unwrap();
-    let window = windows.lines().next().unwrap();
+    let window = window();
     let center = place
         .checked_mul(ROW_HEIGHT)
         .and_then(|top| top.checked_add(NAME_HEADING_HEIGHT))
@@ -215,7 +271,7 @@ fn click_row(place: usize, count: &str) {
         xdotool(&[
             "mousemove",
             "--window",
-            window,
+            &window,
             ROW_NAME_X,
             &center.to_string()
         ])
@@ -276,7 +332,7 @@ fn a_folder_selects_before_double_click_navigation() {
     pause(SETTLE);
     click_row(FIRST_SAVED_ROW, SINGLE_CLICK);
     press("ctrl+n");
-    xdotool(&["type", LINK]);
+    input(&["type", LINK]);
     press("Return");
     assert!(
         eventually(|| home_count(home.path(), None) == 1),
@@ -284,7 +340,7 @@ fn a_folder_selects_before_double_click_navigation() {
     );
     click_row(FIRST_SAVED_ROW, DOUBLE_CLICK);
     press("ctrl+n");
-    xdotool(&["type", NESTED_LINK]);
+    input(&["type", NESTED_LINK]);
     press("Return");
     assert!(
         eventually(|| home_count(home.path(), Some(folder)) == 1),
@@ -299,6 +355,18 @@ fn trash_through_the_keys() {
     let _library = Running(launch(home.path()));
     assert!(eventually(visible), "the window never showed");
     pause(SETTLE);
+    assert!(
+        xdotool(&["mousemove", SCREEN_ORIGIN, SCREEN_ORIGIN])
+            .status
+            .success()
+    );
+    assert!(xdotool(&["windowfocus", POINTER_ROOT]).status.success());
+    assert!(eventually(|| {
+        String::from_utf8(xdotool(&["getwindowfocus", "-f"]).stdout)
+            .unwrap()
+            .trim()
+            == POINTER_ROOT
+    }));
     press("End");
     press("Delete");
     assert!(

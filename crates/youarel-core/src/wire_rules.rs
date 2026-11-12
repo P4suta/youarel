@@ -496,6 +496,8 @@ mod tests {
     use alloc::string::ToString as _;
     use alloc::vec::Vec;
 
+    const FIRST_BYTE_RANGES: [(u8, u8); 4] = [(0, 63), (64, 127), (128, 191), (192, 255)];
+
     fn written(value: u64) -> Vec<u8> {
         let mut writer = Writer::new();
         writer.varint(value);
@@ -573,9 +575,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn every_two_bytes_read_as_a_value_only_from_its_own_form() {
-        for first in 0..=u8::MAX {
+    fn assert_two_byte_forms((start, end): (u8, u8)) {
+        for first in start..=end {
             for second in 0..=u8::MAX {
                 let bytes = [first, second];
                 let expected = if first & 0x80 == 0 {
@@ -590,7 +591,7 @@ mod tests {
                 let mut reader = Reader::new(&bytes);
                 let read = reader
                     .varint()
-                    .map(|value| (value, bytes.len() - reader.rest.len()));
+                    .map(|value| (value, bytes.len().checked_sub(reader.rest.len()).unwrap()));
                 assert_eq!(read, expected, "{bytes:?}");
                 if let Ok((value, used)) = read {
                     let (form, length) = varint_form(value);
@@ -598,6 +599,36 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn first_byte_ranges_cover_every_byte_once() {
+        assert!(
+            FIRST_BYTE_RANGES
+                .iter()
+                .flat_map(|&(start, end)| start..=end)
+                .eq(0..=u8::MAX)
+        );
+    }
+
+    #[test]
+    fn two_byte_forms_in_the_first_quarter_are_canonical() {
+        assert_two_byte_forms(FIRST_BYTE_RANGES[0]);
+    }
+
+    #[test]
+    fn two_byte_forms_in_the_second_quarter_are_canonical() {
+        assert_two_byte_forms(FIRST_BYTE_RANGES[1]);
+    }
+
+    #[test]
+    fn two_byte_forms_in_the_third_quarter_are_canonical() {
+        assert_two_byte_forms(FIRST_BYTE_RANGES[2]);
+    }
+
+    #[test]
+    fn two_byte_forms_in_the_fourth_quarter_are_canonical() {
+        assert_two_byte_forms(FIRST_BYTE_RANGES[3]);
     }
 
     #[test]

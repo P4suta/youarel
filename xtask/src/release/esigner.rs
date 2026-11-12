@@ -153,10 +153,12 @@ fn private_result(output: Output, operation: Operation) -> Result<Output> {
     );
     ensure!(
         std::str::from_utf8(&output.stdout).is_ok_and(|text| operation.confirmed(text))
-            && !String::from_utf8_lossy(&output.stderr)
-                .lines()
-                .any(|line| line.starts_with("Unknown option:")
-                    || line.starts_with("Missing required")),
+            && !String::from_utf8_lossy(&output.stderr).lines().any(|line| {
+                let line = line.trim();
+                line.starts_with("Error:")
+                    || line.starts_with("Unknown option:")
+                    || line.starts_with("Missing required")
+            }),
         "CodeSignTool {} did not confirm success; provider output remains private",
         operation.command()
     );
@@ -629,6 +631,23 @@ mod tests {
                 stderr: stderr.as_bytes().to_vec(),
             };
             let error = private_result(output, Operation::Batch)
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("provider output remains private"));
+            assert!(!error.contains("PRIVATE_PROVIDER"));
+        }
+    }
+
+    #[test]
+    fn clean_scan_errors_on_stderr_remain_private() {
+        for stderr in [
+            " \tError: PRIVATE_PROVIDER_REJECTION\n",
+            " \tUnknown option: PRIVATE_PROVIDER_ARGUMENT\n",
+            " \tMissing required PRIVATE_PROVIDER_ARGUMENT\n",
+        ] {
+            let mut output = successful_output(CLEAN_SCAN);
+            output.stderr = stderr.as_bytes().to_vec();
+            let error = private_result(output, Operation::Scan)
                 .unwrap_err()
                 .to_string();
             assert!(error.contains("provider output remains private"));

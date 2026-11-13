@@ -72,7 +72,7 @@ impl Problem {
             Self::Quota
         } else if text.contains("hash") && text.contains("scan") {
             Self::ScanRequired
-        } else if text.contains("malware object") {
+        } else if text.contains("malware object") || text.contains("code object is a malware") {
             Self::Malware
         } else if text.contains("timestamp") || text.contains("time stamp") {
             Self::Timestamp
@@ -202,12 +202,12 @@ fn parse_reply(status: StatusCode, bytes: &[u8]) -> Result<Value> {
     let reply: Value = serde_json::from_slice(bytes)
         .map_err(|_private_error| anyhow!("the authorization provider returned invalid JSON"))?;
     if status != StatusCode::OK {
-        let problem = Problem::classify(
-            reply
-                .get("error_description")
-                .and_then(Value::as_str)
-                .unwrap_or_default(),
-        );
+        let problem = ["error", "error_description"]
+            .into_iter()
+            .filter_map(|field| reply.get(field).and_then(Value::as_str))
+            .map(Problem::classify)
+            .find(|problem| *problem != Problem::Unknown)
+            .unwrap_or(Problem::Unknown);
         bail!(
             "Windows signing authorization failed ({status}): {}",
             problem.message()
@@ -420,6 +420,10 @@ mod tests {
                 Problem::ScanRequired,
             ),
             ("malware object PRIVATE_HASH", Problem::Malware),
+            (
+                "code object is a malware. This code object cannot be signed using eSigner PRIVATE_HASH",
+                Problem::Malware,
+            ),
             ("timestamp failed PRIVATE_SIGNATURE", Problem::Timestamp),
             ("AccessDeniedException PRIVATE_PATH", Problem::FileAccess),
             ("Unknown option: PRIVATE_ARGUMENT", Problem::Arguments),
@@ -429,6 +433,32 @@ mod tests {
             let error = parse_reply(StatusCode::BAD_REQUEST, &bytes)
                 .unwrap_err()
                 .to_string();
+            assert!(error.contains(expected.message()));
+            assert!(!error.contains("PRIVATE"));
+        }
+    }
+
+    #[test]
+    fn structured_errors_take_precedence_without_optional_descriptions() {
+        for (reply, expected) in [
+            (json!({"error":"invalid_otp"}), Problem::Otp),
+            (json!({"error":"invalid_grant"}), Problem::Authentication),
+            (json!({"error":"too_many_requests"}), Problem::RateLimit),
+            (
+                json!({"error":"invalid_otp","error_description":"timestamp failed PRIVATE_TOKEN"}),
+                Problem::Otp,
+            ),
+            (
+                json!({"error":"PRIVATE_UNKNOWN","error_description":"invalid otp PRIVATE_SEED"}),
+                Problem::Otp,
+            ),
+        ] {
+            let error = parse_reply(
+                StatusCode::BAD_REQUEST,
+                &serde_json::to_vec(&reply).unwrap(),
+            )
+            .unwrap_err()
+            .to_string();
             assert!(error.contains(expected.message()));
             assert!(!error.contains("PRIVATE"));
         }

@@ -674,11 +674,23 @@ mod tests {
 
     #[test]
     fn signing_failures_name_the_safe_category_without_private_values() {
-        let output = successful_output("Error: invalid otp PRIVATE_TOTP_SECRET");
-        let error = private_result(output, Operation::Batch)
-            .unwrap_err()
-            .to_string();
-        assert!(error.contains("one-time password"));
-        assert!(!error.contains("PRIVATE_TOTP_SECRET"));
+        for (message, operation, category) in [
+            (
+                "Error: invalid otp PRIVATE_TOTP_SECRET",
+                Operation::Batch,
+                "one-time password",
+            ),
+            (
+                "code object is a malware. This code object cannot be signed using eSigner PRIVATE_HASH",
+                Operation::Scan,
+                "the provider rejected a malware object",
+            ),
+        ] {
+            let error = private_result(successful_output(message), operation)
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains(category));
+            assert!(!error.contains("PRIVATE"));
+        }
     }
 }

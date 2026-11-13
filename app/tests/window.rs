@@ -267,29 +267,21 @@ fn click_row(place: usize, count: &str) {
         .and_then(|top| top.checked_add(NAME_HEADING_HEIGHT))
         .and_then(|top| top.checked_add(ROW_HEIGHT / 2))
         .unwrap();
-    assert!(
-        xdotool(&[
-            "mousemove",
-            "--window",
-            &window,
-            ROW_NAME_X,
-            &center.to_string()
-        ])
-        .status
-        .success()
-    );
-    assert!(
-        xdotool(&[
-            "click",
-            "--repeat",
-            count,
-            "--delay",
-            DOUBLE_CLICK_DELAY,
-            PRIMARY_BUTTON
-        ])
-        .status
-        .success()
-    );
+    input(&[
+        "mousemove",
+        "--window",
+        &window,
+        ROW_NAME_X,
+        &center.to_string(),
+    ]);
+    checked_xdotool(&[
+        "click",
+        "--repeat",
+        count,
+        "--delay",
+        DOUBLE_CLICK_DELAY,
+        PRIMARY_BUTTON,
+    ]);
     pause(SHEET);
 }
 
@@ -314,9 +306,8 @@ fn home_count(home: &Path, folder: Option<ItemId>) -> usize {
         .unwrap()
 }
 
-fn a_folder_selects_before_double_click_navigation() {
-    let home = tempfile::tempdir().unwrap();
-    let folder = Store::new(home.path().to_path_buf())
+fn seed_folder(home: &Path) -> ItemId {
+    Store::new(home.to_path_buf())
         .session(NOW, |session| {
             let id = session.fresh_id()?;
             session.edit(Edit::AddFolder {
@@ -326,7 +317,12 @@ fn a_folder_selects_before_double_click_navigation() {
             })?;
             Ok(id)
         })
-        .unwrap();
+        .unwrap()
+}
+
+fn a_folder_selects_without_navigation() {
+    let home = tempfile::tempdir().unwrap();
+    seed_folder(home.path());
     let _library = Running(launch(home.path()));
     assert!(eventually(visible), "the window never showed");
     pause(SETTLE);
@@ -338,13 +334,36 @@ fn a_folder_selects_before_double_click_navigation() {
         eventually(|| home_count(home.path(), None) == 1),
         "selecting the folder must keep new bookmarks in the current root"
     );
+}
+
+fn a_folder_opens_on_double_click() {
+    let home = tempfile::tempdir().unwrap();
+    let folder = seed_folder(home.path());
+    Store::new(home.path().to_path_buf())
+        .session(NOW, |session| {
+            let id = session.fresh_id()?;
+            session.edit(Edit::AddShortcut {
+                id,
+                link: LINK.to_owned(),
+                title: "At root".to_owned(),
+                folder: None,
+            })?;
+            Ok(())
+        })
+        .unwrap();
+    let _library = Running(launch(home.path()));
+    assert!(eventually(visible), "the window never showed");
+    pause(SETTLE);
     click_row(FIRST_SAVED_ROW, DOUBLE_CLICK);
     press("ctrl+n");
     input(&["type", NESTED_LINK]);
     press("Return");
     assert!(
         eventually(|| home_count(home.path(), Some(folder)) == 1),
-        "double-clicking the folder must make it the destination of a new bookmark"
+        "double-clicking the folder must make it the destination of a new bookmark; root={}, folder={}, saved={}",
+        home_count(home.path(), None),
+        home_count(home.path(), Some(folder)),
+        holds_shortcut(home.path(), NESTED_LINK)
     );
 }
 
@@ -392,6 +411,7 @@ fn the_window_adds_toggles_and_trashes_what_the_keys_select() {
     add_a_link_and_toggle();
     add_through_the_context_menu();
     pointer_selection_can_move_a_bookmark_to_trash();
-    a_folder_selects_before_double_click_navigation();
+    a_folder_selects_without_navigation();
+    a_folder_opens_on_double_click();
     trash_through_the_keys();
 }

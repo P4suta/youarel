@@ -145,11 +145,21 @@ fn run(root: &Path, words: &[String]) -> Result<Output> {
 }
 
 fn private_result(output: Output, operation: Operation) -> Result<Output> {
+    let problem = [
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    ]
+    .iter()
+    .flat_map(|text| text.lines())
+    .map(super::esigner_authorization::Problem::classify)
+    .find(|problem| *problem != super::esigner_authorization::Problem::Unknown)
+    .unwrap_or(super::esigner_authorization::Problem::Unknown);
     ensure!(
         output.status.success(),
-        "CodeSignTool {} exited with {}; provider output remains private",
+        "CodeSignTool {} exited with {}: {}; provider output remains private",
         operation.command(),
-        output.status
+        output.status,
+        problem.message()
     );
     ensure!(
         std::str::from_utf8(&output.stdout).is_ok_and(|text| operation.confirmed(text))
@@ -159,8 +169,9 @@ fn private_result(output: Output, operation: Operation) -> Result<Output> {
                     || line.starts_with("Unknown option:")
                     || line.starts_with("Missing required")
             }),
-        "CodeSignTool {} did not confirm success; provider output remains private",
-        operation.command()
+        "CodeSignTool {} did not confirm success: {}; provider output remains private",
+        operation.command(),
+        problem.message()
     );
     Ok(output)
 }
@@ -342,6 +353,12 @@ pub(super) fn verify_credentials(root: &Path) -> Result<()> {
     }) {
         println!("{}", line.trim());
     }
+    super::esigner_authorization::verify(
+        &required(USERNAME)?,
+        &required(PASSWORD)?,
+        &required(CREDENTIAL)?,
+        &required(TOTP)?,
+    )?;
     Ok(())
 }
 
@@ -652,6 +669,28 @@ mod tests {
                 .to_string();
             assert!(error.contains("provider output remains private"));
             assert!(!error.contains("PRIVATE_PROVIDER"));
+        }
+    }
+
+    #[test]
+    fn signing_failures_name_the_safe_category_without_private_values() {
+        for (message, operation, category) in [
+            (
+                "Error: invalid otp PRIVATE_TOTP_SECRET",
+                Operation::Batch,
+                "one-time password",
+            ),
+            (
+                "code object is a malware. This code object cannot be signed using eSigner PRIVATE_HASH",
+                Operation::Scan,
+                "the provider rejected a malware object",
+            ),
+        ] {
+            let error = private_result(successful_output(message), operation)
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains(category));
+            assert!(!error.contains("PRIVATE"));
         }
     }
 }

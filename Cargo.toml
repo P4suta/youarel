@@ -123,6 +123,7 @@ rand_core = "0.10"
 ratatui = "0.30"
 # The store keeps the state with its indexes, the visits, and the icons in one embedded database in pure Rust, whose transactions a crash never leaves half done.
 redb = "4.4"
+ring = "0.17"
 # The operating system verifies certificates, so its trust store and its updates apply and no root bundle ships with the binary.
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 ureq = { version = "3", default-features = false, features = [

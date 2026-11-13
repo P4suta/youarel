@@ -16,6 +16,7 @@ concurrency:
 env:
   MISE_AUTO_INSTALL: "false"
   MISE_TASK_RUN_AUTO_INSTALL: "false"
+  NEXTEST_SUCCESS_OUTPUT: immediate
 
 jobs:
   window:
@@ -30,7 +31,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev xvfb xauth xdotool dbus-x11 at-spi2-core
       - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
         with:
-          install_args: rust node npm:typescript aqua:nextest-rs/nextest/cargo-nextest
+          install_args: rust node npm:typescript github:tauri-apps/tauri aqua:nextest-rs/nextest/cargo-nextest
           cache: false
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:

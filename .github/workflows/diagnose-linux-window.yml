@@ -1,0 +1,44 @@
+name: Diagnose the native Linux window
+
+on:
+  pull_request:
+    paths:
+      - app/**
+      - .github/workflows/diagnose-linux-window.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-linux-window-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  MISE_AUTO_INSTALL: "false"
+  MISE_TASK_RUN_AUTO_INSTALL: "false"
+
+jobs:
+  window:
+    name: Check the Ubuntu desktop window
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the distribution's native desktop dependencies
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev xvfb xauth xdotool dbus-x11 at-spi2-core
+      - uses: jdx/mise-action@f5be966e4a917d54244728e6a5fdcd1d93a35e6c # v5.2.6
+        with:
+          install_args: rust node npm:typescript aqua:nextest-rs/nextest/cargo-nextest
+          cache: false
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: youarel-linux-window-diagnostics
+          cache-bin: false
+          cache-on-failure: true
+          workspaces: |
+            . -> target
+            app -> target
+      - name: Check the native window with event diagnostics
+        run: cargo xtask check --desktop

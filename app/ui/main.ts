@@ -68,6 +68,49 @@ const ROOT_NAME = "Bookmarks";
 /** The parent folder's offset from the end of the collection trail. */
 const PARENT_STEP = -2;
 let current: View | null = null;
+let tracedClickTarget: EventTarget | null = null;
+let tracedClickRow: HTMLElement | null = null;
+for (const kind of ["pointerdown", "pointerup", "click", "dblclick"] as const) {
+	document.addEventListener(
+		kind,
+		(event: MouseEvent): void => {
+			const target = event.target instanceof Element ? event.target : null;
+			const row =
+				target?.closest<HTMLElement>("li[data-id], li.system-folder") ?? null;
+			console.info(
+				"POINTER",
+				JSON.stringify({
+					kind: event.type,
+					time: performance.now(),
+					button: event.button,
+					detail: event.detail,
+					shift: event.shiftKey,
+					control: event.ctrlKey,
+					meta: event.metaKey,
+					x: event.clientX,
+					y: event.clientY,
+					target: target?.tagName,
+					row: row?.className,
+					place: row?.getAttribute("data-place"),
+					top: row?.getBoundingClientRect().top,
+					bottom: row?.getBoundingClientRect().bottom,
+					sameTarget: event.target === tracedClickTarget,
+					sameRow: row === tracedClickRow,
+					previousTargetConnected:
+						tracedClickTarget instanceof Node && tracedClickTarget.isConnected,
+					previousRowConnected: tracedClickRow?.isConnected,
+					key: current?.listing.key,
+					scope: current?.scope.kind,
+				}),
+			);
+			if (event.type === "click") {
+				tracedClickTarget = event.target;
+				tracedClickRow = row;
+			}
+		},
+		true,
+	);
+}
 /** The calls in flight, in order, so the library reads what a person did in the order they did it. */
 let queue: Promise<void> = Promise.resolve();
 /** The icons drawn so far by name, and the names asked for. */
@@ -386,6 +429,18 @@ function draw(
 	pins: readonly ViewportPin[] = [],
 	feedback: "command" | "form" = "command",
 ): void {
+	console.info(
+		"DRAW",
+		JSON.stringify({
+			key: view.listing.key,
+			previousKey: current?.listing.key,
+			scope: view.scope.kind,
+			selection: view.selection.count,
+			previousTargetConnected:
+				tracedClickTarget instanceof Node && tracedClickTarget.isConnected,
+			previousRowConnected: tracedClickRow?.isConnected,
+		}),
+	);
 	const shown = current?.notice?.text;
 	const previousScope = current?.scope;
 	const locationChanged =
@@ -793,7 +848,10 @@ const handlers: Handlers = {
 	},
 	cancel: () => send({ kind: "cancel" }),
 	select: (id, place, how) => send({ kind: "select", id, extend: how, place }),
-	open: (id) => send({ kind: "open", id }),
+	open: (id) => {
+		console.info("OPEN");
+		send({ kind: "open", id });
+	},
 	menu: (event, item, _place, selected) => {
 		const selection = current?.selection ?? { count: 1, folders: 0 };
 		const [total, folderCount]: readonly [number, number] = selected

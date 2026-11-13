@@ -6824,6 +6824,7 @@ dependencies = [
  "tauri-plugin-global-shortcut",
  "tauri-plugin-single-instance",
  "tempfile",
+ "webkit2gtk",
  "youarel-cli",
  "youarel-core",
  "youarel-icon",

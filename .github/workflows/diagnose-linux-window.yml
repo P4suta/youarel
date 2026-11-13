@@ -28,7 +28,7 @@ jobs:
           persist-credentials: false
       - name: Install the distribution's native desktop dependencies
         run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev xvfb xauth xdotool dbus-x11 at-spi2-core
-      - uses: jdx/mise-action@f5be966e4a917d54244728e6a5fdcd1d93a35e6c # v5.2.6
+      - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
         with:
           install_args: rust node npm:typescript aqua:nextest-rs/nextest/cargo-nextest
           cache: false

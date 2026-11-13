@@ -800,7 +800,6 @@ interface CachedRow {
 	readonly signature: string;
 	readonly element: HTMLLIElement;
 	readonly spot: Spot;
-	readonly shown: RowView;
 }
 
 /** One folder's paged contents, with stable controls while selection changes. */
@@ -872,37 +871,13 @@ export function list(
 				: shown.kind === "folder"
 					? folderRow(shown.folder, spot, view, on)
 					: row(shown.item, spot, view, on);
-		if (shown.kind === "folder") {
-			const before = previous?.shown;
-			console.info(
-				"ROW",
-				JSON.stringify({
-					place,
-					reused: previous?.signature === signature,
-					hadPrevious: previous !== undefined,
-					previousConnected: previous?.element.isConnected,
-					nameChanged:
-						before?.kind === "folder" &&
-						before.folder.name !== shown.folder.name,
-					markChanged:
-						before?.kind === "folder" &&
-						before.folder.mark !== shown.folder.mark,
-					countChanged:
-						before?.kind === "folder" &&
-						before.folder.count !== shown.folder.count,
-					originChanged:
-						before?.kind === "folder" &&
-						JSON.stringify(before.origin) !== JSON.stringify(shown.origin),
-				}),
-			);
-		}
 		marked(line, id, spot);
 		const state = line.querySelector(`#selection-${CSS.escape(id)}`);
 		if (state !== null)
 			state.textContent = spot.selected ? "Selected" : "Not selected";
 		line.setAttribute("aria-setsize", String(view.listing.total + extra));
 		line.setAttribute("aria-posinset", String(place + extra + 1));
-		cache.set(id, { signature, element: line, spot, shown });
+		cache.set(id, { signature, element: line, spot });
 		return line;
 	};
 	return {

@@ -68,49 +68,6 @@ const ROOT_NAME = "Bookmarks";
 /** The parent folder's offset from the end of the collection trail. */
 const PARENT_STEP = -2;
 let current: View | null = null;
-let tracedClickTarget: EventTarget | null = null;
-let tracedClickRow: HTMLElement | null = null;
-for (const kind of ["pointerdown", "pointerup", "click", "dblclick"] as const) {
-	document.addEventListener(
-		kind,
-		(event: MouseEvent): void => {
-			const target = event.target instanceof Element ? event.target : null;
-			const row =
-				target?.closest<HTMLElement>("li[data-id], li.system-folder") ?? null;
-			console.info(
-				"POINTER",
-				JSON.stringify({
-					kind: event.type,
-					time: performance.now(),
-					button: event.button,
-					detail: event.detail,
-					shift: event.shiftKey,
-					control: event.ctrlKey,
-					meta: event.metaKey,
-					x: event.clientX,
-					y: event.clientY,
-					target: target?.tagName,
-					row: row?.className,
-					place: row?.getAttribute("data-place"),
-					top: row?.getBoundingClientRect().top,
-					bottom: row?.getBoundingClientRect().bottom,
-					sameTarget: event.target === tracedClickTarget,
-					sameRow: row === tracedClickRow,
-					previousTargetConnected:
-						tracedClickTarget instanceof Node && tracedClickTarget.isConnected,
-					previousRowConnected: tracedClickRow?.isConnected,
-					key: current?.listing.key,
-					scope: current?.scope.kind,
-				}),
-			);
-			if (event.type === "click") {
-				tracedClickTarget = event.target;
-				tracedClickRow = row;
-			}
-		},
-		true,
-	);
-}
 /** The calls in flight, in order, so the library reads what a person did in the order they did it. */
 let queue: Promise<void> = Promise.resolve();
 /** The icons drawn so far by name, and the names asked for. */
@@ -429,18 +386,6 @@ function draw(
 	pins: readonly ViewportPin[] = [],
 	feedback: "command" | "form" = "command",
 ): void {
-	console.info(
-		"DRAW",
-		JSON.stringify({
-			key: view.listing.key,
-			previousKey: current?.listing.key,
-			scope: view.scope.kind,
-			selection: view.selection.count,
-			previousTargetConnected:
-				tracedClickTarget instanceof Node && tracedClickTarget.isConnected,
-			previousRowConnected: tracedClickRow?.isConnected,
-		}),
-	);
 	const shown = current?.notice?.text;
 	const previousScope = current?.scope;
 	const locationChanged =
@@ -780,31 +725,39 @@ function trashChoices(
 	];
 }
 
+function queueCreation(open: (parent: Choice | null) => void): void {
+	queue = queue
+		.then(() => {
+			if (
+				current !== null &&
+				!inTrash(current) &&
+				document.querySelector("dialog[open]") === null
+			) {
+				open(current.here);
+			}
+		})
+		.catch(failed);
+}
+
 /** Opens the add sheet over the collection the window stands in. */
 function openAdd(dropped: string | null): void {
-	if (
-		current !== null &&
-		!inTrash(current) &&
-		document.querySelector("dialog[open]") === null
-	) {
-		void adding.open(current.here, dropped);
-	}
+	queueCreation((parent) => void adding.open(parent, dropped));
 }
 
 function edit(item: Item): void {
 	editing.open(item);
 }
 
-/** Asks for a name and makes a collection inside `parent`, or at the top for null. */
-async function newFolder(parent: Choice | null): Promise<void> {
-	if (trashShown() || document.querySelector("dialog[open]") !== null) return;
-	await ask.ask({
-		title: parent === null ? "New folder" : `New folder in ${parent.path}`,
-		text: "",
-		action: "Create",
-		answer: "",
-		save: (name) =>
-			saveIntent({ kind: "newCollection", name, parent: parent?.id ?? null }),
+function newFolder(): void {
+	queueCreation((parent) => {
+		void ask.ask({
+			title: parent === null ? "New folder" : `New folder in ${parent.path}`,
+			text: "",
+			action: "Create",
+			answer: "",
+			save: (name) =>
+				saveIntent({ kind: "newCollection", name, parent: parent?.id ?? null }),
+		});
 	});
 }
 
@@ -848,10 +801,7 @@ const handlers: Handlers = {
 	},
 	cancel: () => send({ kind: "cancel" }),
 	select: (id, place, how) => send({ kind: "select", id, extend: how, place }),
-	open: (id) => {
-		console.info("OPEN");
-		send({ kind: "open", id });
-	},
+	open: (id) => send({ kind: "open", id }),
 	menu: (event, item, _place, selected) => {
 		const selection = current?.selection ?? { count: 1, folders: 0 };
 		const [total, folderCount]: readonly [number, number] = selected
@@ -998,7 +948,7 @@ function command(event: KeyboardEvent): boolean {
 	} else if (key === "y" && !typing(event.target)) {
 		send({ kind: "redo" });
 	} else if (key === "n" && event.shiftKey) {
-		void newFolder(current?.here ?? null);
+		newFolder();
 	} else if (key === "n") {
 		openAdd(null);
 	} else if (key === "w") {
@@ -1225,7 +1175,7 @@ function folderMenu(event: MouseEvent | KeyboardEvent): void {
 		{
 			label: "New Folder…",
 			icon: "folder-plus",
-			act: () => void newFolder(current?.here ?? null),
+			act: newFolder,
 		},
 	]);
 }
@@ -1260,7 +1210,7 @@ function menuCommand(id: string): void {
 	} else if (id === "new-link") {
 		openAdd(null);
 	} else if (id === "new-collection") {
-		void newFolder(current?.here ?? null);
+		newFolder();
 	} else if (id === "open") {
 		send({ kind: "open", id: null });
 	} else if (id === "back" || id === "forward") {

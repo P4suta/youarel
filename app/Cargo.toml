@@ -34,9 +34,6 @@ youarel-icon = { path = "../crates/youarel-icon" }
 youarel-link = { path = "../crates/youarel-link" }
 youarel-store = { path = "../crates/youarel-store" }
 
-[target.'cfg(target_os = "linux")'.dependencies]
-webkit2gtk = "=2.0.2"
-
 [dev-dependencies]
 serde_json = "1"
 tempfile = "3"

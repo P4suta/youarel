@@ -712,15 +712,6 @@ pub fn run() -> ExitCode {
         ])
         .setup(|app| {
             tray(app)?;
-            #[cfg(all(target_os = "linux", debug_assertions))]
-            if let Some(window) = app.get_webview_window(WINDOW) {
-                window.with_webview(|webview| {
-                    use webkit2gtk::{SettingsExt as _, WebViewExt as _};
-                    if let Some(settings) = webview.inner().settings() {
-                        settings.set_enable_write_console_messages_to_stdout(true);
-                    }
-                })?;
-            }
             // A desktop that keeps global shortcuts to itself, such as Wayland's, still toggles the window through `--toggle`.
             if let Err(error) = app.global_shortcut().register(SHORTCUT) {
                 eprintln!("youarel-launcher: {SHORTCUT} stays unbound ({error}); bind `youarel-launcher {TOGGLE}` to a shortcut of the desktop instead");

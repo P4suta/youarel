@@ -1,4 +1,4 @@
-name: Diagnose the native Linux window
+name: Check the native Linux window
 
 on:
   pull_request:
@@ -41,5 +41,5 @@ jobs:
           workspaces: |
             . -> target
             app -> target
-      - name: Check the native window with event diagnostics
+      - name: Check the native window
         run: cargo xtask check --desktop

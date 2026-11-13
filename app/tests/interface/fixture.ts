@@ -1,6 +1,13 @@
 import { resolve } from "node:path";
 import { expect, type Page } from "@playwright/test";
-import type { Choice, Intent, Item, RowView, View } from "../../ui/types.js";
+import type {
+	Choice,
+	CollectionCount,
+	Intent,
+	Item,
+	RowView,
+	View,
+} from "../../ui/types.js";
 
 const ORIGIN = "http://youarel.test";
 const SAVE_ERROR = "The library could not save the change. Try again.";
@@ -38,7 +45,7 @@ export const BOOKMARK: Item = {
 	opened: null,
 	visits: 0,
 };
-const COLLECTION = {
+export const COLLECTION: CollectionCount = {
 	id: "00000000000000000000000000000002",
 	name: "Research",
 	mark: "",
@@ -245,6 +252,31 @@ export async function library(
 							rows: view.listing.rows.map((row) =>
 								row.kind === "gone" ? row : { ...row, selected: false },
 							),
+						},
+					};
+				}
+				if (
+					intent.kind === "open" &&
+					"id" in intent &&
+					intent.id === COLLECTION.id
+				) {
+					view = {
+						...view,
+						scope: { kind: "collection", id: COLLECTION.id },
+						title: COLLECTION.name,
+						count: 0,
+						back: true,
+						here: { id: COLLECTION.id, path: COLLECTION.name },
+						trail: [{ id: COLLECTION.id, name: COLLECTION.name, depth: 0 }],
+						focus: null,
+						selection: { count: 0, folders: 0 },
+						listing: {
+							...view.listing,
+							identity: COLLECTION.id,
+							key: COLLECTION.id,
+							rows: [],
+							total: 0,
+							folders: 0,
 						},
 					};
 				}

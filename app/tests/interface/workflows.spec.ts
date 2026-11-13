@@ -3,6 +3,7 @@ import type { Intent } from "../../ui/types.js";
 import {
 	BOOKMARK,
 	type Call,
+	COLLECTION,
 	INITIAL,
 	library,
 	newBookmark,
@@ -21,6 +22,79 @@ function intents(
 			"kind" in call.args.intent &&
 			call.args.intent.kind === kind,
 	);
+}
+
+for (const creation of ["bookmark", "folder"] as const) {
+	test(`${creation} creation waits for pending folder navigation`, async ({
+		page,
+	}): Promise<void> => {
+		let release!: () => void;
+		const ready = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const calls = await library(page, {
+			pendingIntent: { kind: "open", ready },
+		});
+		await page
+			.getByRole("button", { name: "Open Research", exact: true })
+			.dblclick({ delay: 100 });
+		await expect.poll(() => intents(calls, "open").length).toBe(1);
+		await page.keyboard.press(
+			creation === "bookmark" ? "ControlOrMeta+n" : "ControlOrMeta+Shift+n",
+		);
+		release();
+		const dialog = page.getByRole("dialog", {
+			name: creation === "bookmark" ? "Add a link" : "New folder in Research",
+			exact: true,
+		});
+		await expect(dialog).toBeVisible();
+		if (creation === "folder") {
+			await page.screenshot({
+				path: test.info().outputPath("creation-destination.png"),
+			});
+		}
+		await dialog
+			.getByLabel(creation === "bookmark" ? "URL" : "Name", { exact: true })
+			.fill(creation === "bookmark" ? BOOKMARK.link : "Nested");
+		await dialog
+			.getByRole("button", {
+				name: creation === "bookmark" ? "Add" : "Create",
+				exact: true,
+			})
+			.click();
+		await expect(dialog).not.toBeVisible();
+		if (creation === "bookmark") {
+			expect(calls.find((call) => call.command === "add")?.args).toMatchObject({
+				collection: COLLECTION.id,
+			});
+		} else {
+			expect(intents(calls, "newCollection")[0]?.args.intent).toMatchObject({
+				parent: COLLECTION.id,
+			});
+		}
+	});
+
+	test(`${creation} creation respects pending navigation into Trash`, async ({
+		page,
+	}): Promise<void> => {
+		let release!: () => void;
+		const ready = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const calls = await library(page, {
+			pendingIntent: { kind: "scope", ready },
+		});
+		await page
+			.getByRole("button", { name: "Open Trash", exact: true })
+			.press("Enter");
+		await expect.poll(() => intents(calls, "scope").length).toBe(1);
+		await page.keyboard.press(
+			creation === "bookmark" ? "ControlOrMeta+n" : "ControlOrMeta+Shift+n",
+		);
+		release();
+		await expect(page.locator(".folder-row")).toHaveCount(0);
+		await expect(page.getByRole("dialog")).not.toBeVisible();
+	});
 }
 
 for (const key of ["Delete", "ControlOrMeta+Backspace"]) {

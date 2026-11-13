@@ -725,31 +725,39 @@ function trashChoices(
 	];
 }
 
+function queueCreation(open: (parent: Choice | null) => void): void {
+	queue = queue
+		.then(() => {
+			if (
+				current !== null &&
+				!inTrash(current) &&
+				document.querySelector("dialog[open]") === null
+			) {
+				open(current.here);
+			}
+		})
+		.catch(failed);
+}
+
 /** Opens the add sheet over the collection the window stands in. */
 function openAdd(dropped: string | null): void {
-	if (
-		current !== null &&
-		!inTrash(current) &&
-		document.querySelector("dialog[open]") === null
-	) {
-		void adding.open(current.here, dropped);
-	}
+	queueCreation((parent) => void adding.open(parent, dropped));
 }
 
 function edit(item: Item): void {
 	editing.open(item);
 }
 
-/** Asks for a name and makes a collection inside `parent`, or at the top for null. */
-async function newFolder(parent: Choice | null): Promise<void> {
-	if (trashShown() || document.querySelector("dialog[open]") !== null) return;
-	await ask.ask({
-		title: parent === null ? "New folder" : `New folder in ${parent.path}`,
-		text: "",
-		action: "Create",
-		answer: "",
-		save: (name) =>
-			saveIntent({ kind: "newCollection", name, parent: parent?.id ?? null }),
+function newFolder(): void {
+	queueCreation((parent) => {
+		void ask.ask({
+			title: parent === null ? "New folder" : `New folder in ${parent.path}`,
+			text: "",
+			action: "Create",
+			answer: "",
+			save: (name) =>
+				saveIntent({ kind: "newCollection", name, parent: parent?.id ?? null }),
+		});
 	});
 }
 
@@ -940,7 +948,7 @@ function command(event: KeyboardEvent): boolean {
 	} else if (key === "y" && !typing(event.target)) {
 		send({ kind: "redo" });
 	} else if (key === "n" && event.shiftKey) {
-		void newFolder(current?.here ?? null);
+		newFolder();
 	} else if (key === "n") {
 		openAdd(null);
 	} else if (key === "w") {
@@ -1167,7 +1175,7 @@ function folderMenu(event: MouseEvent | KeyboardEvent): void {
 		{
 			label: "New Folder…",
 			icon: "folder-plus",
-			act: () => void newFolder(current?.here ?? null),
+			act: newFolder,
 		},
 	]);
 }
@@ -1202,7 +1210,7 @@ function menuCommand(id: string): void {
 	} else if (id === "new-link") {
 		openAdd(null);
 	} else if (id === "new-collection") {
-		void newFolder(current?.here ?? null);
+		newFolder();
 	} else if (id === "open") {
 		send({ kind: "open", id: null });
 	} else if (id === "back" || id === "forward") {

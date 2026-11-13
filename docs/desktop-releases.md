@@ -54,7 +54,8 @@ Signing requires each fingerprint to match its expected Developer ID publisher.
 
 Run `Verify release credentials without publication` for each purpose on main before enabling its consumer.
 Run `cargo xtask release prepare-windows` on a native Windows host before connecting signing credentials.
-The workflow validates nonempty resolved inputs, checks App repository access, imports and validates Apple identities, queries notarization history, and requests SSL.com credential metadata.
+The workflow validates nonempty resolved inputs, checks App repository access, imports and validates Apple identities, queries notarization history, and checks SSL.com credential metadata and TOTP authorization.
+Windows authorization uses two fixed public probe hashes and discards the activation data without requesting signatures.
 The manifest check validates the minisign trust anchor and `ML-DSA-65` key encoding and size.
 A signed rehearsal verifies that the `ML-DSA-65` secret matches its public key.
 The verification workflow never signs, submits, tags, or publishes.

@@ -23,6 +23,7 @@ mod delivery;
 mod desktop;
 mod distribution;
 mod esigner;
+mod esigner_authorization;
 mod install;
 mod proposal;
 mod runs;

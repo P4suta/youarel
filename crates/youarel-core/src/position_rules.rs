@@ -985,9 +985,16 @@ mod tests {
         assert_eq!(longest, 4, "61 keys of Z and 3,782 of Y come first");
     }
 
+    fn assert_integer_neighbors(lower: &[u8], upper: &[u8]) {
+        assert!(lower < upper, "{} {}", text(lower), text(upper));
+        assert_eq!(next(lower).as_deref(), Some(upper), "{}", text(lower));
+        assert_eq!(previous(upper).as_deref(), Some(lower), "{}", text(upper));
+    }
+
     #[test]
     fn the_integers_follow_one_another_in_the_order_of_their_keys() {
-        let mut integers: Vec<Vec<u8>> = Vec::new();
+        let mut last: Option<Vec<u8>> = None;
+        let mut count = 0_usize;
         for head in [34_u8, 35, 36, 37] {
             let length = class(head).unwrap();
             for code in 0..62_usize.pow(u32::try_from(length).unwrap()) {
@@ -998,35 +1005,25 @@ mod tests {
                     rest /= 62;
                 }
                 if is_digit_key(&integer) {
-                    integers.push(integer);
+                    if let Some(prior) = last.as_ref() {
+                        assert_integer_neighbors(prior, &integer);
+                    } else {
+                        assert_eq!(
+                            previous(&integer).map(|found| text(&found)).as_deref(),
+                            Some("Xzzz")
+                        );
+                    }
+                    last = Some(integer);
+                    count = count.checked_add(1).unwrap();
                 }
             }
         }
-        integers.sort();
-        assert_eq!(integers.len(), 2 * 61 + 2 * 62 * 61);
-        for pair in integers.windows(2) {
-            assert_eq!(
-                next(&pair[0]).as_ref(),
-                Some(&pair[1]),
-                "{}",
-                text(&pair[0])
-            );
-            assert_eq!(
-                previous(&pair[1]).as_ref(),
-                Some(&pair[0]),
-                "{}",
-                text(&pair[1])
-            );
-        }
+        assert_eq!(count, 2 * 61 + 2 * 62 * 61);
         assert_eq!(
-            next(integers.last().unwrap())
+            next(last.as_ref().unwrap())
                 .map(|found| text(&found))
                 .as_deref(),
             Some("c001")
-        );
-        assert_eq!(
-            previous(&integers[0]).map(|found| text(&found)).as_deref(),
-            Some("Xzzz")
         );
     }
 

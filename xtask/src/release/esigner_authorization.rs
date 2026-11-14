@@ -76,7 +76,11 @@ impl Problem {
             Self::Malware
         } else if text.contains("timestamp") || text.contains("time stamp") {
             Self::Timestamp
-        } else if text.contains("accessdeniedexception") || text.contains("filenotfoundexception") {
+        } else if text.contains("accessdeniedexception")
+            || text.contains("filenotfoundexception")
+            || text.contains("invalidpathexception")
+            || text.contains("java.io.ioexception: bad pathname")
+        {
             Self::FileAccess
         } else if text.contains("unknown option:") || text.contains("missing required") {
             Self::Arguments
@@ -426,6 +430,11 @@ mod tests {
             ),
             ("timestamp failed PRIVATE_SIGNATURE", Problem::Timestamp),
             ("AccessDeniedException PRIVATE_PATH", Problem::FileAccess),
+            ("InvalidPathException PRIVATE_PATH", Problem::FileAccess),
+            (
+                "java.io.IOException: Bad pathname PRIVATE_PATH",
+                Problem::FileAccess,
+            ),
             ("Unknown option: PRIVATE_ARGUMENT", Problem::Arguments),
             ("PRIVATE_UNKNOWN", Problem::Unknown),
         ] {

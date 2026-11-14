@@ -117,6 +117,9 @@ Candidate executables and build hooks never run in credential-bearing jobs.
 Apple signing seals the nested CLI and launcher before the app and installer.
 Windows batch signing covers both executables, and native verification requires the expected publisher and a timestamp.
 The controller requires a clean `scan_code` result for each exact input before `batch_sign`, following the [provider's batch signing procedure](https://www.ssl.com/guide/esigner-codesigntool-command-guide/).
+The controller removes the Windows long path prefix from SDK arguments because the SDK's file-copy library rejects that prefix when resolving output paths.
+SDK preparation copies a public fixture through the SDK's own file library before the workflow fetches credentials.
+The probe checks output paths without requesting a signature.
 Each provider operation must confirm success even when the SDK exits successfully.
 The controller verifies the CodeSignTool archive hash and Java 17 or later before loading credentials.
 The pinned 1.3.2 archive reports `v1.3.0` from its version command, so the archive hash identifies the SDK release.

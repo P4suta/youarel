@@ -34,6 +34,11 @@ const CERTIFICATE_LABELS: [&str; 3] = ["- Subject DN:", "- Certificate Expiry:",
 const CLEAN_SCAN: &str = "code object is not a malware. You can proceed signing this code object";
 const BATCH_SUCCESS: &str =
     "Batch sign command executed successfully. Output directory for signed files: ";
+const FILE_PROBE: &str = "xtask/fixtures/SigningFiles.java";
+const FILE_PROBE_SUCCESS: &str = "Verified SDK file output.";
+const FILE_PROBE_BYTES: &[u8] = b"public signing output fixture";
+const WINDOWS_LONG_PREFIX: &str = r"\\?\";
+const WINDOWS_NETWORK_PREFIX: &str = "UNC\\";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Operation {
@@ -88,13 +93,41 @@ fn arguments(words: &[String]) -> Result<Vec<u8>> {
     Ok(output.into_bytes())
 }
 
-fn command(root: &Path, input: &Path) -> Command {
+fn command(root: &Path, input: &Path) -> Result<Command> {
     let mut command = Tool::Java.command(root);
-    command.arg(format!("@{}", input.display()));
+    command.arg(format!("@{}", sdk_path(input)?));
     for name in JAVA_OPTIONS.into_iter().chain(INPUTS) {
         command.env_remove(name);
     }
-    command
+    Ok(command)
+}
+
+fn sdk_path(path: &Path) -> Result<String> {
+    let text = path.to_str().context("SDK paths must be valid UTF-8")?;
+    ensure!(
+        !text.starts_with(r"\\.\"),
+        "the SDK does not support Windows device paths"
+    );
+    let Some(unprefixed) = text.strip_prefix(WINDOWS_LONG_PREFIX) else {
+        return Ok(text.to_owned());
+    };
+    if let Some(network) = unprefixed.strip_prefix(WINDOWS_NETWORK_PREFIX) {
+        ensure!(
+            network.split_once('\\').is_some_and(|(server, share)| {
+                !server.is_empty() && !share.is_empty() && !share.starts_with('\\')
+            }),
+            "the SDK network path requires a server and share"
+        );
+        return Ok(format!(r"\\{network}"));
+    }
+    let bytes = unprefixed.as_bytes();
+    ensure!(
+        bytes.first().is_some_and(u8::is_ascii_alphabetic)
+            && bytes.get(1) == Some(&b':')
+            && bytes.get(2) == Some(&b'\\'),
+        "the SDK does not support this Windows path namespace"
+    );
+    Ok(unprefixed.to_owned())
 }
 
 fn bundle(root: &Path) -> Result<(Vec<u8>, Vec<u8>)> {
@@ -135,7 +168,7 @@ fn run(root: &Path, words: &[String]) -> Result<Output> {
     fs::create_dir_all(&directory.path().join("conf"))?;
     fs::write(&directory.path().join(CONFIG), &config)?;
     let output = tool::output(
-        command(directory.path(), &input).env("CODE_SIGN_TOOL_PATH", directory.path()),
+        command(directory.path(), &input)?.env("CODE_SIGN_TOOL_PATH", sdk_path(directory.path())?),
         "run the verified signing tool through a private argument file",
     );
     let cleanup = directory.close();
@@ -275,10 +308,37 @@ pub(super) fn prepare(root: &Path) -> Result<()> {
         "the signing SDK reports another version"
     );
     probe_signing_parsers(root)?;
+    probe_file_output(root)?;
     println!(
         "Verified CodeSignTool {VERSION}, its archive digest, Java, and private argument-file transport."
     );
     Ok(())
+}
+
+fn probe_file_output(root: &Path) -> Result<()> {
+    let directory = tempfile::Builder::new()
+        .prefix("youarel file probe ")
+        .tempdir_in(root.join(DIRECTORY))?;
+    let input = directory.path().join("unsigned fixture");
+    let output = directory.path().join("signed fixture");
+    fs::write(&input, FILE_PROBE_BYTES)?;
+    let response = tool::capture(
+        Tool::Java.command(root).args([
+            "-cp".to_owned(),
+            format!("{DIRECTORY}/{JAR}"),
+            FILE_PROBE.to_owned(),
+            sdk_path(&input)?,
+            sdk_path(&output)?,
+        ]),
+        "verify the SDK's file output without credentials",
+    )?;
+    ensure!(
+        response.trim() == FILE_PROBE_SUCCESS && fs::read(&output)? == FILE_PROBE_BYTES,
+        "the signing SDK did not preserve its public output fixture"
+    );
+    directory
+        .close()
+        .context("remove public signing output fixture")
 }
 
 fn probe_signing_parsers(root: &Path) -> Result<()> {
@@ -290,7 +350,7 @@ fn probe_signing_parsers(root: &Path) -> Result<()> {
         b"public parser fixture",
     )?;
     let mut batch_words = jar_arguments(Operation::Batch.command());
-    batch_words.extend(batch_paths(fixture.path(), &fixture.path().join("output")));
+    batch_words.extend(batch_paths(fixture.path(), &fixture.path().join("output"))?);
     batch_words.extend([
         "-username=public-probe".to_owned(),
         "-password=unused".to_owned(),
@@ -306,7 +366,7 @@ fn probe_signing_parsers(root: &Path) -> Result<()> {
     let mut scan_words = jar_arguments(Operation::Scan.command());
     scan_words.push(format!(
         "-input_file_path={}",
-        fixture.path().join("probe.fixture").display()
+        sdk_path(&fixture.path().join("probe.fixture"))?
     ));
     scan_words.extend([
         "-username=public-probe".to_owned(),
@@ -335,11 +395,11 @@ fn authenticated(operation: &str) -> Result<Vec<String>> {
     Ok(words)
 }
 
-fn batch_paths(input: &Path, output: &Path) -> Vec<String> {
-    vec![
-        format!("-input_dir_path={}", input.display()),
-        format!("-output_dir_path={}", output.display()),
-    ]
+fn batch_paths(input: &Path, output: &Path) -> Result<Vec<String>> {
+    Ok(vec![
+        format!("-input_dir_path={}", sdk_path(input)?),
+        format!("-output_dir_path={}", sdk_path(output)?),
+    ])
 }
 
 pub(super) fn verify_credentials(root: &Path) -> Result<()> {
@@ -408,19 +468,18 @@ fn scan_and_sign(
         programs.len() == super::WINDOWS_PROGRAM_COUNT,
         "Windows signing requires both candidate programs"
     );
+    let batch = batch_paths(input, output)?;
+    let programs: Vec<_> = programs
+        .iter()
+        .map(|program| sdk_path(program))
+        .collect::<Result<_>>()?;
     for program in programs {
         private_result(
-            invoke(
-                Operation::Scan,
-                vec![format!("-input_file_path={}", program.display())],
-            )?,
+            invoke(Operation::Scan, vec![format!("-input_file_path={program}")])?,
             Operation::Scan,
         )?;
     }
-    private_result(
-        invoke(Operation::Batch, batch_paths(input, output))?,
-        Operation::Batch,
-    )?;
+    private_result(invoke(Operation::Batch, batch)?, Operation::Batch)?;
     Ok(())
 }
 
@@ -469,7 +528,7 @@ mod tests {
                     Operation::Scan,
                     vec![format!("-input_file_path={}", programs[1].display())],
                 ),
-                (Operation::Batch, batch_paths(input, output)),
+                (Operation::Batch, batch_paths(input, output).unwrap()),
             ]
         );
     }
@@ -557,7 +616,7 @@ mod tests {
     #[test]
     fn batch_sign_names_distinct_input_and_output_without_single_file_options() {
         assert_eq!(
-            batch_paths(Path::new("unsigned files"), Path::new("signed files")),
+            batch_paths(Path::new("unsigned files"), Path::new("signed files")).unwrap(),
             [
                 "-input_dir_path=unsigned files",
                 "-output_dir_path=signed files",
@@ -566,8 +625,71 @@ mod tests {
     }
 
     #[test]
+    fn windows_batch_output_uses_paths_supported_by_java_17() {
+        for (input, expected) in [
+            (r"\\?\C:\release files\signed", r"C:\release files\signed"),
+            (r"\\?\UNC\server\share\signed", r"\\server\share\signed"),
+        ] {
+            let paths = batch_paths(Path::new("unsigned files"), Path::new(input)).unwrap();
+            assert_eq!(paths[1], format!("-output_dir_path={expected}"));
+        }
+    }
+
+    #[test]
+    fn ordinary_sdk_paths_preserve_spaces_unicode_and_network_shares() {
+        for path in [
+            "signed files/雪.exe",
+            r"C:\release files\signed",
+            r"\\server\share\signed",
+            "/private/signing files/signed",
+        ] {
+            assert_eq!(sdk_path(Path::new(path)).unwrap(), path);
+        }
+    }
+
+    #[test]
+    fn unsupported_sdk_paths_prevent_even_the_first_provider_request() {
+        for path in [
+            r"\\?\GLOBALROOT\Device\HarddiskVolume1",
+            r"\\?\C:relative",
+            r"\\?\UNC\server",
+            r"\\?\UNC\\share",
+            r"\\?\UNC\server\\signed",
+            r"\\.\PhysicalDrive0",
+        ] {
+            let output = Path::new(path);
+            let programs = [
+                PathBuf::from("youarel.exe"),
+                PathBuf::from("youarel-launcher.exe"),
+            ];
+            scan_and_sign(&programs, Path::new("unsigned files"), output, |_, _| {
+                panic!("unsupported paths must not reach the provider")
+            })
+            .unwrap_err();
+            let invalid_programs = [PathBuf::from("youarel.exe"), PathBuf::from(path)];
+            scan_and_sign(
+                &invalid_programs,
+                Path::new("unsigned files"),
+                Path::new("signed files"),
+                |_, _| panic!("all paths must be admitted before the first provider request"),
+            )
+            .unwrap_err();
+        }
+    }
+
+    #[test]
+    fn java_argument_file_paths_use_the_same_sdk_path_admission() {
+        let java = command(Path::new("."), Path::new(r"\\?\C:\private files\arguments")).unwrap();
+        assert_eq!(
+            java.get_args().collect::<Vec<_>>(),
+            [r"@C:\private files\arguments"]
+        );
+        command(Path::new("."), Path::new(r"\\?\GLOBALROOT\arguments")).unwrap_err();
+    }
+
+    #[test]
     fn java_receives_only_a_private_file_path_and_no_inherited_signing_options() {
-        let command = command(Path::new("."), Path::new("private input/arguments"));
+        let command = command(Path::new("."), Path::new("private input/arguments")).unwrap();
         let args: Vec<_> = command.get_args().collect();
         assert_eq!(args, ["@private input/arguments"]);
         for name in JAVA_OPTIONS.into_iter().chain(INPUTS) {

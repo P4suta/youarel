@@ -145,7 +145,7 @@ fn visible() -> bool {
 }
 
 /// Waits until `holds` does, looking every poll for as long as the test waits, and says whether it did in time.
-fn eventually(mut holds: impl FnMut() -> bool) -> bool {
+fn eventually(holds: impl Fn() -> bool) -> bool {
     let looks = WAIT.as_millis().checked_div(POLL.as_millis()).unwrap_or(1);
     for _ in 0..looks {
         if holds() {

@@ -11,18 +11,20 @@ use std::time::Duration;
 use youarel_core::state::{Edit, ItemId};
 use youarel_store::Store;
 
+#[cfg(target_os = "linux")]
+#[path = "window/accessibility.rs"]
+pub mod accessibility;
+
 /// How long the test waits for the window or for an effect, and how often it looks.
 const WAIT: Duration = Duration::from_secs(60);
 const POLL: Duration = Duration::from_millis(250);
-/// How long the page takes to load its script once the window shows, before keys reach it.
-const SETTLE: Duration = Duration::from_secs(3);
 /// The window's title in `tauri.conf.json`, which `xdotool` finds it by.
 const TITLE: &str = "^youarel$";
 /// The link the test adds through the window, on a port where nothing answers, so reading its page fails at once.
 const LINK: &str = "http://127.0.0.1:9/";
 const TYPED_ADDRESS: &str = "127.0.0.1:9";
 const COMPLETED_ADDRESS: &str = "https://127.0.0.1:9/";
-/// How long the add sheet takes to open and read the clipboard before keys reach its field.
+/// A pause between commands whose effects the following store assertion observes.
 const SHEET: Duration = Duration::from_secs(1);
 /// A time for the store's session that the test reads under.
 const NOW: u64 = 1_700_000_000_000;
@@ -154,6 +156,22 @@ fn eventually(holds: impl Fn() -> bool) -> bool {
     holds()
 }
 
+fn wait_for_control(name: &str, text: Option<&str>) {
+    assert_eq!(
+        std::env::consts::OS,
+        "linux",
+        "native control observation requires Linux: {name:?}, {text:?}"
+    );
+    #[cfg(target_os = "linux")]
+    accessibility::wait_for(name, text);
+}
+
+fn type_address(address: &str) {
+    wait_for_control("URL", Some(""));
+    input(&["type", address]);
+    wait_for_control("URL", Some(address));
+}
+
 /// Whether the store under `home` holds a shortcut of that link.
 fn holds_shortcut(home: &Path, link: &str) -> bool {
     Store::new(home.to_path_buf())
@@ -185,10 +203,9 @@ fn add_a_link_and_toggle() {
     let home = tempfile::tempdir().unwrap();
     let _library = Running(launch(home.path()));
     assert!(eventually(visible), "the window never showed");
-    pause(SETTLE);
+    wait_for_control("Folder contents", None);
     input(&["key", "--clearmodifiers", "ctrl+n"]);
-    pause(SHEET);
-    input(&["type", "--delay", "50", TYPED_ADDRESS]);
+    type_address(TYPED_ADDRESS);
     input(&["key", "Return"]);
     assert!(
         eventually(|| holds_shortcut(home.path(), COMPLETED_ADDRESS)),
@@ -206,10 +223,10 @@ fn add_through_the_context_menu() {
     let home = tempfile::tempdir().unwrap();
     let _library = Running(launch(home.path()));
     assert!(eventually(visible), "the window never showed");
-    pause(SETTLE);
+    wait_for_control("Folder contents", None);
     press("shift+F10");
     press("Return");
-    input(&["type", "--delay", "50", LINK]);
+    type_address(LINK);
     press("Return");
     assert!(
         eventually(|| holds_shortcut(home.path(), LINK)),
@@ -290,7 +307,7 @@ fn pointer_selection_can_move_a_bookmark_to_trash() {
     seed(home.path());
     let _library = Running(launch(home.path()));
     assert!(eventually(visible), "the window never showed");
-    pause(SETTLE);
+    wait_for_control("Folder contents", None);
     click_row(FIRST_SAVED_ROW, SINGLE_CLICK);
     press("Delete");
     assert!(
@@ -325,13 +342,13 @@ fn a_folder_selects_without_navigation() {
     seed_folder(home.path());
     let _library = Running(launch(home.path()));
     assert!(eventually(visible), "the window never showed");
-    pause(SETTLE);
+    wait_for_control("Folder contents", None);
     click_row(FIRST_SAVED_ROW, SINGLE_CLICK);
     press("ctrl+n");
-    input(&["type", LINK]);
+    type_address(LINK);
     press("Return");
     assert!(
-        eventually(|| home_count(home.path(), None) == 1),
+        eventually(|| home_count(home.path(), None) == 1 && holds_shortcut(home.path(), LINK)),
         "selecting the folder must keep new bookmarks in the current root"
     );
 }
@@ -353,13 +370,14 @@ fn a_folder_opens_on_double_click() {
         .unwrap();
     let _library = Running(launch(home.path()));
     assert!(eventually(visible), "the window never showed");
-    pause(SETTLE);
+    wait_for_control("Folder contents", None);
     click_row(FIRST_SAVED_ROW, DOUBLE_CLICK);
     press("ctrl+n");
-    input(&["type", NESTED_LINK]);
+    type_address(NESTED_LINK);
     press("Return");
     assert!(
-        eventually(|| home_count(home.path(), Some(folder)) == 1),
+        eventually(|| home_count(home.path(), Some(folder)) == 1
+            && holds_shortcut(home.path(), NESTED_LINK)),
         "double-clicking the folder must make it the destination of a new bookmark; root={}, folder={}, saved={}",
         home_count(home.path(), None),
         home_count(home.path(), Some(folder)),
@@ -373,7 +391,7 @@ fn trash_through_the_keys() {
     seed(home.path());
     let _library = Running(launch(home.path()));
     assert!(eventually(visible), "the window never showed");
-    pause(SETTLE);
+    wait_for_control("Folder contents", None);
     assert!(
         xdotool(&["mousemove", SCREEN_ORIGIN, SCREEN_ORIGIN])
             .status

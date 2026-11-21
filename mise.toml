@@ -1,5 +1,5 @@
 [tools]
-rust = { version = "1.99.1", components = [
+rust = { version = "1.100.0", components = [
   "clippy",
   "rustfmt",
 ], targets = [
@@ -8,21 +8,21 @@ rust = { version = "1.99.1", components = [
 ] }
 just = "1.59.0"
 taplo = "0.10.0"
-typos = "1.52.0"
+typos = "1.52.2"
 lefthook = "2.2.2"
 actionlint = "1.7.12"
 zizmor = "1.32.0"
 "aqua:crate-ci/committed" = "1.1.12"
-"aqua:EmbarkStudios/cargo-deny" = "0.20.2"
+"aqua:EmbarkStudios/cargo-deny" = "0.21.0"
 "aqua:rustsec/rustsec/cargo-audit" = "0.22.2"
 "aqua:nextest-rs/nextest/cargo-nextest" = "0.9.146"
 "cargo:kani-verifier" = { version = "0.68.0", os = ["macos", "linux"] }
 "cargo:cargo-mutants" = { version = "27.1.0", os = ["macos", "linux"] }
 "cargo:cargo-fuzz" = { version = "0.13.2", os = ["macos", "linux"] }
-gh = "2.103.3"
-node = "26.13.0"
+gh = "2.105.0"
+node = "26.13.1"
 "npm:typescript" = "7.0.2"
-"github:tauri-apps/tauri" = { version = "2.12.4", version_prefix = "tauri-cli-v", matching = "cargo-tauri" }
+"github:tauri-apps/tauri" = { version = "2.12.6", version_prefix = "tauri-cli-v", matching = "cargo-tauri" }
 "cargo:cargo-cyclonedx" = "0.5.10"
 
 [settings]

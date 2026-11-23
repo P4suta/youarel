@@ -393,7 +393,7 @@ impl Session {
                     .as_deref()
                     .map_or(std::ops::Bound::Unbounded, std::ops::Bound::Excluded);
                 let mut keys = Vec::new();
-                for entry in rows.range::<&[u8]>((start, finish)).map_err(failed)? {
+                for entry in rows.range((start, finish)).map_err(failed)? {
                     if keys.len() >= BATCH {
                         break;
                     }

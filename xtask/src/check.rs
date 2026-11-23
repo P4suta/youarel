@@ -323,12 +323,43 @@ fn audit(root: &Path) -> Result<()> {
             .args(["audit", "--deny", "warnings", "--file"])
             .arg(&lock);
         if manifest == app {
+            let tree = capture(
+                Tool::Cargo.command(root).args([
+                    "tree",
+                    "--locked",
+                    "--manifest-path",
+                    APP_MANIFEST,
+                    "--workspace",
+                    "--all-features",
+                    "--target",
+                    "all",
+                    "--edges",
+                    "normal,build,dev",
+                    "--prefix",
+                    "none",
+                    "--format",
+                    "{p}",
+                ]),
+                "cargo tree for the launcher",
+            )?;
+            require_no_chrono(&tree)?;
+            command.args(["--ignore", "RUSTSEC-2026-0543"]);
             for (advisory, _reason) in APP_ACCEPTED_ADVISORIES {
                 command.args(["--ignore", advisory]);
             }
         }
         succeed(&mut command, "cargo audit")?;
     }
+    Ok(())
+}
+
+fn require_no_chrono(tree: &str) -> Result<()> {
+    anyhow::ensure!(
+        !tree
+            .lines()
+            .any(|line| line.split_whitespace().next() == Some("chrono")),
+        "the launcher reaches chrono; review RUSTSEC-2026-0543 before accepting the dependency"
+    );
     Ok(())
 }
 
@@ -524,6 +555,16 @@ pub fn generated(root: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::with_suffix;
+
+    #[test]
+    fn the_launcher_refuses_a_reachable_chrono_dependency() -> anyhow::Result<()> {
+        super::require_no_chrono("youarel-app v0.1.0\nchrono-tz v0.10.4")?;
+        let Err(error) = super::require_no_chrono("youarel-app v0.1.0\nchrono v0.4.45 (*)") else {
+            anyhow::bail!("the launcher accepted a reachable chrono dependency");
+        };
+        anyhow::ensure!(error.to_string().contains("RUSTSEC-2026-0543"));
+        Ok(())
+    }
 
     #[test]
     fn staged_files_are_selected_by_suffix() {

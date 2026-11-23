@@ -33,7 +33,7 @@ impl Session {
         let finish = end.map_or(Bound::Unbounded, Bound::Excluded);
         let mut keys = Vec::new();
         for entry in rows
-            .range::<&[u8]>((Bound::Included(start), finish))
+            .range((Bound::Included(start), finish))
             .map_err(failed)?
         {
             keys.push(entry.map_err(failed)?.0.value().to_vec());
@@ -308,7 +308,7 @@ impl Session {
             .map_or(Bound::Unbounded, Bound::Excluded);
         let mut found = Vec::new();
         for entry in shortcuts
-            .range::<&[u8]>((Bound::Included(bounds.start.as_slice()), finish))
+            .range((Bound::Included(bounds.start.as_slice()), finish))
             .map_err(failed)?
         {
             let (key, value) = entry.map_err(failed)?;

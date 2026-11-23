@@ -222,7 +222,7 @@ fn within<'a>(table: &'a Keys<'_>, bounds: &Bounds) -> Result<Rows<'a>, StoreErr
         .as_deref()
         .map_or(Bound::Unbounded, Bound::Excluded);
     table
-        .range::<&[u8]>((Bound::Included(bounds.start.as_slice()), end))
+        .range((Bound::Included(bounds.start.as_slice()), end))
         .map_err(failed)
 }
 
@@ -345,7 +345,7 @@ fn counted_within(added: &Keys<'_>, days: &Counted<'_>, times: Times) -> Result<
         .as_ref()
         .map_or(Bound::Unbounded, |stop| Bound::Excluded(stop.as_slice()));
     for entry in days
-        .range::<&[u8]>((Bound::Included(start.as_slice()), finish))
+        .range((Bound::Included(start.as_slice()), finish))
         .map_err(failed)?
     {
         let (_, held) = entry.map_err(failed)?;

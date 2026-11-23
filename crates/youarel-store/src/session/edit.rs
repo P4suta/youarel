@@ -238,7 +238,7 @@ impl Session {
         let finish = end.as_deref().map_or(Bound::Unbounded, Bound::Excluded);
         let rows = open(&self.transaction, index(Table::Placement))?;
         let range = rows
-            .range::<&[u8]>((Bound::Included(start.as_slice()), finish))
+            .range((Bound::Included(start.as_slice()), finish))
             .map_err(failed)?;
         let moving = match moving {
             Some(Entry::Shortcut(id)) => Some(id),

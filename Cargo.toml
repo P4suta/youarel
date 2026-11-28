@@ -115,7 +115,7 @@ image = { version = "0.25.10", default-features = false, features = [
   "png",
   "webp",
 ] }
-libcrux-ml-dsa = { version = "0.0.11", default-features = false, features = ["mldsa65", "std"] }
+libcrux-ml-dsa = { version = "0.0.12", default-features = false, features = ["mldsa65", "std"] }
 minisign = "0.10"
 minisign-verify = "0.3"
 rand_chacha = "0.10"
